@@ -9,4 +9,6 @@ keeps working without ever talking to Proscenic.
 
 Protocol analysis and reverse-engineering artifacts live in [`doc/`](doc/).
 
-Status: documentation only; no implementation yet.
+Status: phases 0-1 of [`doc/PLAN.md`](doc/PLAN.md) §15 are done — the re-home tool
+works and the server runs, tracing and storing everything the robot sends, but it
+does not answer the device's endpoints yet.
