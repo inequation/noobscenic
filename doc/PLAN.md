@@ -633,12 +633,12 @@ only thing a fake cannot stand in for.
 choose, and it is on our Wi-Fi.
 
 ### Phase 1 — Skeleton
-- [ ] Cargo project, module layout, `error.rs`, graceful shutdown on Ctrl-C
-- [ ] JSON config load + defaults + CLI overrides
-- [ ] `tracing` set-up: stderr + rolling file, `EnvFilter`
-- [ ] Wire tap: JSONL sink, raw sink, rotation/retention, `seq` counter
-- [ ] SQLite pool + pragmas + `0001_init.sql` migration, run at start-up
-- [ ] HTTP listener with the catch-all handler and full request/response tapping
+- [x] Cargo project, module layout, `error.rs`, graceful shutdown on Ctrl-C
+- [x] JSON config load + defaults + CLI overrides
+- [x] `tracing` set-up: stderr + rolling file, `EnvFilter`
+- [x] Wire tap: JSONL sink, raw sink, rotation/retention, `seq` counter
+- [x] SQLite pool + pragmas + `0001_init.sql` migration, run at start-up
+- [x] HTTP listener with the catch-all handler and full request/response tapping
 
 **Done when:** pointing the robot at it yields a complete trace of everything it tries
 to do — valuable before a single endpoint is implemented.

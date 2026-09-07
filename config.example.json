@@ -1,0 +1,28 @@
+{
+  "data_dir": "./var",
+  "database": { "url": null, "max_connections": 5 },
+
+  "http":    { "bind": "0.0.0.0:8080", "tls": null },
+  "gateway": { "bind": "0.0.0.0:8081",
+               "advertise": null,
+               "ping_timeout_secs": 120,
+               "max_frame_bytes": 8388608,
+               "ack_handshake": true,
+               "encrypt_commands": false,
+               "command_ttl_secs": 300 },
+  "console": { "enabled": true },
+
+  "registration": { "accept_all": true, "session_ttl_secs": null },
+  "ota":     { "enabled": false },
+
+  "logging": { "level": "info",
+               "file": null,
+               "file_enabled": true,
+               "wire": { "enabled": true,
+                         "dir": null,
+                         "format": "both",
+                         "max_body_bytes": 262144,
+                         "rotate_mb": 64,
+                         "retain_days": 14,
+                         "redact_secrets": false } }
+}
