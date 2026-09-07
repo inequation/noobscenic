@@ -1,0 +1,111 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "proscenic-m7pro/channelB_gateway.schema.json",
+  "title": "Channel B — push gateway (persistent TCP, framed JSON)",
+  "description": "Realtime control/telemetry over a raw TCP socket to the getSockAddr ip:port. WIRE FRAMING (not expressible in JSON Schema): each message is UTF-8 JSON text followed by the 3-byte delimiter 0x23 0x09 0x23 ('#\\t#') IN BOTH DIRECTIONS — the server MUST also terminate its frames with '#\\t#' (no length prefix). CLOUD->DEVICE COMMANDS REQUIRE AN INTEGER 'encrypt' FIELD (see cloudCommand $def): encrypt:0 => data is a plaintext JSON object (no AES needed); encrypt:1 => data is base64(AES-128-ECB(json, session[:16])). A command with no 'encrypt' field is silently DROPPED. DEVICE->CLOUD 'data' is always PLAINTEXT JSON (device never encrypts). AES key = first 16 bytes of data.session from cleanPack/register. KEEPALIVE: device sends 21006 Ping; the server MUST pong (see ping_21006).",
+  "type": "object",
+  "required": ["infoType"],
+  "properties": {
+    "infoType": {"type": "integer", "description": "cloud message type code (distinct from EID_* bus ids)"},
+    "connectionType": {"type": "integer", "description": "only value emitted by firmware is 1 (primary control connection)"},
+    "encrypt": {"type": "integer", "description": "MANDATORY on cloud->device commands. 0 = data is a plaintext JSON object; 1 = data is base64(AES-128-ECB(json, session[:16])). Missing => frame dropped (msg['encrypt'].isInt() gate in FUN_00457f08)."},
+    "message": {"enum": ["ok","fail"]},
+    "reason": {"type": "string", "description": "present on failures, e.g. 'invalid json format !!'"},
+    "packId": {"type": "integer", "description": "chunk id for packetized transfers (infoType 21020)"},
+    "data": {"type": ["object","string"], "description": "device->cloud: plaintext JSON object. cloud->device command: object when encrypt:0, base64-AES string when encrypt:1."}
+  },
+  "$comment": "Per-infoType data shapes below (as $defs). Match on infoType then validate data.",
+  "$defs": {
+    "handshake_10001": {
+      "type": "object",
+      "properties": {
+        "infoType": {"const": 10001},
+        "connectionType": {"const": 1},
+        "data": {"type": "object", "required": ["token","sn"],
+          "properties": {"token": {"type": "string", "description": "EMPTY in handshake"}, "sn": {"type": "string"}}}
+      }
+    },
+    "ping_21006_deviceToCloud": {
+      "description": "KEEPALIVE Ping from the device: {\"infoType\":21006,\"data\":{}}. The server MUST pong or the device reconnects (heart_online_ld.cpp).",
+      "type": "object",
+      "properties": {"infoType": {"const": 21006}, "data": {"type": "object"}}
+    },
+    "pong_21006_cloudToDevice": {
+      "description": "Server's pong reply. Receipt alone marks the device online (RecvPong/FUN_00457b30). Safe form: {\"infoType\":21006,\"data\":{}}; optional boolean 'isExistConnect' (app-online reflection). Confirm the pong infoType demux against one capture.",
+      "type": "object",
+      "properties": {"infoType": {"const": 21006},
+        "data": {"type": "object", "properties": {"isExistConnect": {"type": "boolean"}}}}
+    },
+    "cloudCommand": {
+      "description": "Any cloud->device command MUST include integer 'encrypt'. Absence => dropped (FUN_00457f08 gate).",
+      "type": "object",
+      "required": ["infoType","encrypt","data"],
+      "properties": {
+        "infoType": {"type": "integer"},
+        "encrypt": {"type": "integer", "description": "1 = data is base64(AES-128-ECB(json,session[:16])); ANY other integer (use 0) = data is a plaintext JSON object. Must be an integer or the frame is dropped."},
+        "data": {"type": ["object","string"], "description": "plaintext object when encrypt!=1; base64-AES string when encrypt==1"}
+      }
+    },
+    "mapUpload_20002": {
+      "type": "object",
+      "properties": {
+        "infoType": {"const": 20002},
+        "data": {"type": "object",
+          "required": ["SN","mapId","width","height","resolution","x_min","y_min","lz4_len","map"],
+          "properties": {
+            "SN": {"type": "string"},
+            "mapId": {"type": "integer"}, "autoAreaId": {"type": "integer"}, "pathId": {"type": "integer"},
+            "width": {"type": "integer"}, "height": {"type": "integer"},
+            "resolution": {"type": "number", "description": "metres per cell"},
+            "x_min": {"type": "number"}, "y_min": {"type": "number"},
+            "lz4_len": {"type": "integer", "description": "length of the LZ4 stream inside 'map'"},
+            "base64_len": {"type": "integer"},
+            "map": {"type": "string", "description": "base64( LZ4_compress( width*height occupancy cells, row-major ) )"},
+            "area": {"type": "array", "items": {"$ref": "#/$defs/region"}},
+            "chargeHandlePos": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2},
+            "chargeHandlePhi": {"type": "integer", "description": "dock orientation, degrees"},
+            "chargeHandleState": {"enum": ["find","notFind"]}
+          }}
+      }
+    },
+    "region": {
+      "type": "object",
+      "description": "a room or forbidden zone; appears in map 'area[]' and in SetAreaTactics(21003)",
+      "properties": {
+        "id": {"type": "integer", "description": "area id"},
+        "name": {"type": "string", "description": "user room name"},
+        "tag": {"type": "string"},
+        "active": {"type": "string"},
+        "mode": {"type": "string", "description": "per-room clean mode"},
+        "forbidType": {"type": "string", "description": "non-empty => forbidden/no-go zone rather than a room"}
+      }
+    },
+    "setAreaTactics_21003": {
+      "type": "object",
+      "properties": {"infoType": {"const": 21003},
+        "data": {"type": "object", "properties": {"area": {"type": "array", "items": {"$ref": "#/$defs/region"}}}}}
+    },
+    "cleanPath_21011": {
+      "type": "object",
+      "properties": {
+        "message": {"const": "ok"},
+        "infoType": {"const": 21011},
+        "data": {"type": "object",
+          "required": ["pathID","startPos","totalPoints","posArray"],
+          "properties": {
+            "userId": {"type": "string"},
+            "pathID": {"type": "integer"},
+            "startPos": {"type": "integer", "description": "index of first point in this chunk"},
+            "totalPoints": {"type": "integer"},
+            "posArray": {"type": "array", "items": {"type": "number"},
+              "description": "flat [x0,y0,x1,y1,...] traversed path"}
+          }}
+      }
+    },
+    "pack_21020": {
+      "type": "object",
+      "properties": {"infoType": {"const": 21020}, "message": {"enum": ["ok","fail"]},
+        "packId": {"type": "integer"}, "reason": {"type": "string"}}
+    }
+  }
+}

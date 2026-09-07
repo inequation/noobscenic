@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "proscenic-m7pro/channelA_rest.schema.json",
+  "title": "Channel A — cloud REST (device <-> cloud, HTTP/HTTPS)",
+  "description": "Base URL default https://mobile.proscenic.cn/ (stored in /data/bin/Run/Config/url). REQUESTS are application/x-www-form-urlencoded (modeled here as objects = field sets). RESPONSES are JSON with the common envelope. No TLS validation on the device; firmware blobs fetch over plain HTTP from the OSS host.",
+  "$defs": {
+    "responseEnvelope": {
+      "type": "object",
+      "required": ["code"],
+      "properties": {
+        "code": {"type": "integer", "description": "0=success; 102/212=sid/session expired -> re-register"},
+        "message": {"type": "string"},
+        "data": {"type": "object"}
+      }
+    },
+    "register_request": {
+      "description": "POST /cleanPack/register  (form-urlencoded)",
+      "type": "object",
+      "required": ["sn","sig"],
+      "properties": {
+        "sn": {"type": "string", "description": "custom.sn"},
+        "ld_sn": {"type": "string", "description": "ld_sn from /data/bin/sys_data"},
+        "sig": {"type": "string", "description": "base64( RSA_public_encrypt('<sn>:<unixtime>', /data/bin/sys_data/public.key, PKCS1v1.5) )"},
+        "ts": {"type": "string", "description": "observed literal '0'"}
+      }
+    },
+    "register_response": {
+      "allOf": [{"$ref": "#/$defs/responseEnvelope"}],
+      "description": "On code==0, data MUST contain 'session' and 'cookies' (NOT a field named 'token'). Verified: device strncpy's data.session (0x40) and data.cookies (0x38); log 'mSession:%s\\tmCookies:%s'; missing => 'no session!!!' and endless re-register.",
+      "properties": {"data": {"type": "object",
+        "required": ["session","cookies"],
+        "properties": {
+          "session": {"type": "string", "description": "AES key material; session[:16] = Channel-B AES-128-ECB key"},
+          "cookies": {"type": "string", "description": "sid value; device returns it on every Channel-A request as HTTP header 'Cookie: cookies=<value>'"}
+        }}}
+    },
+    "sync_request": {
+      "description": "POST /cleanPack/sync  (device-attribute / version report, form-urlencoded)",
+      "type": "object",
+      "required": ["sn","version","versionCode","cloud"],
+      "properties": {
+        "sn": {"type": "string"},
+        "companyId": {"type": "integer"},
+        "mcuVer": {"type": "string", "description": "e.g. h185v60"},
+        "version": {"type": "string", "description": "app version, e.g. 0.7.1"},
+        "versionCode": {"type": "integer", "description": "GetGitCnt(), e.g. 1241"},
+        "gitSha": {"type": "string"},
+        "uuid": {"type": "string", "description": "present in the &uuid= variant"},
+        "cloud": {"const": "psnk"}
+      }
+    },
+    "sync_response": {
+      "allOf": [{"$ref": "#/$defs/responseEnvelope"}],
+      "description": "code 0=ok; 102/212=sid expired. Live server currently returns {code:102,message:'你的sid过期啦'}"
+    },
+    "versionCheck_response": {
+      "description": "GET <base>?version=1&sn=<sn>&companyId=<id>  -> JSON",
+      "allOf": [{"$ref": "#/$defs/responseEnvelope"}],
+      "properties": {"data": {"type": "object", "properties": {
+        "hasUpdateFile": {"type": ["boolean","integer"]},
+        "downUrl": {"type": "string", "description": "firmware URL on the OSS host (robotDrivers/<ms-ts>)"},
+        "fullversion": {"type": "string"},
+        "md5": {"type": "string", "description": "transport MD5 of the whole downloaded firmware.bin (NOT the RSA-signed body md5)"}
+      }}}
+    },
+    "report_body": {
+      "description": "Channel-A POST bodies (form-urlencoded) vary by endpoint; 'data' is ALWAYS PLAINTEXT JSON (device->cloud is not encrypted), not always URL-escaped. Verified templates: 'sn=%s&ts=%llu&data=%s', 'sn=%s&ts=%lu&data=%s', 'sn=%s&infoType=%d&ts=%s&userId=%s&data=<json>', 'devType=3&sn=%s&taskid=%llu&event=%d&createtime=%d&data=%s' (uploadEvents), 'devType=3&sn=%s&ts=%s&qid=%s'. A server must accept these extra fields, not only sn/ts/data.",
+      "type": "object",
+      "required": ["sn"],
+      "properties": {
+        "sn": {"type": "string"},
+        "ts": {"type": "string", "description": "epoch (ms or s depending on template)"},
+        "data": {"type": "string", "description": "plaintext JSON"},
+        "devType": {"type": "string", "description": "e.g. '3'"},
+        "taskid": {"type": "string"},
+        "event": {"type": "integer"},
+        "createtime": {"type": "integer"},
+        "infoType": {"type": "integer"},
+        "userId": {"type": "string"},
+        "qid": {"type": "string"}
+      }
+    },
+    "getSockAddr_request": {
+      "description": "POST /cleanPack/getSockAddr. Cookie-authenticated (sent after register, carries 'Cookie: cookies=<sid>'). Exact body fields NOT fully verified (gap) — likely include sn; do not require unknown fields. Confirm from a live capture.",
+      "type": "object",
+      "properties": {"sn": {"type": "string"}}
+    },
+    "getSockAddr_response": {
+      "description": "POST /cleanPack/getSockAddr -> push-gateway address(es)",
+      "allOf": [{"$ref": "#/$defs/responseEnvelope"}],
+      "properties": {"data": {"type": "object", "properties": {
+        "addr_list": {"type": "array", "items": {"type": "object",
+          "properties": {"ip": {"type": "string"}, "port": {"type": "integer"}}}}
+      }}}
+    }
+  }
+}

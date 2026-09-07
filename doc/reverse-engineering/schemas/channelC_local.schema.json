@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "proscenic-m7pro/channelC_local.schema.json",
+  "title": "Channel C — local Wi-Fi provisioning / control (UDP JSON datagrams)",
+  "description": "Datagrams exchanged with the robot on the LAN (esp. in soft-AP pairing mode, robot at 192.168.78.1). One JSON object per UDP datagram. Requests are {cmd,...}; responses echo cmd plus result. Field names for setSta/setUrl are taken from firmware JSON templates in network_proxy (wifi_config.cpp) and should be confirmed against one live capture.",
+  "oneOf": [ {"$ref": "#/$defs/request"}, {"$ref": "#/$defs/response"} ],
+  "$defs": {
+    "request": {
+      "type": "object",
+      "required": ["cmd"],
+      "properties": {
+        "cmd": {"enum": ["getID","getSn","getWifi","checkPwd","getCfg","applyCfg","setSta","setAp","setUrl","resetWifi"]}
+      },
+      "allOf": [
+        {"if": {"properties": {"cmd": {"const": "setSta"}}},
+         "then": {"required": ["ssid"],
+           "properties": {
+             "ssid":   {"type": "string", "description": "target router SSID"},
+             "staPwd": {"type": "string", "minLength": 8, "maxLength": 64,
+                        "description": "WPA passphrase; handler rejects <8 or >64 chars. Key name observed as staPwd; some builds use 'pwd'."}
+           }}},
+        {"if": {"properties": {"cmd": {"const": "setUrl"}}},
+         "then": {"description": "Two accepted forms: set HTTP base URL, or set push-gateway ip/port.",
+           "oneOf": [
+             {"required": ["url"], "properties": {"url": {"type": "string", "format": "uri",
+                "description": "written to /data/bin/Run/Config/url"}}},
+             {"required": ["ip","port"], "properties": {
+                "ip":   {"type": "string"},
+                "port": {"type": "integer", "minimum": 1, "maximum": 65535,
+                         "description": "written to /data/bin/Run/Config/ip_port.json; triggers gateway reconnect"}}}
+           ]}},
+        {"if": {"properties": {"cmd": {"const": "setAp"}}},
+         "then": {"properties": {
+             "ssid": {"type": "string"}, "pwd": {"type": "string"},
+             "segment": {"type": "integer", "description": "192.168.<segment>.x, default 78"},
+             "hide": {"type": "integer", "enum": [0,1]}}}}
+      ]
+    },
+    "response": {
+      "type": "object",
+      "required": ["cmd","result"],
+      "properties": {
+        "cmd": {"type": "string"},
+        "result": {"enum": ["ok","fail","invalue cmd"]},
+        "code": {"type": "integer", "description": "setSta ok=2/fail=-1; applyCfg ok=1/fail=-1; checkPwd=connection state"},
+        "sn":  {"type": "string", "description": "getSn"},
+        "type": {"type": "string", "description": "getID, e.g. 'ipfromapp'"},
+        "wifi_list": {"type": "array", "description": "getWifi scan results", "items": {"type": "object"}},
+        "staName": {"type": "string"}, "staPwd": {"type": "string"},
+        "staIp": {"type": "string"}, "staMac": {"type": "string"}
+      }
+    },
+    "logRequest": {
+      "type": "object", "required": ["req"],
+      "properties": {
+        "req": {"enum": ["getLog","rmLog"]},
+        "offset": {"type": "integer"},
+        "result": {"type": "string"},
+        "package": {"type": "string", "description": "base64 chunk"},
+        "b64Len": {"type": "integer"}, "pLen": {"type": "integer"}, "totalLen": {"type": "integer"}
+      }
+    }
+  }
+}
