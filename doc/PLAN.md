@@ -619,11 +619,15 @@ the moment the item is genuinely done, and commit that tick together with the wo
 describes — see `AGENTS.md`. Each phase ends in something observable.
 
 ### Phase 0 — Re-home tool (no Rust; unblocks every live test)
-- [ ] `tools/rehome.py` skeleton: argparse, UDP send/recv with timeout + retries, `--dry-run`, `--trace`
-- [ ] `discover` sprays `getID` across 9000–9999 and reports the robot's `ip:port`
+- [x] `tools/rehome.py` skeleton: argparse, UDP send/recv with timeout + retries, `--dry-run`, `--trace`
+- [x] `discover` sprays `getID` across 9000–9999 and reports the robot's `ip:port`
 - [ ] `info` / `scan` (`getSn`, `getCfg`, `checkPwd`, `getWifi`) against the real robot
-- [ ] `set-url`, `set-gateway`, `set-sta`, `set-ap`, `reset-wifi`, `get-log`
-- [ ] `rehome` runs the full sequence in the right order (`set-sta` last)
+- [x] `set-url`, `set-gateway`, `set-sta`, `set-ap`, `reset-wifi`, `get-log`
+- [x] `rehome` runs the full sequence in the right order (`set-sta` last)
+
+Every subcommand is verified against `tools/fakerobot.py`, a stand-in that answers the
+documented channel-C shapes; the one open box needs the actual vacuum, which is the
+only thing a fake cannot stand in for.
 
 **Done when:** the robot's channel-A base URL and channel-B gateway point at a host we
 choose, and it is on our Wi-Fi.
