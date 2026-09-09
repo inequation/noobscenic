@@ -15,3 +15,10 @@ Ticking a box also means rewriting the one-sentence **status** line at the end o
 [`README.md`](README.md) to match where the project now stands, so that someone who
 reads only the README is not misled. Keep it to a single sentence, and put it in that
 same commit.
+
+## Glossary
+
+Whenever you invent a new term for an abstraction in this project (a name for a
+component, pattern, or concept that isn't already documented), add a plain-language
+explanation of it to [`GLOSSARY.md`](GLOSSARY.md) in the same commit that introduces
+the term.
