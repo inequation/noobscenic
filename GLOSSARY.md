@@ -3,6 +3,26 @@
 Plain-language explanations of terms this project uses for its own abstractions.
 See `AGENTS.md` for when to add to this file.
 
+## Sink
+
+A "sink" is one of the places a tapped record actually gets written to — the
+destination end of the wire tap, as opposed to `Tap` itself, which is the single
+point every caller records *through*. A tap can feed zero, one, or both of its
+sinks per event, depending on config (`format: "jsonl" | "raw" | "both"`); each
+sink decides independently how to represent the same record on disk.
+
+This project has two:
+
+- `jsonl::JsonlSink` (`src/wire/jsonl.rs`) — appends one JSON object per line to
+  a rotating `wire-YYYY-MM-DD.jsonl` file, truncating and redacting the body per
+  config.
+- `raw::RawSink` (`src/wire/raw.rs`) — writes the body verbatim to its own file
+  under `raw/<date>/<seq>.<kind>.bin`, with no truncation or redaction.
+
+Both sinks are owned by `wire::Tap`'s inner state and written to synchronously,
+in the same call to `Tap::record()`, so a caller never needs to know which sinks
+are active — it just records, and whichever sinks are enabled receive the event.
+
 ## Tap
 
 A "tap" is the object you attach to a line to listen in on it without disturbing
