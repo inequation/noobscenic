@@ -3,6 +3,23 @@
 Plain-language explanations of terms this project uses for its own abstractions.
 See `AGENTS.md` for when to add to this file.
 
+## Tap
+
+A "tap" is the object you attach to a line to listen in on it without disturbing
+what flows through — the same sense as a phone tap. In code, `wire::Tap`
+(`src/wire/mod.rs`) is the single component every device read/write path calls
+into to record traffic; nothing about the connection's own behavior depends on
+whether a tap is attached. It can be `Tap::disabled()` (a no-op, at no cost) or a
+live tap backed by the JSONL and raw sinks described under **Wire** below.
+
+Calling code doesn't reach into the sinks directly — it builds a `Record`
+(channel, direction, kind, body, and any metadata) and hands it to
+`Tap::record()`, which timestamps and sequences it, fans it out to whichever
+sinks are enabled, and hands back a `Recorded` reference (e.g. `"#1841"`) that
+the caller can store alongside whatever the bytes produced. A tap can also be
+switched on or off at runtime (the console's `trace on|off`) without restarting
+the server.
+
 ## Wire
 
 "The wire" is the traffic between the server and a robot: every byte the server
