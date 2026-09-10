@@ -628,13 +628,11 @@ describes — see `AGENTS.md`. Each phase ends in something observable.
 - [x] `rehome` runs the full sequence in the right order (`set-sta` last)
 
 Every subcommand is verified against `tools/fakerobot.py`, a stand-in that answers the
-documented channel-C shapes. The open box is **blocked, not merely pending**: the unit
-on the bench (`Proscenic-6716_20403551`) has nothing listening on UDP 9000-9999 and
-does not announce itself, so §C's discovery may not describe it at all — see
-[`doc/reverse-engineering/FIELD_NOTES.md`](reverse-engineering/FIELD_NOTES.md). The
-phase's goal can still be met without channel C, by DNS-overriding
-`mobile.proscenic.cn` on the LAN; `portscan` and `listen` are the tools for settling
-which route this unit needs.
+documented channel-C shapes. The bench unit (`Proscenic-6716_20403551`) answers on
+**UDP 7913**, outside the documented `rand()%1000 + 9000` range, which is why the sweep
+now defaults to `7000-9999`; `getSn`, `getCfg` and `checkPwd` all work against it. The
+open box is waiting only on `getWifi` — see
+[`doc/reverse-engineering/FIELD_NOTES.md`](reverse-engineering/FIELD_NOTES.md).
 
 **Done when:** the robot's channel-A base URL and channel-B gateway point at a host we
 choose, and it is on our Wi-Fi.

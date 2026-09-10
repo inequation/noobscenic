@@ -5,8 +5,10 @@ Protocol reference: ../doc/reverse-engineering/PROTOCOL.md section C, and
 doc/PLAN.md section 13. Standard library only, on purpose: this usually runs from a
 laptop that has just joined the robot's `LDRobot` soft-AP with nothing installed.
 
-The robot's LAN control server binds a UDP port chosen as rand()%1000 + 9000, so the
-port changes on every boot and `discover` has to sweep the whole 9000-9999 range.
+The robot's LAN control server binds a UDP port that the firmware sample picks as
+rand()%1000 + 9000, so `discover` has to sweep for it. Do not trust that range: the
+bench unit answers on **7913**, outside it entirely (see FIELD_NOTES.md), so the sweep
+defaults to 7000-9999 and `--discover-ports` widens it.
 
 Typical use, with the robot in pairing mode (soft-AP `LDRobot`, robot at
 192.168.78.1) and this machine joined to that AP:
@@ -36,7 +38,10 @@ import sys
 import time
 
 DEFAULT_TARGET = "192.168.78.1"  # the robot in soft-AP pairing mode
-PORT_LO, PORT_HI = 9000, 9999  # rand()%1000 + 9000
+# The LS_S6 firmware picks rand()%1000 + 9000, but the bench unit answers on 7913, so
+# the default sweep covers both bases. Widen it with --discover-ports if a unit hides
+# elsewhere; "1024-65535" works and costs a few seconds more.
+DEFAULT_DISCOVER_PORTS = "7000-9999"
 PWD_MIN, PWD_MAX = 8, 64  # enforced by the device's setSta handler
 SECRET_KEYS = ("staPwd", "pwd", "password")
 
@@ -203,8 +208,8 @@ class Channel:
 
     # -- discovery --------------------------------------------------------
 
-    def discover(self, settle: float = 2.0) -> list[tuple[str, int]]:
-        """Spray {"cmd":"getID"} across 9000-9999 and collect whoever answers."""
+    def discover(self, ports: list[int], settle: float = 2.0) -> list[tuple[str, int]]:
+        """Spray {"cmd":"getID"} across `ports` and collect whoever answers."""
         found: list[tuple[str, int]] = []
         seen: set[tuple[str, int]] = set()
         probe = {"cmd": "getID"}
@@ -212,14 +217,16 @@ class Channel:
         if self.dry_run:
             self._say(
                 "  [dry-run] would send %s to %s ports %d-%d"
-                % (json.dumps(probe), self.target, PORT_LO, PORT_HI)
+                % (json.dumps(probe), self.target, ports[0], ports[-1])
             )
             return []
 
         sock = self._socket()
         raw = json.dumps(probe).encode("utf-8")
-        self._record("tx", "%s:%d-%d" % (self.target, PORT_LO, PORT_HI), json.dumps(probe), probe)
-        for index, port in enumerate(range(PORT_LO, PORT_HI + 1)):
+        self._record(
+            "tx", "%s:%d-%d" % (self.target, ports[0], ports[-1]), json.dumps(probe), probe
+        )
+        for index, port in enumerate(ports):
             try:
                 sock.sendto(raw, (self.target, port))
             except OSError:
@@ -257,12 +264,13 @@ class Channel:
 # -- subcommands ----------------------------------------------------------
 
 
-def need_port(chan: Channel, settle: float) -> None:
+def need_port(chan: Channel, args) -> None:
     """Make sure the channel knows which port to talk to."""
     if chan.port is not None:
         return
-    print("discovering (sweeping UDP %d-%d on %s)..." % (PORT_LO, PORT_HI, chan.target))
-    found = chan.discover(settle)
+    ports = parse_ports(args.discover_ports)
+    print("discovering (sweeping UDP %d-%d on %s)..." % (ports[0], ports[-1], chan.target))
+    found = chan.discover(ports, args.settle)
     if not found:
         raise ProtocolError(
             "no robot answered getID on %s. Is the robot in pairing mode and is this "
@@ -276,8 +284,9 @@ def need_port(chan: Channel, settle: float) -> None:
 
 
 def cmd_discover(chan: Channel, args) -> int:
-    print("sweeping UDP %d-%d on %s..." % (PORT_LO, PORT_HI, chan.target))
-    found = chan.discover(args.settle)
+    ports = parse_ports(args.discover_ports)
+    print("sweeping UDP %d-%d on %s..." % (ports[0], ports[-1], chan.target))
+    found = chan.discover(ports, args.settle)
     if not found:
         print("no responders", file=sys.stderr)
         return EXIT_FAIL
@@ -287,7 +296,7 @@ def cmd_discover(chan: Channel, args) -> int:
 
 
 def cmd_info(chan: Channel, args) -> int:
-    need_port(chan, args.settle)
+    need_port(chan, args)
     answered = 0
     for cmd in ("getSn", "getCfg", "checkPwd"):
         try:
@@ -303,7 +312,7 @@ def cmd_info(chan: Channel, args) -> int:
 
 
 def cmd_scan(chan: Channel, args) -> int:
-    need_port(chan, args.settle)
+    need_port(chan, args)
     reply = chan.command("getWifi")
     networks = reply.get("wifi_list", [])
     if not networks:
@@ -322,14 +331,14 @@ def normalise_url(url: str) -> str:
 
 
 def cmd_set_url(chan: Channel, args) -> int:
-    need_port(chan, args.settle)
+    need_port(chan, args)
     reply = chan.command("setUrl", url=normalise_url(args.url))
     print("setUrl ok: %s" % json.dumps(reply, ensure_ascii=False))
     return EXIT_OK
 
 
 def cmd_set_gateway(chan: Channel, args) -> int:
-    need_port(chan, args.settle)
+    need_port(chan, args)
     reply = chan.command("setUrl", ip=args.ip, port=args.port_number)
     print("setUrl(ip/port) ok: %s" % json.dumps(reply, ensure_ascii=False))
     return EXIT_OK
@@ -344,7 +353,7 @@ def check_passphrase(pwd: str) -> None:
 
 
 def cmd_set_sta(chan: Channel, args) -> int:
-    need_port(chan, args.settle)
+    need_port(chan, args)
     check_passphrase(args.pwd)
     reply = chan.command("setSta", ssid=args.ssid, **{args.pwd_key: args.pwd})
     print("setSta ok: %s" % json.dumps(reply, ensure_ascii=False))
@@ -353,7 +362,7 @@ def cmd_set_sta(chan: Channel, args) -> int:
 
 
 def cmd_set_ap(chan: Channel, args) -> int:
-    need_port(chan, args.settle)
+    need_port(chan, args)
     fields: dict = {}
     if args.ssid:
         fields["ssid"] = args.ssid
@@ -367,7 +376,7 @@ def cmd_set_ap(chan: Channel, args) -> int:
 
 
 def cmd_reset_wifi(chan: Channel, args) -> int:
-    need_port(chan, args.settle)
+    need_port(chan, args)
     reply = chan.command("resetWifi")
     print("resetWifi ok: %s" % json.dumps(reply, ensure_ascii=False))
     return EXIT_OK
@@ -375,7 +384,7 @@ def cmd_reset_wifi(chan: Channel, args) -> int:
 
 def cmd_get_log(chan: Channel, args) -> int:
     """Pull the device log package. Chunk field shapes are unverified (PLAN section 16)."""
-    need_port(chan, args.settle)
+    need_port(chan, args)
     offset, chunks, total = 0, [], None
     for _ in range(args.max_chunks):
         reply = chan.request({"req": "getLog", "offset": offset})
@@ -417,7 +426,7 @@ def cmd_rehome(chan: Channel, args) -> int:
     url = normalise_url(args.url or "http://%s:%d/" % (args.server_host, args.http_port))
     gateway_ip = args.gateway_ip or args.server_host
 
-    need_port(chan, args.settle)
+    need_port(chan, args)
 
     print("1/4 setUrl  %s" % url)
     chan.command("setUrl", url=url)
@@ -622,6 +631,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--timeout", type=float, default=1.0, help="per-reply timeout, seconds")
     parser.add_argument("--retries", type=int, default=2, help="resends before giving up")
     parser.add_argument("--settle", type=float, default=2.0, help="discovery collection window, seconds")
+    parser.add_argument("--discover-ports", default=DEFAULT_DISCOVER_PORTS, metavar="RANGE",
+                        help="ports the getID sweep covers (default %(default)s)")
     parser.add_argument("--trace", metavar="FILE", help="append a JSONL trace of every datagram")
     parser.add_argument("--dry-run", action="store_true", help="print datagrams, send nothing")
     parser.add_argument("--show-secrets", action="store_true", help="do not redact passphrases")

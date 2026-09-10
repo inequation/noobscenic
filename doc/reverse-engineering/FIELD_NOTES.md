@@ -15,7 +15,9 @@ is evidently not one thing.
 | AP address | 192.168.78.1 | 192.168.78.1 — matches |
 | AP DHCP pool | 192.168.78.50-150 | station got .111 — consistent |
 | ICMP | — | responds |
-| Channel-C `getID` on UDP 9000-9999 | discovery/identify | **nothing listening** |
+| Channel-C `getID` port | `rand()%1000 + 9000` | **UDP 7913** — outside that range |
+| Serial (`getSn`) | — | `LSLDSM7PRO20403551` — LDRobot LS/LDS lineage |
+| TCP surface | — | only 53; no TCP/HTTP pairing service |
 | BSSID | — | `ae:1d:df:67:16:f4` (locally administered bit set, so no OUI lookup) |
 
 `6716` appears nowhere in the firmware-derived documents.
@@ -104,6 +106,54 @@ is a Native WiFi capture, which is what makes the mislabelling so easy to miss.
 * Not yet excluded: that the provisioning service only listens during a limited window
   or after a specific button sequence, rather than for as long as the AP is up.
 
+### 2026-09-10 (later) — resolved: the service is on **UDP 7913**
+
+A full nmap sweep with the real probe as the payload found it immediately:
+
+```
+sudo nmap -Pn -n -sU -p- -T4 --defeat-icmp-ratelimit \
+     --data-string '{"cmd":"getID"}' --open --reason -oA robot-udp 192.168.78.1
+   53/udp   open  domain     udp-response ttl 63
+   7913/udp open  qo-secure  udp-response ttl 63
+```
+
+`--data-string` is what made this work: the service answers a *valid* command and
+ignores everything else, so nmap's default empty UDP probes would have found nothing.
+A companion TCP scan found **only 53/tcp** (65534 resets), so there is no TCP or HTTP
+pairing surface on this unit — channel C really is the only local control path.
+
+**The command set is the documented one.** Against port 7913:
+
+```
+getSn     {"cmd": "getSn", "result": "ok", "sn": "LSLDSM7PRO20403551"}
+getCfg    {"cmd": "getCfg", "result": "ok"}
+checkPwd  {"cmd": "checkPwd", "result": "ok", "code": 0}
+```
+
+#### Corrections to the earlier entry
+
+* **The SSID divergence was a red herring as far as the protocol goes.** The serial
+  `LSLDSM7PRO20403551` reads as LDRobot LS / LDS / M7 Pro, and its tail matches the
+  `…_20403551` in the AP SSID. This *is* the platform the firmware sample came from;
+  `6716` is a model or batch marker, not a different stack. `PROTOCOL.md` §C's command
+  set applies as written.
+* **Only the port range was wrong.** `rand()%1000 + 9000` does not describe this
+  firmware — 7913 is outside it entirely. `7913` is consistent with a `rand()%1000 +
+  7000` variant, but a single observation cannot tell a re-based random pick from a
+  fixed port. **Unresolved: does 7913 survive a reboot?** `tools/rehome.py` now sweeps
+  `7000-9999` by default and takes `--discover-ports` for anything wider.
+* The "provisioning service only listens in a window" hypothesis is dead; it was
+  listening the whole time, just not where anyone was looking.
+
+#### `getCfg` returned nothing
+
+No `staName`, `staPwd`, `staIp` or `staMac` — just `{"cmd","result"}`. Either this unit
+holds no station credentials (consistent with `checkPwd` code `0`, and with the ARP from
+an APIPA address in the earlier entry), or this firmware omits the fields. If it is the
+former, **the DNS-override shortcut below is not available on this unit**: it has no
+network to rejoin, so it has to be told one over channel C first. Worth re-checking
+`getCfg` after a successful `setSta`, which also settles which reading is right.
+
 #### Consequence for noobscenic
 
 Nothing here contradicts the **channel A/B** contract, and finding 5 is positive
@@ -111,28 +161,27 @@ evidence that this unit talks to the same vendor infrastructure the firmware sam
 does. Only **channel C** — the convenience of setting the cloud URL over the air — is
 in question.
 
-That makes the **DNS-override route** (`REPORT.md` §6.1) the preferred path for this
-unit: if it still holds the owner's Wi-Fi credentials, take it out of pairing mode, let
-it rejoin the LAN, and point `mobile.proscenic.cn` at the noobscenic host from the
-router or a local resolver. The device does no TLS validation (`REPORT.md` §3), and
-`getSockAddr` is answered by us, so that yields full control with no pairing protocol
-needed at all.
+With 7913 found, **channel C is the route for this unit** and the normal
+`rehome` sequence applies — pass `-p 7913`, or let `discover` find it.
 
-#### Next steps
+The **DNS-override route** (`REPORT.md` §6.1) remains the fallback, and is still the
+better answer for a unit already living on the owner's LAN: point
+`mobile.proscenic.cn` at the noobscenic host from the router or a local resolver. The
+device does no TLS validation (`REPORT.md` §3) and `getSockAddr` is answered by us, so
+it yields full control with no pairing protocol at all. It needs the robot to already
+have credentials, which — see `getCfg` above — this one may not.
 
-* **Full TCP scan.** Only UDP 9000-9999 has been swept; TCP has never been scanned
-  except incidentally on 53. Many units of this class pair over TCP or HTTP.
-  `tools/rehome.py portscan --proto tcp` or `nmap -sS -p- 192.168.78.1`.
-* **Wider UDP sweep**, paced so the ICMP rate limit does not turn closed ports into
-  ambiguous non-answers: `tools/rehome.py portscan --proto udp --udp-ports 1-65535
-  --pace-ms 20`.
-* **Passive listen** in case the announcement is periodic but rare:
-  `tools/rehome.py listen --duration 300`.
-* **Capture the real app pairing.** The AP is open, so an over-the-air monitor-mode
-  capture needs no key and yields plaintext. The APK is packed (Qihoo 360 Jiagu, see
-  `APK_PACKING.md`), so this is the only practical route to the app side. On Windows,
-  Npcap's monitor mode depends on the NDIS driver and most Intel parts do not support
-  it; a cheap USB adapter (AR9271, RT5372, MT7612U, RTL8812AU) with Linux `iw dev …
-  set type monitor` is the dependable option. Capturing on the phone instead —
-  PCAPdroid on Android, or `rvictl` from a Mac for iOS — avoids the hardware entirely,
-  at the cost of possibly missing inbound broadcast.
+#### Still open
+
+* **Does 7913 move across reboots?** Power-cycle and re-run `discover`. A fixed port
+  makes discovery trivial; a moving one tells us the base of the RNG.
+* **`getWifi`** has not been exercised against this unit.
+* **`getCfg` after `setSta`** — settles whether the empty reply means "no credentials"
+  or "firmware omits the fields".
+* Capturing the real app's pairing session is no longer needed to make progress, but it
+  would still confirm the field names flagged as unverified in `PROTOCOL.md` §C
+  (`staPwd` vs `pwd`). The AP is open, so an over-the-air monitor-mode capture needs no
+  key. On Windows, Npcap's monitor mode depends on the NDIS driver and most Intel parts
+  do not support it; a cheap USB adapter (AR9271, RT5372, MT7612U, RTL8812AU) with
+  Linux `iw dev … set type monitor` is dependable. Capturing on the phone instead —
+  PCAPdroid on Android, `rvictl` from a Mac for iOS — avoids the hardware entirely.

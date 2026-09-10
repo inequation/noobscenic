@@ -117,11 +117,11 @@ def handle_log(msg: dict) -> dict:
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description="Fake Proscenic channel-C endpoint.")
     parser.add_argument("--bind", default="127.0.0.1")
-    parser.add_argument("--port", type=int, help="default: random in 9000-9999, like the robot")
+    parser.add_argument("--port", type=int, help="default: random in 7000-9999, like a real unit")
     parser.add_argument("--quiet", "-q", action="store_true")
     args = parser.parse_args(argv)
 
-    port = args.port if args.port else random.randrange(9000, 10000)
+    port = args.port if args.port else random.randrange(7000, 10000)
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind((args.bind, port))
     print("fake robot listening on %s:%d" % (args.bind, port), flush=True)
