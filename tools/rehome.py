@@ -17,6 +17,10 @@ Typical use, with the robot in pairing mode (soft-AP `LDRobot`, robot at
 
 `rehome` sets the cloud URL and the push-gateway address first and moves the robot to
 your Wi-Fi last, because that last step tears down the AP we are talking over.
+
+If `discover` finds nothing, the unit may not speak this protocol at all — see
+../doc/reverse-engineering/FIELD_NOTES.md. `portscan` and `listen` are the tools for
+working out what it does speak.
 """
 
 from __future__ import annotations
@@ -24,7 +28,9 @@ from __future__ import annotations
 import argparse
 import base64
 import binascii
+import concurrent.futures
 import json
+import selectors
 import socket
 import sys
 import time
@@ -35,6 +41,14 @@ PWD_MIN, PWD_MAX = 8, 64  # enforced by the device's setSta handler
 SECRET_KEYS = ("staPwd", "pwd", "password")
 
 EXIT_OK, EXIT_FAIL, EXIT_USAGE = 0, 1, 2
+
+# Ports worth a look when the documented 9000-9999 range comes back closed, as it
+# does on the Proscenic-6716 unit (see ../doc/reverse-engineering/FIELD_NOTES.md):
+# common IoT provisioning and discovery services.
+SUSPECT_UDP_PORTS = (
+    "53,67,68,123,161,1900,3702,5353,5683,6666,6667,7777,8888,9000-9010,"
+    "10000,18888,30303,38899,48899,49152,54321,58866"
+)
 
 
 class ProtocolError(Exception):
@@ -430,6 +444,169 @@ def cmd_rehome(chan: Channel, args) -> int:
     return EXIT_OK
 
 
+def parse_ports(spec: str) -> list[int]:
+    """"80", "1-1024", "53,9000-9010" -> a sorted list of port numbers."""
+    ports: set[int] = set()
+    for part in spec.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            low, _, high = part.partition("-")
+            ports.update(range(int(low), int(high) + 1))
+        else:
+            ports.add(int(part))
+    bad = [p for p in ports if not 1 <= p <= 65535]
+    if bad:
+        raise ProtocolError("port out of range: %s" % bad[0])
+    return sorted(ports)
+
+
+def probe_tcp(host: str, port: int, timeout: float) -> bool:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(timeout)
+    try:
+        sock.connect((host, port))
+        return True
+    except OSError:
+        return False
+    finally:
+        sock.close()
+
+
+def probe_udp(host: str, port: int, payload: bytes, timeout: float) -> tuple[str, bytes | None]:
+    """Classify a UDP port by connecting the socket first.
+
+    A connected UDP socket surfaces the ICMP port-unreachable the device sends for a
+    closed port as ECONNREFUSED, which is what lets this tell "closed" apart from
+    "nothing came back" without root or a raw socket. Note that the device rate-limits
+    ICMP errors (Linux does ~1/second), so on a wide sweep most closed ports still look
+    like `no-response`; pace the scan if you need certainty.
+    """
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.settimeout(timeout)
+    try:
+        sock.connect((host, port))
+        sock.send(payload)
+        try:
+            return "open", sock.recv(65535)
+        except ConnectionRefusedError:
+            return "closed", None
+        except socket.timeout:
+            return "no-response", None
+    except ConnectionRefusedError:
+        return "closed", None
+    except OSError as exc:
+        return "error: %s" % exc, None
+    finally:
+        sock.close()
+
+
+def cmd_portscan(chan: Channel, args) -> int:
+    """Find out what the robot is actually listening on."""
+    found_any = False
+
+    if args.proto in ("tcp", "both"):
+        ports = parse_ports(args.tcp_ports)
+        print("TCP: scanning %d ports on %s..." % (len(ports), chan.target))
+        opened = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as pool:
+            futures = {pool.submit(probe_tcp, chan.target, p, args.probe_timeout): p for p in ports}
+            for future in concurrent.futures.as_completed(futures):
+                if future.result():
+                    opened.append(futures[future])
+        for port in sorted(opened):
+            print("  %5d/tcp  open" % port)
+            found_any = True
+        if not opened:
+            print("  (nothing open)")
+
+    if args.proto in ("udp", "both"):
+        ports = parse_ports(args.udp_ports)
+        payload = json.dumps({"cmd": "getID"}).encode("utf-8")
+        print("UDP: probing %d ports on %s with %s..."
+              % (len(ports), chan.target, payload.decode()))
+        closed = 0
+        for port in ports:
+            verdict, data = probe_udp(chan.target, port, payload, args.probe_timeout)
+            if verdict == "closed":
+                closed += 1
+                continue
+            if verdict == "open":
+                text = data.decode("utf-8", "replace") if data else ""
+                print("  %5d/udp  ANSWERED  %s" % (port, text[:200]))
+                found_any = True
+            elif verdict.startswith("error"):
+                print("  %5d/udp  %s" % (port, verdict))
+            elif args.show_all:
+                print("  %5d/udp  no-response" % port)
+            if args.pace_ms:
+                time.sleep(args.pace_ms / 1000.0)
+        print("  %d ports answered ICMP unreachable (definitely closed)" % closed)
+
+    return EXIT_OK if found_any else EXIT_FAIL
+
+
+def cmd_listen(chan: Channel, args) -> int:
+    """Bind and wait, sending nothing, in case the device announces itself.
+
+    This only sees datagrams aimed at the ports it binds. For complete coverage use a
+    real capture (`tcpdump -i <iface> -n udp`); this is the no-tcpdump fallback.
+    """
+    ports = parse_ports(args.ports)
+    selector = selectors.DefaultSelector()
+    socks = []
+    for port in ports:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        try:
+            sock.bind(("", port))
+        except OSError as exc:
+            print("  cannot bind %d: %s" % (port, exc), file=sys.stderr)
+            sock.close()
+            continue
+        selector.register(sock, selectors.EVENT_READ, port)
+        socks.append(sock)
+
+    if not socks:
+        raise ProtocolError("could not bind any of the requested ports")
+
+    print("listening on %d UDP ports for %.0fs (sending nothing)..."
+          % (len(socks), args.duration))
+    deadline = time.monotonic() + args.duration
+    heard = 0
+    try:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            for key, _ in selector.select(timeout=min(remaining, 1.0)):
+                data, addr = key.fileobj.recvfrom(65535)
+                heard += 1
+                try:
+                    traced = data.decode("utf-8")
+                except UnicodeDecodeError:
+                    traced = "base64:" + base64.b64encode(data).decode("ascii")
+                text = data.decode("utf-8", "replace")
+                chan._record("rx", "%s:%d" % addr, traced, None)
+                print("  %s  %s:%d -> :%d  %d bytes"
+                      % (now_iso(), addr[0], addr[1], key.data, len(data)))
+                try:
+                    print("      json: %s" % json.dumps(json.loads(text), ensure_ascii=False))
+                except json.JSONDecodeError:
+                    print("      raw:  %r" % data[:200])
+    except KeyboardInterrupt:
+        print("  interrupted")
+    finally:
+        for sock in socks:
+            sock.close()
+        selector.close()
+
+    print("heard %d datagram(s)" % heard)
+    return EXIT_OK if heard else EXIT_FAIL
+
+
 # -- argument parsing -----------------------------------------------------
 
 
@@ -488,6 +665,23 @@ def build_parser() -> argparse.ArgumentParser:
     p_log.add_argument("-o", "--out", default="device-log.bin")
     p_log.add_argument("--max-chunks", type=int, default=512)
     p_log.set_defaults(func=cmd_get_log)
+
+    p_ps = subs.add_parser("portscan", help="find what the robot actually listens on")
+    p_ps.add_argument("--proto", choices=("tcp", "udp", "both"), default="both")
+    p_ps.add_argument("--tcp-ports", default="1-65535")
+    p_ps.add_argument("--udp-ports", default=SUSPECT_UDP_PORTS)
+    p_ps.add_argument("--workers", type=int, default=256, help="TCP concurrency")
+    p_ps.add_argument("--probe-timeout", type=float, default=0.5,
+                      help="per-port timeout; separate from the global --timeout")
+    p_ps.add_argument("--pace-ms", type=float, default=0.0,
+                      help="delay between UDP probes; the device rate-limits ICMP errors")
+    p_ps.add_argument("--show-all", action="store_true", help="list no-response UDP ports too")
+    p_ps.set_defaults(func=cmd_portscan)
+
+    p_li = subs.add_parser("listen", help="wait for the device to announce itself")
+    p_li.add_argument("--ports", default=SUSPECT_UDP_PORTS)
+    p_li.add_argument("--duration", type=float, default=60.0, help="seconds")
+    p_li.set_defaults(func=cmd_listen)
 
     p_re = subs.add_parser("rehome", help="setUrl + setSta, in the right order")
     p_re.add_argument("--server-host", required=True, help="where noobscenic runs, as the robot sees it")

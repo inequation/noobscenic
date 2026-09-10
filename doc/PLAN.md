@@ -569,6 +569,8 @@ Subcommands:
 | `set-sta` | `{"cmd":"setSta","ssid":…,"staPwd":…}` | join our Wi-Fi |
 | `set-ap` / `reset-wifi` | `setAp` / `resetWifi` | back out |
 | `get-log` | `{"req":"getLog","offset":N}` | pull the device log package (base64) |
+| `portscan` | TCP connect + UDP `getID` probe | find what a unit actually listens on when `discover` comes back empty; a connected UDP socket surfaces the device's ICMP port-unreachable as `ECONNREFUSED`, which separates *closed* from *no answer* without root |
+| `listen` | – | bind and wait, sending nothing, in case the device announces itself |
 | `rehome` | the whole sequence | `discover` → `set-url` → `set-gateway` → verify with `getCfg` → `set-sta` last |
 
 Details that matter:
@@ -626,8 +628,13 @@ describes — see `AGENTS.md`. Each phase ends in something observable.
 - [x] `rehome` runs the full sequence in the right order (`set-sta` last)
 
 Every subcommand is verified against `tools/fakerobot.py`, a stand-in that answers the
-documented channel-C shapes; the one open box needs the actual vacuum, which is the
-only thing a fake cannot stand in for.
+documented channel-C shapes. The open box is **blocked, not merely pending**: the unit
+on the bench (`Proscenic-6716_20403551`) has nothing listening on UDP 9000-9999 and
+does not announce itself, so §C's discovery may not describe it at all — see
+[`doc/reverse-engineering/FIELD_NOTES.md`](reverse-engineering/FIELD_NOTES.md). The
+phase's goal can still be met without channel C, by DNS-overriding
+`mobile.proscenic.cn` on the LAN; `portscan` and `listen` are the tools for settling
+which route this unit needs.
 
 **Done when:** the robot's channel-A base URL and channel-B gateway point at a host we
 choose, and it is on our Wi-Fi.
