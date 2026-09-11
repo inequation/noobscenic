@@ -238,6 +238,31 @@ probes were provably on the wire and the application saw nothing.
 Windows) and drains replies *during* the sweep rather than only after it. Anyone
 writing another scanner against this device from Windows needs the same.
 
+### 2026-09-11 — serving the robot **over its own soft-AP**
+
+The re-home does not actually require `setSta`. The robot reaches the vendor cloud
+through whatever `setUrl` holds, and `192.168.78.0/24` is **directly connected on its
+AP interface**, so a server on that subnet is reachable with no Wi-Fi join, no default
+route, and no DHCP. The evidence that it will try is in the first entry above: while
+sitting in AP mode it ARPs once a second for an Alibaba address, i.e. it is already
+attempting to talk to the cloud from that state.
+
+So: join the robot's AP, point it at *this machine's* `192.168.78.x` address, and run
+the server there. `tools/rehome.py point-here` does exactly that — it detects the local
+address on the route to the robot and issues both `setUrl` forms, touching nothing
+else.
+
+Caveats worth knowing before trying it:
+
+* `network_proxy` may only read `/data/bin/Run/Config/url` at start-up, so a
+  power-cycle may be needed for the new URL to take effect. (The `ip`/`port` form is
+  documented to trigger a gateway reconnect, so that half may apply immediately.)
+* Give the machine a **static** address on `192.168.78.0/24` before power-cycling, or
+  the DHCP pool (`.50-.150`) may hand it a different one while the robot is rebooting,
+  and the URL will point at nothing.
+* The machine serving the robot has no internet while joined to that AP. noobscenic
+  needs none.
+
 #### Still open
 
 * **Why does `setSta` refuse?** Work through the four candidates above; `--pwd-key pwd`

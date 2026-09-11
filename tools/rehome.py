@@ -74,6 +74,23 @@ def now_iso() -> str:
     )
 
 
+# setSta is refused by at least one unit with the documented field names, and the
+# firmware notes flag them as unverified. These are the plausible alternatives; the
+# getter is documented to return staName/staPwd, so the setter may well want the pair.
+SSID_KEYS = ("ssid", "staName", "name", "wifiName", "staSsid")
+PWD_KEYS = ("staPwd", "pwd", "password", "passwd", "psk", "key")
+
+
+def local_ip_for(target: str) -> str:
+    """This machine's address on the route to `target`, without sending anything."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.connect((target, 9))  # UDP connect only sets the route, sends no packet
+        return sock.getsockname()[0]
+    finally:
+        sock.close()
+
+
 def quiet_icmp_resets(sock: socket.socket) -> None:
     """Stop Windows from failing recvfrom() because some *other* port was closed.
 
@@ -344,6 +361,7 @@ def cmd_info(chan: Channel, args) -> int:
             continue
         answered += 1
         print("%-9s %s" % (cmd, json.dumps(redact(reply, chan.show_secrets), ensure_ascii=False)))
+    print("%-9s %s  (this machine, as the robot sees it)" % ("localIp", local_ip_for(chan.target)))
     # One command failing is worth reporting but not fatal; all three failing means
     # we are not talking to the robot at all.
     return EXIT_OK if answered else EXIT_FAIL
@@ -670,6 +688,82 @@ def cmd_listen(chan: Channel, args) -> int:
     return EXIT_OK if heard else EXIT_FAIL
 
 
+def cmd_point_here(chan: Channel, args) -> int:
+    """Point the robot at this machine over its own soft-AP, without touching Wi-Fi.
+
+    The robot reaches the vendor cloud through whatever setUrl holds, and 192.168.78.0/24
+    is directly connected on its AP interface, so it can reach a server on that subnet
+    with no Wi-Fi join and no default route. That sidesteps setSta entirely.
+    """
+    need_port(chan, args)
+    host = args.ip or local_ip_for(chan.target)
+    url = normalise_url(args.url or "http://%s:%d/" % (host, args.http_port))
+
+    print("1/2 setUrl  %s" % url)
+    chan.command("setUrl", url=url)
+    print("2/2 setUrl  gateway %s:%d" % (host, args.gateway_port))
+    chan.command("setUrl", ip=host, port=args.gateway_port)
+
+    print()
+    print("done. Stay joined to the robot's AP and run noobscenic on this machine:")
+    print("    ./target/debug/noobscenic --data-dir ./var")
+    print("The robot will look for:")
+    print("  channel A (HTTP)    %s" % url)
+    print("  channel B (gateway) %s:%d" % (host, args.gateway_port))
+    print()
+    print("If nothing arrives within a few minutes, power-cycle the robot: the daemon")
+    print("may only read the URL at start-up. Give this machine a static address on")
+    print("192.168.78.0/24 first, so it is still reachable when the robot comes back.")
+    return EXIT_OK
+
+
+def cmd_probe_sta(chan: Channel, args) -> int:
+    """Work out what setSta actually wants, by trying the plausible field names.
+
+    The device answers in milliseconds and deterministically, so this is cheap. Real
+    credentials are used, which means a combination that works re-homes the robot for
+    real — so stop at the first one that does.
+    """
+    need_port(chan, args)
+    check_passphrase(args.pwd)
+    chan.retries = 0  # a wrong guess is answered at once; retrying only wastes time
+
+    attempts = [
+        ({sk: args.ssid, pk: args.pwd}, "%s + %s" % (sk, pk))
+        for sk in SSID_KEYS
+        for pk in PWD_KEYS
+    ]
+    # Last resort: every candidate name at once. A handler that reads the fields it
+    # knows and ignores the rest will accept this even if no single pair is right.
+    shotgun = {k: args.ssid for k in SSID_KEYS}
+    shotgun.update({k: args.pwd for k in PWD_KEYS})
+    attempts.append((shotgun, "every name at once"))
+
+    print("trying %d field-name combinations against setSta..." % len(attempts))
+    for fields, label in attempts:
+        try:
+            reply = chan.request(dict({"cmd": args.cmd}, **fields))
+        except NoReply:
+            # Silence here is suspicious in a good way: a working setSta tears down the
+            # AP we are talking over, so the reply can genuinely go missing.
+            print("  %-28s NO REPLY — the AP may have dropped, which would mean this"
+                  " WORKED. Check whether the robot joined your network." % label)
+            return EXIT_OK
+        if reply.get("result") == "ok":
+            print("  %-28s *** ACCEPTED *** %s"
+                  % (label, json.dumps(reply, ensure_ascii=False)))
+            print()
+            print("Record this in doc/reverse-engineering/FIELD_NOTES.md.")
+            return EXIT_OK
+        if args.verbose:
+            print("  %-28s %s" % (label, json.dumps(reply, ensure_ascii=False)))
+    print("  every combination was refused.")
+    print("  Next: is the SSID 2.4GHz? Does a successful `scan` first change anything?")
+    print("  Does the passphrase contain \" $ ` or \\, which would break the shell")
+    print("  command the handler builds?")
+    return EXIT_FAIL
+
+
 # -- argument parsing -----------------------------------------------------
 
 
@@ -750,6 +844,21 @@ def build_parser() -> argparse.ArgumentParser:
     p_li.add_argument("--ports", default=SUSPECT_UDP_PORTS)
     p_li.add_argument("--duration", type=float, default=60.0, help="seconds")
     p_li.set_defaults(func=cmd_listen)
+
+    p_ph = subs.add_parser("point-here",
+                           help="point the robot at this machine over its own AP (no setSta)")
+    p_ph.add_argument("--ip", help="override the auto-detected address of this machine")
+    p_ph.add_argument("--http-port", type=int, default=8080)
+    p_ph.add_argument("--gateway-port", type=int, default=8081)
+    p_ph.add_argument("--url", help="override the derived base URL")
+    p_ph.set_defaults(func=cmd_point_here)
+
+    p_pr = subs.add_parser("probe-sta", help="brute-force the setSta field names")
+    p_pr.add_argument("--ssid", required=True)
+    p_pr.add_argument("--pwd", required=True, help="8-64 characters")
+    p_pr.add_argument("--cmd", default="setSta", help="command to probe (try applyCfg too)")
+    p_pr.add_argument("--verbose", "-v", action="store_true", help="show every refusal")
+    p_pr.set_defaults(func=cmd_probe_sta)
 
     p_re = subs.add_parser("rehome", help="setUrl + setSta, in the right order")
     p_re.add_argument("--server-host", required=True, help="where noobscenic runs, as the robot sees it")

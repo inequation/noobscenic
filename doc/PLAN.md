@@ -571,6 +571,8 @@ Subcommands:
 | `get-log` | `{"req":"getLog","offset":N}` | pull the device log package (base64) |
 | `portscan` | TCP connect + UDP `getID` probe | find what a unit actually listens on when `discover` comes back empty; a connected UDP socket surfaces the device's ICMP port-unreachable as `ECONNREFUSED`, which separates *closed* from *no answer* without root |
 | `listen` | – | bind and wait, sending nothing, in case the device announces itself |
+| `point-here` | `setUrl` at this machine's own address | serve the robot over its **own** soft-AP, with no Wi-Fi join at all — its AP subnet is directly connected, so `setSta` is not needed |
+| `probe-sta` | `setSta` with each candidate field name | work out what a unit's `setSta` actually wants when the documented names are refused |
 | `rehome` | the whole sequence | `discover` → `set-url` → `set-gateway` → verify with `getCfg` → `set-sta` last |
 
 Details that matter:
@@ -635,7 +637,8 @@ open box is waiting only on `getWifi` — see
 [`doc/reverse-engineering/FIELD_NOTES.md`](reverse-engineering/FIELD_NOTES.md).
 
 **Done when:** the robot's channel-A base URL and channel-B gateway point at a host we
-choose, and it is on our Wi-Fi.
+choose, and it can reach that host. Joining our Wi-Fi is the obvious way but not the
+only one: `point-here` serves the robot over its own soft-AP, which needs no `setSta`.
 
 ### Phase 1 — Skeleton
 - [x] Cargo project, module layout, `error.rs`, graceful shutdown on Ctrl-C
