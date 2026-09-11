@@ -57,13 +57,35 @@ SUSPECT_UDP_PORTS = (
 
 
 class ProtocolError(Exception):
-    """The robot answered, but not with what we asked for."""
+    """Something went wrong talking to the robot."""
+
+
+class NoReply(ProtocolError):
+    """Nothing came back within the timeout."""
+
+
+class CommandFailed(ProtocolError):
+    """The robot answered, and the answer was no."""
 
 
 def now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()) + ".%03dZ" % (
         int(time.time() * 1000) % 1000
     )
+
+
+def quiet_icmp_resets(sock: socket.socket) -> None:
+    """Stop Windows from failing recvfrom() because some *other* port was closed.
+
+    On Windows an unconnected UDP socket that draws an ICMP port-unreachable fails the
+    next recvfrom with WSAECONNRESET, so a sweep across a few thousand closed ports
+    drowns the one genuine reply. SIO_UDP_CONNRESET disables that. No-op elsewhere.
+    """
+    if hasattr(socket, "SIO_UDP_CONNRESET"):
+        try:
+            sock.ioctl(socket.SIO_UDP_CONNRESET, False)
+        except OSError:
+            pass
 
 
 def redact(msg: dict, show_secrets: bool) -> dict:
@@ -106,6 +128,7 @@ class Channel:
         if self.sock is None:
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            quiet_icmp_resets(self.sock)
             self.sock.settimeout(self.timeout)
         return self.sock
 
@@ -200,7 +223,7 @@ class Channel:
                 last_error = "unexpected reply shape: %r" % (reply,)
             if attempt < self.retries:
                 self._say("  no reply, retrying (%d/%d)" % (attempt + 1, self.retries))
-        raise ProtocolError(last_error)
+        raise NoReply(last_error)
 
     def command(self, cmd: str, **fields) -> dict:
         """Send {"cmd": ...} and insist the robot said ok."""
@@ -209,7 +232,7 @@ class Channel:
         reply = self.request(msg)
         result = reply.get("result")
         if result != "ok":
-            raise ProtocolError(
+            raise CommandFailed(
                 "%s failed: result=%r code=%r full=%s"
                 % (cmd, result, reply.get("code"), json.dumps(reply, ensure_ascii=False))
             )
@@ -241,20 +264,27 @@ class Channel:
             except OSError:
                 pass  # a closed port may bounce ICMP; keep sweeping
             if index % 100 == 99:
-                time.sleep(0.005)  # pace the sweep so nothing drops it as a flood
+                # Paces the sweep *and* picks up anything that has already answered,
+                # so an early reply cannot be buried behind thousands of later probes.
+                self._collect(sock, found, seen, 0.005)
 
-        deadline = time.monotonic() + settle
+        self._collect(sock, found, seen, settle)
+        return found
+
+    def _collect(self, sock, found, seen, budget: float) -> None:
+        """Drain whatever has arrived, for at most `budget` seconds."""
+        deadline = time.monotonic() + budget
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                break
+                return
             sock.settimeout(remaining)
             try:
                 data, addr = sock.recvfrom(65535)
             except socket.timeout:
-                break
+                return
             except OSError:
-                continue
+                continue  # ICMP noise from the closed ports; keep draining
             text = data.decode("utf-8", "replace")
             self._record("rx", "%s:%d" % addr, text, None)
             try:
@@ -267,7 +297,6 @@ class Channel:
                 seen.add(addr)
                 found.append(addr)
                 self._say("  found %s:%d  %s" % (addr[0], addr[1], json.dumps(reply)))
-        return found
 
 
 # -- subcommands ----------------------------------------------------------
@@ -372,7 +401,7 @@ def cmd_set_sta(chan: Channel, args) -> int:
     try:
         reply = chan.command("setSta", ssid=args.ssid, **{args.pwd_key: args.pwd})
         print("setSta ok: %s" % json.dumps(reply, ensure_ascii=False))
-    except ProtocolError as exc:
+    except NoReply as exc:
         print("no confirmation: %s" % exc, file=sys.stderr)
         print("(expected if the AP went away as it switched — verify on your LAN)")
     print("the robot is switching to station mode; the soft-AP is going away now.")
@@ -463,7 +492,7 @@ def cmd_rehome(chan: Channel, args) -> int:
     print("4/4 setSta  ssid=%s" % args.ssid)
     try:
         chan.command("setSta", ssid=args.ssid, **{args.pwd_key: args.pwd})
-    except ProtocolError as exc:
+    except NoReply as exc:
         # The device drops the soft-AP as it switches to station mode, so the
         # confirmation frequently never makes it back to us. That is not a failure,
         # and reporting it as one would send you chasing a re-home that worked.
@@ -524,11 +553,11 @@ def probe_udp(host: str, port: int, payload: bytes, timeout: float) -> tuple[str
         sock.send(payload)
         try:
             return "open", sock.recv(65535)
-        except ConnectionRefusedError:
-            return "closed", None
+        except (ConnectionRefusedError, ConnectionResetError):
+            return "closed", None          # Windows reports the ICMP error as a reset
         except socket.timeout:
             return "no-response", None
-    except ConnectionRefusedError:
+    except (ConnectionRefusedError, ConnectionResetError):
         return "closed", None
     except OSError as exc:
         return "error: %s" % exc, None

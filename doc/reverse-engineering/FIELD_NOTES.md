@@ -191,8 +191,57 @@ device does no TLS validation (`REPORT.md` §3) and `getSockAddr` is answered by
 it yields full control with no pairing protocol at all. It needs the robot to already
 have credentials, which — see `getCfg` above — this one may not.
 
+### 2026-09-11 — `setUrl` works, `setSta` is refused
+
+```
+-> {"cmd":"setUrl","url":"http://192.168.1.208:8080/"}   <- {"result":"ok"}
+-> {"cmd":"setUrl","ip":"192.168.1.208","port":8081}     <- {"result":"ok"}
+-> {"cmd":"getCfg"}                                      <- {"result":"ok"}      (still no fields)
+-> {"cmd":"setSta","ssid":"<ssid>","staPwd":"<pass>"}    <- {"result":"fail","code":-1}
+```
+
+**Both `setUrl` forms are accepted and persist.** The channel-A base URL and the
+channel-B gateway address are already set on this unit; only getting it onto a network
+remains.
+
+**`setSta` is refused in ~25 ms.** That timing is the useful part: `PROTOCOL.md` §C says
+the handler checks the passphrase length and then shells out to
+`cleanpack_mode -m sta -s … -p …`. Twenty-five milliseconds is too quick to have run
+that script, so this is the **validation** rejecting the request, not the Wi-Fi join
+failing. Candidates, in order:
+
+1. **Wrong passphrase field.** `PROTOCOL.md` §C flags `staPwd` vs `pwd` as unverified.
+   If this firmware reads `pwd`, it sees *no* passphrase, fails the 8-64 length check,
+   and returns `fail,-1` instantly — which is exactly the observed shape and timing.
+   Test with `--pwd-key pwd`.
+2. **A successful `getWifi` may be a precondition.** The app's flow is scan → user picks
+   → `setSta`, so the firmware may require the SSID to appear in the results of its last
+   scan. `getWifi` does not currently complete on this unit (above), which would
+   explain both failures with one cause.
+3. **Band.** These units are typically 2.4 GHz only; a 5 GHz-only or band-steered SSID
+   would not be in a scan list even if the scan worked.
+4. **Passphrase characters.** The handler interpolates the passphrase into a shell
+   command (`-p "<password>"`), so `"`, `$`, `` ` `` or `\` could break it — though that
+   would fail *after* running the script, not in 25 ms.
+
+#### ⚠ Windows: `SIO_UDP_CONNRESET` silently breaks UDP sweeps
+
+`discover` found nothing from a Windows host while `-p 7913 info` worked perfectly
+against the same device seconds later. The cause is not the robot: on Windows, an
+**unconnected** UDP socket that draws an ICMP port-unreachable fails the *next*
+`recvfrom` with `WSAECONNRESET`. A sweep across ~3000 closed ports produces a stream of
+those errors and the one genuine reply is lost behind them; a single unicast to an open
+port generates no ICMP and works. This also explains the very first capture, where the
+probes were provably on the wire and the application saw nothing.
+
+`tools/rehome.py` now calls `sock.ioctl(socket.SIO_UDP_CONNRESET, False)` (a no-op off
+Windows) and drains replies *during* the sweep rather than only after it. Anyone
+writing another scanner against this device from Windows needs the same.
+
 #### Still open
 
+* **Why does `setSta` refuse?** Work through the four candidates above; `--pwd-key pwd`
+  is the cheapest and the best-supported by the evidence.
 * **Does the late `getWifi` result ever arrive?** Re-run `scan` now that it waits 20s
   without retrying.
 * **`getCfg` after `setSta`** — settles whether the empty reply means "no credentials"
