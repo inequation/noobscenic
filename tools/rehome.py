@@ -181,6 +181,15 @@ class Channel:
                     break
                 text = data.decode("utf-8", "replace")
                 self._record("rx", "%s:%d" % addr, text, None)
+                if not data:
+                    # A zero-length datagram is the device answering with no payload,
+                    # which is not the same as silence and is worth saying plainly.
+                    last_error = (
+                        "empty datagram from %s:%d — the device answered but sent no "
+                        "payload; if this was getWifi, the scan result may simply be "
+                        "slower than --timeout" % addr
+                    )
+                    continue
                 try:
                     reply = json.loads(text)
                 except json.JSONDecodeError:
@@ -313,6 +322,11 @@ def cmd_info(chan: Channel, args) -> int:
 
 def cmd_scan(chan: Channel, args) -> int:
     need_port(chan, args)
+    # A scan takes the radio off the channel it is serving the AP on, so the result
+    # arrives seconds later and anything we send meanwhile can be lost. Wait, do not
+    # retry into the gap.
+    chan.timeout = args.scan_timeout
+    chan.retries = 0
     reply = chan.command("getWifi")
     networks = reply.get("wifi_list", [])
     if not networks:
@@ -355,8 +369,12 @@ def check_passphrase(pwd: str) -> None:
 def cmd_set_sta(chan: Channel, args) -> int:
     need_port(chan, args)
     check_passphrase(args.pwd)
-    reply = chan.command("setSta", ssid=args.ssid, **{args.pwd_key: args.pwd})
-    print("setSta ok: %s" % json.dumps(reply, ensure_ascii=False))
+    try:
+        reply = chan.command("setSta", ssid=args.ssid, **{args.pwd_key: args.pwd})
+        print("setSta ok: %s" % json.dumps(reply, ensure_ascii=False))
+    except ProtocolError as exc:
+        print("no confirmation: %s" % exc, file=sys.stderr)
+        print("(expected if the AP went away as it switched — verify on your LAN)")
     print("the robot is switching to station mode; the soft-AP is going away now.")
     return EXIT_OK
 
@@ -443,7 +461,14 @@ def cmd_rehome(chan: Channel, args) -> int:
         print("    warning: could not verify: %s" % exc, file=sys.stderr)
 
     print("4/4 setSta  ssid=%s" % args.ssid)
-    chan.command("setSta", ssid=args.ssid, **{args.pwd_key: args.pwd})
+    try:
+        chan.command("setSta", ssid=args.ssid, **{args.pwd_key: args.pwd})
+    except ProtocolError as exc:
+        # The device drops the soft-AP as it switches to station mode, so the
+        # confirmation frequently never makes it back to us. That is not a failure,
+        # and reporting it as one would send you chasing a re-home that worked.
+        print("    no confirmation: %s" % exc, file=sys.stderr)
+        print("    (expected if the AP went away as it switched — verify on your LAN)")
 
     print()
     print("done. The robot is joining %s and will look for:" % args.ssid)
@@ -648,7 +673,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     subs.add_parser("discover", help="find the robot's UDP control port").set_defaults(func=cmd_discover)
     subs.add_parser("info", help="getSn + getCfg + checkPwd").set_defaults(func=cmd_info)
-    subs.add_parser("scan", help="getWifi — list nearby access points").set_defaults(func=cmd_scan)
+    p_scan = subs.add_parser("scan", help="getWifi — list nearby access points")
+    p_scan.add_argument("--scan-timeout", type=float, default=20.0,
+                        help="how long to wait for the scan result (default %(default)ss)")
+    p_scan.set_defaults(func=cmd_scan)
 
     p_url = subs.add_parser("set-url", help="set the channel-A base URL")
     p_url.add_argument("url", help="e.g. http://192.168.1.10:8080/")

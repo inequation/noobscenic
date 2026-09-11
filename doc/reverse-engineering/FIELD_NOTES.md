@@ -15,7 +15,7 @@ is evidently not one thing.
 | AP address | 192.168.78.1 | 192.168.78.1 — matches |
 | AP DHCP pool | 192.168.78.50-150 | station got .111 — consistent |
 | ICMP | — | responds |
-| Channel-C `getID` port | `rand()%1000 + 9000` | **UDP 7913** — outside that range |
+| Channel-C `getID` port | `rand()%1000 + 9000`, per boot | **UDP 7913**, fixed across a power cycle |
 | Serial (`getSn`) | — | `LSLDSM7PRO20403551` — LDRobot LS/LDS lineage |
 | TCP surface | — | only 53; no TCP/HTTP pairing service |
 | BSSID | — | `ae:1d:df:67:16:f4` (locally administered bit set, so no OUI lookup) |
@@ -138,12 +138,32 @@ checkPwd  {"cmd": "checkPwd", "result": "ok", "code": 0}
   `6716` is a model or batch marker, not a different stack. `PROTOCOL.md` §C's command
   set applies as written.
 * **Only the port range was wrong.** `rand()%1000 + 9000` does not describe this
-  firmware — 7913 is outside it entirely. `7913` is consistent with a `rand()%1000 +
-  7000` variant, but a single observation cannot tell a re-based random pick from a
-  fixed port. **Unresolved: does 7913 survive a reboot?** `tools/rehome.py` now sweeps
-  `7000-9999` by default and takes `--discover-ports` for anything wider.
+  firmware — 7913 is outside it entirely. **7913 survived a power cycle**, so on this
+  unit it is a *fixed* port, not a per-boot random pick; the RNG behaviour in the
+  firmware notes does not apply here either. `tools/rehome.py` still sweeps
+  `7000-9999` by default rather than hardcoding it, since one unit is not a rule, and
+  takes `--discover-ports` for anything wider.
 * The "provisioning service only listens in a window" hypothesis is dead; it was
   listening the whole time, just not where anyone was looking.
+
+#### `getWifi` answers with an **empty datagram**
+
+```
+tools/rehome.py -p 7913 scan
+  error: non-JSON reply from 192.168.78.1:7913: ''      # a zero-length UDP packet
+  no reply, retrying (1/2) ... (2/2)
+```
+
+The device *answers* — a zero-length datagram is a real packet, not silence — and then
+goes quiet. The likely mechanism: `getWifi` starts a real scan, which takes the radio
+off the channel it is currently serving the AP on. So the empty datagram is an
+immediate acknowledgement, the result follows seconds later, and anything sent into
+that window (our retries) is lost while the radio is away.
+
+`tools/rehome.py scan` therefore waits `--scan-timeout` (20s default) and does **not**
+retry. Whether the late result actually arrives is unconfirmed. `getWifi` is a
+convenience only — `setSta` takes the SSID as a string — so this does not block a
+re-home.
 
 #### `getCfg` returned nothing
 
@@ -173,9 +193,8 @@ have credentials, which — see `getCfg` above — this one may not.
 
 #### Still open
 
-* **Does 7913 move across reboots?** Power-cycle and re-run `discover`. A fixed port
-  makes discovery trivial; a moving one tells us the base of the RNG.
-* **`getWifi`** has not been exercised against this unit.
+* **Does the late `getWifi` result ever arrive?** Re-run `scan` now that it waits 20s
+  without retrying.
 * **`getCfg` after `setSta`** — settles whether the empty reply means "no credentials"
   or "firmware omits the fields".
 * Capturing the real app's pairing session is no longer needed to make progress, but it
