@@ -166,6 +166,8 @@ src/
     simdev.rs           device simulator for tests (§14)
 tools/
   rehome.py             channel C client (§13)
+  catchall.py           logs whatever connects, with TLS SNI extraction (diagnosis)
+  fakerobot.py          channel C stand-in, for testing rehome.py without hardware
 tests/
   framing.rs  form.rs  register_flow.rs  e2e_simdev.rs
 ```

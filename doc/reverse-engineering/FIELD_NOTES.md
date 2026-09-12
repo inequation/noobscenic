@@ -356,6 +356,60 @@ wlan0: CTRL-EVENT-CONNECTED - Connection to 24:4b:fe:ee:4b:b0 completed
 
 Note it logs the Wi-Fi passphrase in clear, so treat a pulled log as a secret.
 
+### 2026-09-12 (later) — **channel C is AP-mode only**, and the robot still ignores us
+
+After a power cycle in station mode, with the robot associated and pingable
+(`192.168.1.243`, 0% packet loss):
+
+| Probe | Result |
+|---|---|
+| UDP 7000-9999 sweep (`getSn` and `getID`) | no responder anywhere |
+| UDP 7913, 9000, 9999, 8888, 6666, 2s timeout | no response |
+| TCP connect scan 1-10000 | nothing open |
+
+So **nothing is exposed in station mode**, which matches `REPORT.md` §4.1 ("all probed
+TCP ports *filtered* — no inbound services exposed in station mode").
+
+Earlier the same day channel C answered at `192.168.1.243:7913` over the LAN, which
+looked like "channel C works in station mode". It does not: that was *before* the
+reboot, so the provisioning daemon from the AP session was still running. A clean boot
+in station mode never starts it.
+
+**Practical consequence: do everything you need in a single AP session.** Once the
+robot leaves pairing mode there is no way to reconfigure it — no `setUrl`, no `getLog`,
+no `getCfg` — until it is put back into pairing mode by hand.
+
+**And it still has not contacted the server.** The robot is on the LAN, the server
+answers on `192.168.1.208:8080`, both `setUrl` values are confirmed stored in the
+device's own log — yet the trace holds nothing but our own curl probes. Either
+`network_proxy` never picked up the override, or it is using the vendor hostname
+regardless.
+
+#### Probing from a NAT'd VM cannot tell *closed* from *filtered*
+
+In AP mode the device returned ICMP port-unreachable for closed UDP ports. Through
+VirtualBox NAT none of those errors reach the guest, so every closed port looks like
+silence. Read a "no response" from inside the VM as "no answer", never as "nothing is
+listening".
+
+#### `tools/catchall.py` — find out where the robot is actually going
+
+Since the device cannot be interrogated in station mode, catch it instead. `catchall.py`
+listens on whatever ports you name, logs every connection, and **parses the SNI out of a
+TLS ClientHello**, which names the host the client believes it is contacting:
+
+```
+$ sudo tools/catchall.py --ports 80,443 --trace catch.jsonl --reply-http
+2026-09-12T09:42:35.294Z  192.168.1.243:48378 -> :443  TLS ClientHello, SNI=mobile.proscenic.cn
+```
+
+Pair it with a DNS override of `mobile.proscenic.cn` (and the `…com.de` region variant)
+pointing at the server. If that line appears, the robot is ignoring `setUrl` and still
+reaching for the vendor — and since the vendor URL is **HTTPS**, serving it needs the
+TLS listener that `doc/PLAN.md` §6 parks in phase 6. If *nothing* appears, the daemon is
+not attempting cloud contact at all, and the next step is `network_proxy`'s own log —
+which needs an AP session to fetch.
+
 #### Still open
 
 * **Why has `network_proxy` not contacted the server?** The robot is on the LAN, the
