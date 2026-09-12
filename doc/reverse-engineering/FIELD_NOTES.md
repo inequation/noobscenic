@@ -17,6 +17,7 @@ is evidently not one thing.
 | ICMP | — | responds |
 | Channel-C `getID` port | `rand()%1000 + 9000`, per boot | **UDP 7913**, fixed across a power cycle |
 | Serial (`getSn`) | — | `LSLDSM7PRO20403551` — LDRobot LS/LDS lineage |
+| `setSta` SSID field | `ssid` | **`staName`** — `ssid` is refused with `fail,-1` |
 | TCP surface | — | only 53; no TCP/HTTP pairing service |
 | BSSID | — | `ae:1d:df:67:16:f4` (locally administered bit set, so no OUI lookup) |
 
@@ -210,10 +211,8 @@ the handler checks the passphrase length and then shells out to
 that script, so this is the **validation** rejecting the request, not the Wi-Fi join
 failing. Candidates, in order:
 
-1. **Wrong passphrase field.** `PROTOCOL.md` §C flags `staPwd` vs `pwd` as unverified.
-   If this firmware reads `pwd`, it sees *no* passphrase, fails the 8-64 length check,
-   and returns `fail,-1` instantly — which is exactly the observed shape and timing.
-   Test with `--pwd-key pwd`.
+1. ~~**Wrong passphrase field.**~~ **Confirmed, but it was the *SSID* field, not the
+   passphrase** — see the next entry.
 2. **A successful `getWifi` may be a precondition.** The app's flow is scan → user picks
    → `setSta`, so the firmware may require the SSID to appear in the results of its last
    scan. `getWifi` does not currently complete on this unit (above), which would
@@ -223,6 +222,37 @@ failing. Candidates, in order:
 4. **Passphrase characters.** The handler interpolates the passphrase into a shell
    command (`-p "<password>"`), so `"`, `$`, `` ` `` or `\` could break it — though that
    would fail *after* running the script, not in 25 ms.
+
+### 2026-09-12 — **`setSta` wants `staName`, not `ssid`** ✅
+
+Probing all 31 plausible field-name combinations settled it in a quarter of a second:
+
+```
+ssid    + staPwd|pwd|password|passwd|psk|key   ->  {"result":"fail","code":-1}
+staName + staPwd                               ->  {"result":"ok","code":2}
+```
+
+So the correct request for this firmware is:
+
+```json
+{"cmd":"setSta","staName":"<ssid>","staPwd":"<8-64 char passphrase>"}
+```
+
+`PROTOCOL.md` §C documents `ssid` + `staPwd`, taken from the `LS_S6` firmware's JSON
+templates and flagged there as needing confirmation against a live capture. For this
+unit the passphrase key is right and **the SSID key is wrong**. It is also the
+self-consistent answer: `getCfg` is documented to *return* `staName`/`staPwd`, so the
+setter using the same pair is what you would expect — the notes' `ssid` looks like the
+odd one out.
+
+`tools/rehome.py` therefore defaults to `--ssid-key staName`, with `ssid` still
+selectable. `tools/fakerobot.py` mirrors the real unit and refuses `ssid`, so a
+regression fails on the desk rather than on the bench.
+
+**Do not read anything into `applyCfg`.** Probing it reported `ssid + staPwd`
+"accepted" with `code:1` on the first try, but a generic config-apply that returns
+`ok` regardless of which fields it understands will look exactly like that. It proves
+nothing about field names.
 
 #### ⚠ Windows: `SIO_UDP_CONNRESET` silently breaks UDP sweeps
 
@@ -265,8 +295,10 @@ Caveats worth knowing before trying it:
 
 #### Still open
 
-* **Why does `setSta` refuse?** Work through the four candidates above; `--pwd-key pwd`
-  is the cheapest and the best-supported by the evidence.
+* **Did the accepted `setSta` actually make it join?** `result:ok, code:2` is the
+  handler accepting the request, not proof the association succeeded. Check `checkPwd`
+  (a non-zero `code` should mean connected), `getCfg`, the router's client list, and
+  the server's traces.
 * **Does the late `getWifi` result ever arrive?** Re-run `scan` now that it waits 20s
   without retrying.
 * **`getCfg` after `setSta`** — settles whether the empty reply means "no credentials"

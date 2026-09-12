@@ -80,9 +80,11 @@ def handle(msg: dict) -> dict:
         return {"cmd": cmd, "result": "ok"}
     if cmd == "setSta":
         pwd = msg.get("staPwd", msg.get("pwd", ""))
-        if not 8 <= len(pwd) <= 64:  # the real handler validates this
+        # Unit A accepts staName and refuses the documented ssid; mirror that, so a
+        # regression back to 'ssid' fails here instead of on the bench.
+        if "staName" not in msg or not 8 <= len(pwd) <= 64:
             return {"cmd": cmd, "result": "fail", "code": -1}
-        STATE["staName"] = msg.get("ssid", "")
+        STATE["staName"] = msg.get("staName", "")
         STATE["staPwd"] = pwd
         STATE["wifi_mode"] = "sta"
         return {"cmd": cmd, "result": "ok", "code": 2}

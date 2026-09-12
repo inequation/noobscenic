@@ -77,7 +77,7 @@ def now_iso() -> str:
 # setSta is refused by at least one unit with the documented field names, and the
 # firmware notes flag them as unverified. These are the plausible alternatives; the
 # getter is documented to return staName/staPwd, so the setter may well want the pair.
-SSID_KEYS = ("ssid", "staName", "name", "wifiName", "staSsid")
+SSID_KEYS = ("staName", "ssid", "name", "wifiName", "staSsid")
 PWD_KEYS = ("staPwd", "pwd", "password", "passwd", "psk", "key")
 
 
@@ -417,7 +417,7 @@ def cmd_set_sta(chan: Channel, args) -> int:
     need_port(chan, args)
     check_passphrase(args.pwd)
     try:
-        reply = chan.command("setSta", ssid=args.ssid, **{args.pwd_key: args.pwd})
+        reply = chan.command("setSta", **{args.ssid_key: args.ssid, args.pwd_key: args.pwd})
         print("setSta ok: %s" % json.dumps(reply, ensure_ascii=False))
     except NoReply as exc:
         print("no confirmation: %s" % exc, file=sys.stderr)
@@ -509,7 +509,7 @@ def cmd_rehome(chan: Channel, args) -> int:
 
     print("4/4 setSta  ssid=%s" % args.ssid)
     try:
-        chan.command("setSta", ssid=args.ssid, **{args.pwd_key: args.pwd})
+        chan.command("setSta", **{args.ssid_key: args.ssid, args.pwd_key: args.pwd})
     except NoReply as exc:
         # The device drops the soft-AP as it switches to station mode, so the
         # confirmation frequently never makes it back to us. That is not a failure,
@@ -733,6 +733,10 @@ def cmd_probe_sta(chan: Channel, args) -> int:
         for sk in SSID_KEYS
         for pk in PWD_KEYS
     ]
+    # staName + staPwd is what Unit A accepts; try it first so a known-good unit is
+    # re-homed on the first datagram rather than after six refusals.
+    verified = ({"staName": args.ssid, "staPwd": args.pwd}, "staName + staPwd")
+    attempts = [verified] + [a for a in attempts if a[1] != verified[1]]
     # Last resort: every candidate name at once. A handler that reads the fields it
     # knows and ignores the rest will accept this even if no single pair is right.
     shotgun = {k: args.ssid for k in SSID_KEYS}
@@ -790,6 +794,13 @@ def build_parser() -> argparse.ArgumentParser:
         default="staPwd",
         choices=("staPwd", "pwd"),
         help="JSON key for the Wi-Fi passphrase (default %(default)s; some builds use 'pwd')",
+    )
+    parser.add_argument(
+        "--ssid-key",
+        default="staName",
+        choices=("staName", "ssid"),
+        help="JSON key for the SSID. Defaults to %(default)s, which is what real hardware "
+             "accepts; PROTOCOL.md documents 'ssid', which the bench unit refuses.",
     )
 
     subs = parser.add_subparsers(dest="command", required=True)
