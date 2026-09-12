@@ -257,11 +257,17 @@ class Channel:
 
     # -- discovery --------------------------------------------------------
 
-    def discover(self, ports: list[int], settle: float = 2.0) -> list[tuple[str, int]]:
-        """Spray {"cmd":"getID"} across `ports` and collect whoever answers."""
+    def discover(
+        self, ports: list[int], settle: float = 2.0, probe_cmd: str = "getID"
+    ) -> list[tuple[str, int]]:
+        """Spray a probe across `ports` and collect whoever answers.
+
+        A refusal counts as a find: not every firmware implements `getID`, and
+        `{"result":"invalue cmd"}` identifies the device just as well as an `ok`.
+        """
         found: list[tuple[str, int]] = []
         seen: set[tuple[str, int]] = set()
-        probe = {"cmd": "getID"}
+        probe = {"cmd": probe_cmd}
 
         if self.dry_run:
             self._say(
@@ -308,7 +314,10 @@ class Channel:
                 reply = json.loads(text)
             except json.JSONDecodeError:
                 continue
-            if not isinstance(reply, dict) or reply.get("result") != "ok":
+            # Any well-formed JSON object proves something is listening. Do NOT
+            # require result=="ok": Unit A does not implement getID and answers
+            # {"result":"invalue cmd"}, which is still a positive identification.
+            if not isinstance(reply, dict):
                 continue
             if addr not in seen:
                 seen.add(addr)
@@ -325,7 +334,7 @@ def need_port(chan: Channel, args) -> None:
         return
     ports = parse_ports(args.discover_ports)
     print("discovering (sweeping UDP %d-%d on %s)..." % (ports[0], ports[-1], chan.target))
-    found = chan.discover(ports, args.settle)
+    found = chan.discover(ports, args.settle, args.probe_cmd)
     if not found:
         raise ProtocolError(
             "no robot answered getID on %s. Is the robot in pairing mode and is this "
@@ -341,7 +350,7 @@ def need_port(chan: Channel, args) -> None:
 def cmd_discover(chan: Channel, args) -> int:
     ports = parse_ports(args.discover_ports)
     print("sweeping UDP %d-%d on %s..." % (ports[0], ports[-1], chan.target))
-    found = chan.discover(ports, args.settle)
+    found = chan.discover(ports, args.settle, args.probe_cmd)
     if not found:
         print("no responders", file=sys.stderr)
         return EXIT_FAIL
@@ -784,7 +793,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--retries", type=int, default=2, help="resends before giving up")
     parser.add_argument("--settle", type=float, default=2.0, help="discovery collection window, seconds")
     parser.add_argument("--discover-ports", default=DEFAULT_DISCOVER_PORTS, metavar="RANGE",
-                        help="ports the getID sweep covers (default %(default)s)")
+                        help="ports the discovery sweep covers (default %(default)s)")
+    parser.add_argument("--probe-cmd", default="getID", metavar="CMD",
+                        help="command the sweep sends (default %(default)s; getSn is a "
+                             "good alternative on firmware that lacks getID)")
     parser.add_argument("--trace", metavar="FILE", help="append a JSONL trace of every datagram")
     parser.add_argument("--dry-run", action="store_true", help="print datagrams, send nothing")
     parser.add_argument("--show-secrets", action="store_true", help="do not redact passphrases")

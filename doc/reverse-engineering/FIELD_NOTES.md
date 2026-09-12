@@ -18,6 +18,8 @@ is evidently not one thing.
 | Channel-C `getID` port | `rand()%1000 + 9000`, per boot | **UDP 7913**, fixed across a power cycle |
 | Serial (`getSn`) | — | `LSLDSM7PRO20403551` — LDRobot LS/LDS lineage |
 | `setSta` SSID field | `ssid` | **`staName`** — `ssid` is refused with `fail,-1` |
+| `getID` | discovery/identify | **not implemented** — answers `invalue cmd` |
+| LAN address once joined | — | 192.168.1.243; channel C stays reachable in station mode |
 | TCP surface | — | only 53; no TCP/HTTP pairing service |
 | BSSID | — | `ae:1d:df:67:16:f4` (locally administered bit set, so no OUI lookup) |
 
@@ -293,12 +295,77 @@ Caveats worth knowing before trying it:
 * The machine serving the robot has no internet while joined to that AP. noobscenic
   needs none.
 
+### 2026-09-12 — on the LAN, and a command-support matrix
+
+The unit associated and now lives at **192.168.1.243** — the same address `REPORT.md`
+§9 recorded for it. **Channel C keeps working in station mode**, on the same port, so
+the robot can be driven from the ordinary LAN and there is no need to join its soft-AP
+for anything after the initial provisioning.
+
+| `cmd` | Unit A | Notes |
+|---|---|---|
+| `getID` | ❌ `{"result":"invalue cmd"}` | **not implemented** — see below |
+| `getSn` | ✅ | `LSLDSM7PRO20403551` |
+| `getCfg` | ✅ | returns `staName` + `staPwd` **only once configured**; bare `{"cmd","result"}` when not. No `staIp`, `staMac` or `url` in either case |
+| `checkPwd` | ✅ | `code` is a connection state: **0 = not connected, 1 = connected** |
+| `setUrl` | ✅ | both the `url` and the `ip`/`port` forms |
+| `setSta` | ✅ | with `staName` (not `ssid`), `code:2` on acceptance |
+| `applyCfg` | ✅ | returns `ok`/`code:1` for field sets it cannot be using; proves nothing |
+| `getWifi` | ⚠ | answers with an **empty datagram**, and the device's own log shows the response line blank |
+| `getLog` | ✅ | works; the chunking in `tools/rehome.py` is correct against real hardware |
+
+#### ⚠ `getID` is not implemented — and that broke discovery twice over
+
+The device's own log:
+
+```
+[29559,1789139646]:{cmd:getID}
+[29559,1789139646]:{result:invalue cmd}
+```
+
+`tools/rehome.py discover` required `result == "ok"` and therefore **discarded the
+device's answer**, reporting "no responders" while the robot was replying to every
+probe. That is a second, independent cause of the discovery failures, on top of the
+Windows `SIO_UDP_CONNRESET` trap — either one alone was enough to hide the device.
+
+It also explains why the nmap sweep succeeded where `discover` did not: nmap only cares
+that *something* came back, not what it said.
+
+Discovery now treats **any well-formed JSON object** as a positive identification, and
+`--probe-cmd` can send something else (`getSn` is a good choice on firmware that lacks
+`getID`). Verified against the live unit:
+
+```
+$ tools/rehome.py -t 192.168.1.243 --discover-ports 7900-7950 discover
+  found 192.168.1.243:7913  {"result": "invalue cmd"}
+```
+
+#### The device log (`getLog`) is worth pulling
+
+Lines are `[<uptime-ish>,<unix-time>]:<message>`. It is the **provisioning** log
+(`local_debugger` / `cleanpack_mode`), not `network_proxy`'s, so it shows channel-C
+traffic and Wi-Fi state but no cloud activity. It confirmed both stored `setUrl`
+values, and the association:
+
+```
+{cmd: setUrl, url: http://192.168.1.208:8080/}   -> {cmd:setUrl,result:ok}
+{cmd: setUrl, ip: 192.168.1.208, port: 8081}     -> {cmd:setUrl,result:ok}
+wpa_config: ... ssid="PazKrolowej" psk="..." key_mgmt=WPA-PSK
+wlan0: CTRL-EVENT-CONNECTED - Connection to 24:4b:fe:ee:4b:b0 completed
+```
+
+Note it logs the Wi-Fi passphrase in clear, so treat a pulled log as a secret.
+
 #### Still open
 
-* **Did the accepted `setSta` actually make it join?** `result:ok, code:2` is the
-  handler accepting the request, not proof the association succeeded. Check `checkPwd`
-  (a non-zero `code` should mean connected), `getCfg`, the router's client list, and
-  the server's traces.
+* **Why has `network_proxy` not contacted the server?** The robot is on the LAN, the
+  server answers on `192.168.1.208:8080`, and both `setUrl` values are stored — yet
+  nothing arrives. The daemon most likely read the URL once at start-up, before any of
+  this was configured. Re-issuing both `setUrl` forms on the live device did not
+  visibly change that; a power cycle is the next test.
+* **Does `getWifi` ever produce a list?** It answers empty even on the LAN, where the
+  radio is not serving an AP — so the "scan takes the radio off-channel" theory does
+  not explain it on its own.
 * **Does the late `getWifi` result ever arrive?** Re-run `scan` now that it waits 20s
   without retrying.
 * **`getCfg` after `setSta`** — settles whether the empty reply means "no credentials"
