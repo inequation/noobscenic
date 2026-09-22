@@ -12,6 +12,12 @@ by executing the code path or by cryptographic verification; **[static]** was re
 from decompiled/disassembled code; **[live]** was confirmed against the running
 cloud/device.
 
+> **⚠ Scope:** the analysis is of the **2020 `LS_S6` sample**. A physical unit tested in
+> the field runs **different firmware** (SSID `Proscenic-6716_…`, model `6716`) whose
+> **local pairing protocol differs** — the documented Channel-C UDP listener is absent
+> on it. See **`FIELD_NOTES.md`**. The firmware-format/signature analysis is unaffected;
+> the live cloud protocol (Channels A/B) is untested on that unit.
+
 ---
 
 ## 0. TL;DR
@@ -235,6 +241,10 @@ firmware**:
 1. **Re-home the device** with the local provisioning commands: `setSta` (join your
    Wi-Fi) and **`setUrl`** (point `/data/bin/Run/Config/url` at your server), or via
    DNS override of `mobile.proscenic.cn` + `ip_port.json` for the push gateway.
+   **⚠ Field caveat:** this Channel-C path worked in the `LS_S6` firmware but was
+   confirmed **absent** on a physical `Proscenic-6716` unit (UDP `9000–9999` closed —
+   `FIELD_NOTES.md`). On such a unit, first capture the vendor app's pairing to learn
+   the real local protocol, or get root (UART) and write the config files directly.
 2. **Re-implement the LDRobot cloud** endpoints you actually need
    (`cleanPack/register`, `getSockAddr`, `sync`, `response`, `uploadEvents`) and the
    Channel-B gateway framing. **See `PROTOCOL.md` for the exact, corrected contract** —
@@ -259,6 +269,7 @@ None of steps 1–2 modify signed firmware or require breaking RSA/MD5.
 |---|---|
 | `REPORT.md` | This report — firmware format, update protocol, security, hidden/debug, live version check. |
 | `PROTOCOL.md` | Device↔cloud + local protocol: 3 channels, endpoints, framing, **Channel-B AES/token**, re-home recipe. |
+| `FIELD_NOTES.md` | Live re-home attempt vs. the sample: a physical `Proscenic-6716` unit **does not** expose Channel C (packet-proven); variant caveats + next steps. |
 | `MAP.md` | Mapping / room-segmentation feature: occupancy grid, map-upload/region/path JSON, LZ4. |
 | `APK_PACKING.md` | Why the Android app won't statically decompile (Qihoo 360 Jiagu packer) + component map. |
 | `schemas/` | JSON Schema (Draft 2020-12) for every JSON API — `channelA_rest`, `channelB_gateway`, `channelC_local` (+ `README.md`). |

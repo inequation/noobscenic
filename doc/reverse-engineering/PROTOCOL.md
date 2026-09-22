@@ -5,6 +5,16 @@ Reconstructed from `network_proxy` (`src/interface/product/ld/*`, `src/local/*`,
 probing of the vendor cloud. **[proven]** = executed/verified, **[static]** =
 from decompiled code, **[live]** = confirmed against the running server.
 
+> **⚠ Firmware-variant caveat (read `FIELD_NOTES.md`).** This is reverse-engineered
+> from the **2020 `LS_S6` firmware sample** (v0.7.1). A physical unit tested in the
+> field runs **different firmware** (SSID `Proscenic-6716_…`, model `6716`). It **does**
+> expose Channel C, but on a **fixed UDP port `7319`** — not the `LS_S6` sample's
+> randomized `9000–9999` range. **Correction (owner report):** an earlier field sweep
+> covered only `9000–9407` and saw those closed, wrongly concluding Channel C was
+> absent — it had simply scanned the wrong port. Channel C is live on **UDP `7319`** on
+> the real M7 Pro unit. Channels A/B are untested on that unit. Re-verify the exact
+> port/SSID against your target unit.
+
 There are **three** separate channels. Do not conflate them.
 
 ```
@@ -78,14 +88,38 @@ first obtained via `register`/login. **[live]**
 ```
 The downloaded file is the RSA-signed container from `REPORT.md` §1.
 
-### Bootstrap order, binding, and two open gaps a server author must close **[static]**
+### Bootstrap order, binding, and two open gaps a server author must close
 * **Order:** `register` (get `session`+`cookies`) → `getSockAddr` (get gateway
   `ip:port`, sent with the cookie) → open the Channel-B TCP socket → `10001`
   handshake → steady state. `getSockAddr` runs through the same cookie-setting curl
   path as the reporters, so the cookie exists by then.
-* **⚠ Gap 1 — `getSockAddr` request body:** the exact POST fields (`sn`? `ts`? `data`?)
-  were not cheaply extractable. A server should **not require** unknown fields; verify
-  the body from one capture and treat the request as cookie-authenticated.
+
+> **✅ LIVE cloud probe — 2026-09-22 [live]** against the reachable device server
+> `mobile.proscenic.cn` (120.78.28.78). (The app's own REST host `bl-app.robotbona.com`
+> has no A record / is unreachable; `mobile.proscenic.cn` is the firmware's
+> `cleanPack/*` device server and confirms the Channel-B bootstrap end to end.)
+> - `POST /cleanPack/register` body `sn=<sn>&ld_sn=<sn>&sig=x&ts=0` → **200**
+>   `{"code":0,"message":"成功","data":{"bindStatus":0,"session":"<16 chars>","cookies":"<32 chars>"}}`.
+>   The server accepted a **fake SN and `sig=x`** — so **`sig`/RSA is NOT validated**
+>   (confirms the "sig can be a no-op" note); `session` is exactly **16 chars** (= the
+>   AES-128 key directly); `cookies` is 32 chars (the sid).
+> - `GET /cleanPack/getSockAddr?version=1&sn=<sn>&companyId=<n>` with header
+>   `Cookie: cookies=<cookies>` → **200**
+>   `{"code":0,"message":"success","data":{"addr_list":[{"ip":"47.107.125.40","port":4430}]}}`.
+>   So **Gap 1 is closed**: `getSockAddr` is a **GET** with query `version/sn/companyId`,
+>   cookie-authenticated; `companyId` does not affect the address. The **real production
+>   push-gateway (Channel B) is `47.107.125.40:4430`** (Alibaba Cloud, Shenzhen). A
+>   rehome replaces this with your own ip:port (via `setUrl` ip+port → `ip_port.json`,
+>   or by serving your own `getSockAddr`).
+> - `POST /cleanPack/sync` with a minimal body → 400 (needs the real field set/sig);
+>   not required for rehome.
+> All probes used an obviously-fake serial (`RE_PROBE_…`, `bindStatus:0`, unbound) — no
+> account/device state was changed.
+* **⚠ Gap 1 (was: `getSockAddr` request body) — RESOLVED** by the live probe above:
+  `GET`, query `version=1&sn=<sn>&companyId=<n>`, `Cookie: cookies=<cookies>`; response
+  `data.addr_list[]={ip,port}` (device iterates the list). Note the on-wire response key
+  is **`addr_list`** (a list), whereas the local `/data/bin/Run/Config/ip_port.json` file
+  the device derives from it uses flat **`{"ip","port"}`**.
 * **⚠ Gap 2 — binding state machine (`bind_user.cpp`):** there is a `BindUser` flow
   the endpoint one-liners understate: `StartBind`, `need to update bind, BDS_WAIT_CONN
   -> BDS_SEND_BIND..`, `send preBind msg success..`, `directly bind success..`,
@@ -223,11 +257,16 @@ if absent it just logs `"on new ping pong msg..."`. So a safe pong is:
 ```
 {"infoType":21006,"data":{}}            # or add "isExistConnect":true
 ```
-(There **is** an infoType-keyed inbound dispatch table — `response_handle`, an
-`std::map<int,std::function>` that logs `"Error : Unknown infoType %d"`, with `21006`
-among the registered keys; the exact slot that routes a frame to the pong handler
-`FUN_00457b30` was not traced, so confirm the pong `infoType` against one capture.
-`21006` is the near-certain pong type.)
+**Why any reply keeps it alive (verified):** the inbound callback `FUN_00457f08`
+(onMessage) calls `FUN_00454928(conn, 0)` as its **first** statement — before the
+`encrypt` gate and before the infoType dispatch — and that call refreshes the same
+online flag (+0xc) and last-activity tick (+0x30) that `RecvPong` writes. So **any
+complete `#\t#`-terminated frame the server sends refreshes the online timer**, even a
+bare `{"infoType":21006,"data":{}}` that (having no integer `encrypt` field) would be
+dropped before reaching the dedicated pong handler `FUN_00457b30`. Practical upshot:
+the "reply to every `21006`" rule is correct and sufficient; the specific pong-handler
+routing (`response_handle`, an `std::map<int,std::function>` logging
+`"Error : Unknown infoType %d"`) is not what keeps the link up.
 
 **Timing:** the ping period and drop timeout are runtime variables
 (`"…send interval:%d"`, `nanosleep` loop) with no compiled-in constant; **pong every
@@ -257,18 +296,31 @@ type codes. The device maps between them in `response_handle.cpp`.
 
 ## (C) Local config channel — UDP JSON `{"cmd":…}`  ← this is how you re-home it
 
+> **⚠ Port differs by firmware.** This channel is documented from the `LS_S6`
+> firmware, whose listener binds a **random** UDP port in `9000–9999`
+> (`rand()%1000+9000`). The real shipping `Proscenic-6716_…`/M7 Pro unit instead exposes
+> Channel C on a **fixed UDP port `7319`** (owner-confirmed). An earlier field sweep of
+> only `9000–9407` missed it and wrongly reported the channel closed; that was a
+> wrong-port false negative, now corrected. The command set below is accurate; only the
+> discovery/port differs — on shipping firmware use **UDP `7319`**, and confirm from
+> the vendor app or extracted from its own firmware.
+
 Used by the app on the **local network** (most importantly while the robot is in its
-`LDRobot` soft-AP: `apDemo` brings up AP at **192.168.78.1**, DHCP 192.168.78.50-150).
-Handled by `network_proxy` (`local/local_debugger.cpp`, `interface/.../wifi_config.cpp`,
-`udp_server_interface.cpp`). **[static]**
+soft-AP: `apDemo` brings up AP at **192.168.78.1**, DHCP 192.168.78.50-150; the SSID is
+`LDRobot` on the `LS_S6` sample but is vendor-branded on shipping units, e.g.
+`Proscenic-6716_<serial>`). Handled by `network_proxy` (`local/local_debugger.cpp`,
+`interface/.../wifi_config.cpp`, `udp_server_interface.cpp`). **[static]**
 
 * **Transport:** **UDP datagrams** carrying a JSON object; the device replies with a
   JSON datagram. The device’s LAN control server (`OpenUdpRemoteCtrl`, `cp_function.cpp`)
-  binds a **UDP port chosen as `rand()%1000 + 9000` (9000–9999)**; the app discovers
-  the device/port via a broadcast `getID` exchange (`getID` → `{"result":"ok","type":
-  "ipfromapp"}`). **[static]** *(The command set and JSON schemas below are fully
-  recovered; the exact discovery port is dynamic — capture one real pairing session,
-  or just write the config files directly if you have shell access, see “Re-home”.)*
+  binds a **UDP port chosen as `rand()%1000 + 9000` (9000–9999)** on the `LS_S6`
+  sample; the app discovers the device/port via a broadcast `getID` exchange
+  (`getID` → `{"result":"ok","type":"ipfromapp"}`). **[static]** **On the shipping
+  `6716`/M7 Pro firmware the listener is instead on a fixed UDP port `7319`
+  (owner-confirmed) [field]** — so target `7319` directly there rather than sweeping
+  `9000–9999`. *(The command set and JSON schemas below are fully recovered; if unsure
+  of the port on a given unit, capture one real pairing session, or write the config
+  files directly with shell access, see “Re-home”.)*
 * **Request shape:** `{"cmd":"<name>", …fields…}` → **Response:**
   `{"cmd":"<name>","result":"ok"|"fail","code":<int>, …}`; unknown → `{"result":"invalue cmd"}`.
 
@@ -339,3 +391,120 @@ those directly and skip the UDP channel entirely.
   robot in soft-AP mode (see recipe), or write the config files directly with root.
 * **What is `setSta`?** The command that puts the robot in Wi-Fi **station** mode and
   joins it to a given SSID/password (shells out to `cleanpack_mode -m sta`).
+
+---
+
+## Why the robot won't call your server after `setUrl`+`setSta` (rehome debug)
+
+Traced end-to-end in `network_proxy` (the binary that is BOTH the local UDP command
+dispatcher and the cloud client):
+
+* **`setUrl` handler** = `FUN_00466af0`. It `WriteStrToFile("/data/bin/Run/Config/url", …)`
+  **and** calls `FUN_004650c8`, which re-reads config and assigns the new URL into the live
+  cloud-manager singleton (`*(singleton+0x128)`). So the URL is updated **both on disk and
+  in memory** — good. But `FUN_004650c8` does **nothing else**: no session clear, no
+  reconnect, no re-register.
+* **The register session is in-memory and sticky.** `get_register.cpp` keeps `mSession` /
+  `mCookies` as process members (no session file). The device registers (`cleanPack/register`
+  → gets `session`+`cookies`) only when it has **no session** (`"no session!!!"`, on boot /
+  first uplink) or when a Channel-A reply says the sid expired (`code 102/212`,
+  `"COOKIES OUTTIME !!!"` / `"try register again!"`). After that it reuses the cached
+  session and its cached gateway (`getSockAddr` result) — it does **not** re-register just
+  because the URL changed.
+* **`setSta`** (`cleanpack_mode -m sta`) only reconfigures `wpa_supplicant` / switches
+  `wifi_mode`; it does **not** restart `network_proxy` or clear the session.
+* There is **no local "reboot"/"reconnect" UDP command**. The only reboot path is the
+  **cloud** command **`EID_C_REQUEST_REBOOT` (2023)** / `EID_C_REBOOT` (2024) over Channel B
+  (`"App request reboot"`).
+
+**Consequence:** if `network_proxy` already holds a session (robot was previously online, or
+never restarted since boot), `setUrl`+`setSta` change the URL but the robot keeps using the
+**old** session/gateway and never registers with your server. It only works from a genuinely
+**session-free** state (fresh boot with no uplink yet, e.g. soft-AP pairing right after a
+power-cycle) where the first uplink triggers `register` against the *new* URL.
+
+**Fix for the rehome toolkit — force a re-registration after `setUrl`:**
+1. **Simplest:** power-cycle / reboot the robot *after* `setUrl` (and `setSta`). On boot it
+   has no session → first uplink → `register` to the new URL → connects to your server.
+2. **With root** (UART/adbd/dropbear per REPORT.md §5): `killall network_proxy` (it respawns
+   session-free and re-reads the URL) — a software-only trigger, no power cycle.
+3. **What the app does:** it reboots the robot via the Channel-B `EID_C_REQUEST_REBOOT`
+   command while the (still-alive) old cloud connection exists — i.e. the app's extra step is
+   a **reboot/re-register trigger**, which the local `setUrl`+`setSta`-only flow omits.
+   Equivalent local effect = option 1 or 2.
+
+Order also matters: set the URL **before** the first uplink. Recommended local sequence:
+`setUrl` → `setSta` → **reboot** (or `killall network_proxy` with root).
+
+---
+
+# Rehoming — pointing the robot at your server
+
+_This section corrects an earlier draft that wrongly said the robot speaks the app's
+20-byte imsocket protocol. **It does not.** The robot's control link is **Channel B**
+(§B above). The 20-byte imsocket protocol is **Channel A** — the phone↔cloud link
+(`WIRE_PROTOCOL.md`). The cloud bridges A↔B. A headless rehome implements **Channel B
+only**; you talk to the robot directly._
+
+## Which channel your server must speak
+
+| | Channel A (app↔cloud) | Channel B (robot↔cloud) — **rehome target** |
+|---|---|---|
+| Endpoint | `bl-im-<region>.robotbona.com:20008` (hardcoded in app, CN default `bl-im.robotbona.com`) | ip:port from `/data/bin/Run/Config/ip_port.json` (Proscenic push gateway, `proscenic.cn`) |
+| Framing | 20-byte LE header + JSON (`WIRE_PROTOCOL.md`) | `<JSON>` + 3-byte delimiter `#\t#` (`23 09 23`), §B |
+| Login | cmd 16, `{appId,clientType,token,userId,uuid,userType}` | `{"infoType":10001,"connectionType":1,"data":{"token":"","sn":"<SN>"}}` |
+| Commands | TRANSIT (250) wrapping `ImMessage` | `{"infoType":N,"encrypt":0|1,"data":{…}}` |
+| Who connects here | the phone app | **the robot** |
+
+The robot never opens a Channel-A/imsocket connection (the firmware contains no
+`robotbona`, `bl-im`, `20008`, or imsocket login keys). You only need Channel A if you
+also want to run the *real phone app* against your server, which additionally requires
+redirecting the app's hardcoded `bl-im` host — out of scope for a headless rehome.
+
+## How the robot chooses its Channel-B target
+
+`get_tcp_addr.cpp` (`FUN_00451cd0`), in priority order:
+1. `/data/bin/Run/Config/ip_port.json` = `{"ip":"<addr>","port":<int>}` (keys literally
+   `ip`/`port`) — used directly if present and valid.
+2. Otherwise HTTP registration (§B: `POST <base>cleanPack/register`) returns the
+   address plus the `session`/`cookies` (the `session[:16]` is the Channel-B AES key).
+
+`FUN_00455090` is the reconnect loop that maintains the Channel-B TCP connection.
+
+## `setUrl` has TWO modes (verified this session, `FUN_00466af0`, `wifi_config.cpp`)
+
+- `{"url":"..."}` → writes `/data/bin/Run/Config/url` and reloads the HTTP base
+  (`FUN_004650c8`). **Changes only the registration endpoint.**
+- `{"ip":"...","port":<int>}` → writes `/data/bin/Run/Config/ip_port.json` **directly**.
+  **Sets the Channel-B target, bypassing HTTP registration.** It does **not** itself
+  reconnect (no session reset in the handler); the reconnect loop only re-reads
+  `ip_port.json` after the link drops — so **reboot or `killall network_proxy`** to
+  apply it.
+
+## Why `setUrl`(url)+`setSta` alone did NOT make the robot call your server
+
+- `ip_port.json` is read **first** and, after normal pairing, still holds Proscenic's
+  gateway; changing only the `url` file leaves the live connection pointed at
+  Proscenic, and a reboot re-reads the same `ip_port.json`.
+- Clearing `ip_port.json` forces HTTP registration, whose response must carry a valid
+  `data.session`+`data.cookies` (§B); a naive server that returns the wrong shape
+  yields `no session!!!` / `decrypt data failed` and the robot never connects.
+
+## Minimal rehome procedure
+
+1. `setUrl {"ip":"<your host>","port":<port>}` → writes `ip_port.json` (or run a
+   register endpoint per §B that returns your ip:port + `session`/`cookies`).
+2. Run a **Channel-B** server at that ip:port (see `rehome_server.py` and §B):
+   - accept the TCP connection; read `#\t#`-framed frames;
+   - on the `{"infoType":10001,…}` handshake, record the `sn`;
+   - if the robot registers over HTTP, mint `data.session` (≥16 bytes → your AES key)
+     and any `data.cookies`; `sig`/RSA can be a no-op (the robot only sends `sig`);
+   - **pong every `{"infoType":21006}` immediately** with a `#\t#`-terminated frame,
+     or the robot loops connect→drop→reconnect;
+   - send commands as `{"infoType":N,"encrypt":0,"data":{…}}#\t#` (use `encrypt:0` to
+     skip AES entirely).
+3. Reboot / `killall network_proxy` so the robot re-reads `ip_port.json`.
+
+Cross-references: full Channel-B spec → §B above; command vocabulary → `COMMANDS.md`;
+app-side Channel-A imsocket protocol → `WIRE_PROTOCOL.md`; extraction of the app →
+`UNPACKING.md`.

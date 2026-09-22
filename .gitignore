@@ -31,3 +31,8 @@ rustc-ice-*.txt
 
 # Python bytecode from the tools/
 __pycache__/
+
+# Extracted app DEX (doc/reverse-engineering/UNPACKING.md): not tracked because
+# app_main.dex embeds a live Alibaba Cloud AccessKey ID belonging to the vendor's
+# app backend. Regenerate locally by following UNPACKING.md against the original APK.
+/doc/reverse-engineering/dex/*.dex

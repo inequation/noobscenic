@@ -54,11 +54,15 @@ Static tools cannot; you must dump the decrypted DEX at runtime:
    libart `OpenMemory`.
 3. Reassemble the dumped DEX, then `jadx` the result; expect obfuscated names.
 
-**Recommendation for this project:** don’t bother. The **device-side binaries**
-(`network_proxy` et al.) are the authoritative protocol implementation and are
-unpacked and fully analysed in `PROTOCOL.md` / `REPORT.md`. The app would only serve
-to cross-check field names (e.g. the exact `setSta` request keys), which one live
-pairing capture also gives you.
+**UPDATE (superseded):** the app DEX was **successfully extracted** later by a
+different route than the two below — an API-22 x86 emulator + `packages.xml`
+certificate restore + `/proc/mem` dump. See **`UNPACKING.md`** for the full method and
+`dex/app_main.dex` (com.baole.blap, 5933 classes) for the result. The
+static/`FRIDA-DEXDump`-on-real-device recommendation in this section did not pan out
+and was not the winning path; it is kept for historical record. The device-side
+binaries remain the authoritative protocol source, but the decrypted app was needed
+and obtained (it supplies Channel-A/`WIRE_PROTOCOL.md` and the command vocabulary in
+`COMMANDS.md`).
 
 ---
 
@@ -97,14 +101,43 @@ this). Evidence gathered while adapting it:
   `libmono.so`/`libz.so`. Recovering the scheme would mean reversing this obfuscated
   native lib.
 
-**Conclusion for the handoff:** the static tool does not cover this Jiagu variant, so
-the app DEX remains packed. Options if the app code is ever actually needed:
-1. **Dynamic dump (recommended):** run the APK on a real ARM device, dump the
-   decrypted DEX from memory (FRIDA-DEXDump, or hook libart `OpenMemory`/`DexFile`).
-2. **Reverse `libjiagu_a64.so`** to recover this variant's key/framing, then extend a
-   static unpacker (high effort; stripped, anti-analysis native code).
+**Conclusion for the handoff (updated):** the static SafaSafari tool does not cover
+this Jiagu variant. The app DEX was nonetheless **later extracted successfully** — not
+by either option below, but by the x86-emulator dynamic route documented in
+**`UNPACKING.md`** (defeat the `JNI_OnLoad` anti-emulator gate, run on API 22 where the
+older ART OAT version selects the signature-keyed decrypt path, restore the genuine
+signing cert via the emulator's `packages.xml`, then `SIGSTOP` the process and carve
+the DEX from `/proc/<pid>/mem`). The historical options were:
+1. Dynamic dump on a real ARM device (FRIDA-DEXDump / hook libart) — not used.
+2. Reverse `libjiagu_a64.so` to recover the key/framing — not used (the x86 stage-2
+   crypto was cracked instead; see `UNPACKING.md` / `jiagu/extract_x86.py`).
 
-Neither is necessary for this project: the **device-side binaries are the
-authoritative protocol source** and are already fully documented
-(`PROTOCOL.md`, `MAP.md`, `schemas/`). The app would only cross-check soft spots
-(e.g. exact `setSta` request keys), which a single live pairing capture also settles.
+The device-side binaries remain the authoritative *protocol* source, but the decrypted
+app was in fact required and obtained: it is the source for `WIRE_PROTOCOL.md`
+(Channel A) and `COMMANDS.md`.
+
+---
+
+## Deep reverse of the packer (follow-up — `jiagu/` subfolder)
+
+A later effort reversed the native packer itself (`libjiagu_a64.so`, arm64) rather
+than relying on the static tool. Full write-up: **`jiagu/JIAGU_INTERNALS.md`**;
+tooling: **`jiagu/jiagu360_core.py`** (variant detector + blob carver + the exact
+RC4/zlib core cipher) and **`jiagu/emu_extract_core.py`** (Unicorn harness that runs
+the packer's own key-schedule/RC4/inflate).
+
+Confirmed (proven by emulation / byte-verification):
+* `libjiagu` is a **stage-1 loader**; the real engine (`libmono.so`) is embedded
+  **encrypted + zlib'd** in a camouflaged section **`.mips`** (off 0x1b430, 0x85e6c),
+  with key material in **`.bmp`** (off 0x1b008, 0x426), custom in-memory-loaded.
+* Core payload pipeline = **RC4 (standard KSA/PRGA, reproduced) → 4-byte length →
+  zlib inflate**. Anti-debug throughout (XOR-0xa5 strings, linker/breakpoint scans,
+  `kill(pid,9)`), plus a bytecode-VM obfuscation layer (`__fun_a_18`).
+
+Not reached (honest boundary): the **`.bmp` key material is itself encrypted** by a
+prior step not yet located, so the RC4 key (hence `libmono`, hence the DEX the engine
+finally decrypts) was not statically recovered. Completion options, in
+`JIAGU_INTERNALS.md` §"Status & how to finish": (1) emulate the native key schedule
+from an earlier entry point to recover the `.bmp` key, then `core_decrypt()` yields
+`libmono`, then reverse `libmono`'s DEX stage; or (2) the industry-standard **dynamic
+dump** (run on a real arm64 device, FRIDA-DEXDump) — not possible in this headless VM.
