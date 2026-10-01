@@ -8,10 +8,10 @@ from decompiled code, **[live]** = confirmed against the running server.
 > **⚠ Firmware-variant caveat (read `FIELD_NOTES.md`).** This is reverse-engineered
 > from the **2020 `LS_S6` firmware sample** (v0.7.1). A physical unit tested in the
 > field runs **different firmware** (SSID `Proscenic-6716_…`, model `6716`). It **does**
-> expose Channel C, but on a **fixed UDP port `7319`** — not the `LS_S6` sample's
+> expose Channel C, but on a **fixed UDP port `7913`** — not the `LS_S6` sample's
 > randomized `9000–9999` range. **Correction (owner report):** an earlier field sweep
 > covered only `9000–9407` and saw those closed, wrongly concluding Channel C was
-> absent — it had simply scanned the wrong port. Channel C is live on **UDP `7319`** on
+> absent — it had simply scanned the wrong port. Channel C is live on **UDP `7913`** on
 > the real M7 Pro unit. Channels A/B are untested on that unit. Re-verify the exact
 > port/SSID against your target unit.
 
@@ -299,10 +299,10 @@ type codes. The device maps between them in `response_handle.cpp`.
 > **⚠ Port differs by firmware.** This channel is documented from the `LS_S6`
 > firmware, whose listener binds a **random** UDP port in `9000–9999`
 > (`rand()%1000+9000`). The real shipping `Proscenic-6716_…`/M7 Pro unit instead exposes
-> Channel C on a **fixed UDP port `7319`** (owner-confirmed). An earlier field sweep of
+> Channel C on a **fixed UDP port `7913`** (owner-confirmed). An earlier field sweep of
 > only `9000–9407` missed it and wrongly reported the channel closed; that was a
 > wrong-port false negative, now corrected. The command set below is accurate; only the
-> discovery/port differs — on shipping firmware use **UDP `7319`**, and confirm from
+> discovery/port differs — on shipping firmware use **UDP `7913`**, and confirm from
 > the vendor app or extracted from its own firmware.
 
 Used by the app on the **local network** (most importantly while the robot is in its
@@ -316,8 +316,8 @@ soft-AP: `apDemo` brings up AP at **192.168.78.1**, DHCP 192.168.78.50-150; the 
   binds a **UDP port chosen as `rand()%1000 + 9000` (9000–9999)** on the `LS_S6`
   sample; the app discovers the device/port via a broadcast `getID` exchange
   (`getID` → `{"result":"ok","type":"ipfromapp"}`). **[static]** **On the shipping
-  `6716`/M7 Pro firmware the listener is instead on a fixed UDP port `7319`
-  (owner-confirmed) [field]** — so target `7319` directly there rather than sweeping
+  `6716`/M7 Pro firmware the listener is instead on a fixed UDP port `7913`
+  (owner-confirmed) [field]** — so target `7913` directly there rather than sweeping
   `9000–9999`. *(The command set and JSON schemas below are fully recovered; if unsure
   of the port on a given unit, capture one real pairing session, or write the config
   files directly with shell access, see “Re-home”.)*
@@ -439,6 +439,17 @@ Order also matters: set the URL **before** the first uplink. Recommended local s
 ---
 
 # Rehoming — pointing the robot at your server
+
+> ## ‼ THE NECESSARY STEP — overwrite `ip_port.json`
+> The robot chooses its push-gateway (Channel B) from **`/data/bin/Run/Config/ip_port.json`**,
+> which it reads **first** and which is **sticky across reboots**. You rehome it by
+> **writing that file**, via `setUrl` in its **ip+port form**:
+> `{"cmd":"setUrl","ip":"<your host>","port":<your port>}`.
+> **`setUrl {"url":…}` + `setSta` do NOT rehome the robot** — they only change the cloud
+> base URL and the Wi‑Fi; the robot keeps dialing the cached Proscenic gateway. After
+> writing `ip_port.json`, **power-cycle the robot** (or root `killall network_proxy`) so
+> it re-reads the file. In `rehome.py` this is the `set-gateway` command / the gateway
+> step of `rehome` (NOT `set-url`).
 
 _This section corrects an earlier draft that wrongly said the robot speaks the app's
 20-byte imsocket protocol. **It does not.** The robot's control link is **Channel B**

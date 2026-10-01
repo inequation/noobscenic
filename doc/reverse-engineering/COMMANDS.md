@@ -80,7 +80,13 @@ command-name strings.)
 `FUN_00469498`) — these are the `{"cmd":"<name>",…}` commands used during pairing and
 by `rehome.py`, **not** transit: `setUrl`, `setSta`, `setAp`, `getWifi`, `resetWifi`,
 `getCfg`/`applyCfg`, `getSn`/`getID`/`setID`, `checkPwd`, `getLog`/`rmLog`, `bindOk`.
-(See `PROTOCOL.md` for `setUrl`'s two modes.)
+
+> **`setUrl` has two modes, and only one rehomes the robot:**
+> - `{"cmd":"setUrl","url":"…"}` → writes `/data/bin/Run/Config/url` (cloud base URL only).
+> - `{"cmd":"setUrl","ip":"…","port":N}` → writes `/data/bin/Run/Config/ip_port.json`
+>   directly. **This is the required rehome step** — the robot reads `ip_port.json` first
+>   and it is sticky, so the `url`/`setSta` path alone does not move it off the cached
+>   Proscenic gateway. After this, power-cycle the robot. See `PROTOCOL.md` → "Rehoming".
 
 ## Robot → server reports (Channel B, device→cloud, always plaintext)
 

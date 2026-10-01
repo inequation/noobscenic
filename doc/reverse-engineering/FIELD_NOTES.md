@@ -16,11 +16,11 @@ pktmon capture reframed from 802.11 → L3); **[static]** = from the firmware an
 | Pairing SSID | `LDRobot` (hardcoded in `apDemo`/`RkLunch.sh`) | **`Proscenic-6716_20403551`** (model id `6716`, not referenced anywhere in the sample) |
 | Soft-AP gateway IP | `192.168.78.1` | `192.168.78.1` — **matches** |
 | dnsmasq on the AP | yes (`apDemo`) | yes — **DNS on UDP+TCP :53 confirmed** |
-| Channel-C UDP `{"cmd":...}` listener | present on random `9000–9999` (`OpenUdpRemoteCtrl`, `rand()%1000+9000`) | **present on fixed UDP `7319`** (owner-confirmed; the sweep below missed it — see correction) |
+| Channel-C UDP `{"cmd":...}` listener | present on random `9000–9999` (`OpenUdpRemoteCtrl`, `rand()%1000+9000`) | **present on fixed UDP `7913`** (owner-confirmed; the sweep below missed it — see correction) |
 
 > **CORRECTION (owner report):** Channel C **is** present on the real M7 Pro unit — on
-> a **fixed UDP port `7319`**. The sweep below only probed `9000–9407` (the `LS_S6`
-> sample's port range) and therefore missed `7319`; its "absent" conclusion was a
+> a **fixed UDP port `7913`**. The sweep below only probed `9000–9407` (the `LS_S6`
+> sample's port range) and therefore missed `7913`; its "absent" conclusion was a
 > wrong-port false negative. The capture facts below are accurate for the range that was
 > scanned; the conclusion that Channel C is absent is retracted.
 
@@ -47,9 +47,9 @@ Capture = 3375 frames, 12 s, during `rehome.py discover/info` against `192.168.7
   never exercised.)
 
 ## Implications for the RE documentation
-1. **Channel C is present on the `6716`/M7 Pro unit — on fixed UDP `7319`** (owner-confirmed),
+1. **Channel C is present on the `6716`/M7 Pro unit — on fixed UDP `7913`** (owner-confirmed),
    not the `LS_S6` sample's random `9000–9999`. The earlier "not present" finding was a
-   wrong-port sweep (`9000–9407` only). Target **UDP `7319`** on shipping units; still
+   wrong-port sweep (`9000–9407` only). Target **UDP `7913`** on shipping units; still
    re-verify the port on any given unit.
 2. **Channels A and B (cloud REST + push gateway) are UNTESTED on the `6716` unit.**
    They are cloud-facing and *may* still match (the platform is the same LDRobot base,
