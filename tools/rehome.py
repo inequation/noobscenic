@@ -16,9 +16,21 @@ Typical use, with the robot in pairing mode (soft-AP `LDRobot`, robot at
     ./rehome.py discover
     ./rehome.py info
     ./rehome.py rehome --server-host 192.168.1.10 --ssid my-wifi --pwd 'secret'
+    # ...then power-cycle the robot (see below).
 
-`rehome` sets the cloud URL and the push-gateway address first and moves the robot to
-your Wi-Fi last, because that last step tears down the AP we are talking over.
+`setUrl` has two forms, and they write two different files (PROTOCOL.md → "Rehoming").
+The `url` form rewrites the cloud base URL that HTTP registration uses
+(`/data/bin/Run/Config/url`); the `ip`+`port` form writes the Channel-B push-gateway
+address (`/data/bin/Run/Config/ip_port.json`) directly. The robot reads `ip_port.json`
+first and keeps it across reboots, so it is the `ip`+`port` write that actually re-homes
+the robot — `setUrl(url)` + `setSta` on their own leave it dialing the cached Proscenic
+gateway. `rehome` writes both and switches the Wi-Fi last, because that last step tears
+down the AP we are talking over.
+
+Then you MUST power-cycle the robot. Nothing on this channel makes the daemon re-read
+`ip_port.json` or drop its cached cloud session, so it keeps using the old gateway until
+a cold, session-free boot — there is no UDP reboot command (with root, `killall
+network_proxy` does the same). `rehome` and `point-here` both say so when they finish.
 
 If `discover` finds nothing, the unit may not speak this protocol at all — see
 ../doc/reverse-engineering/FIELD_NOTES.md. `portscan` and `listen` are the tools for
@@ -401,16 +413,35 @@ def normalise_url(url: str) -> str:
 
 
 def cmd_set_url(chan: Channel, args) -> int:
+    """Write the cloud base URL (`/data/bin/Run/Config/url`), used for HTTP registration.
+
+    This alone does NOT re-home the robot: it keeps dialing the Channel-B push gateway
+    cached in `ip_port.json`. Use `set-gateway` (or `rehome`) to change that, then
+    power-cycle the robot. See PROTOCOL.md → "Rehoming".
+    """
     need_port(chan, args)
     reply = chan.command("setUrl", url=normalise_url(args.url))
     print("setUrl ok: %s" % json.dumps(reply, ensure_ascii=False))
+    print("note: this sets only the HTTP registration base. To re-home the robot you")
+    print("must also write ip_port.json (`set-gateway`) and power-cycle it.")
     return EXIT_OK
 
 
 def cmd_set_gateway(chan: Channel, args) -> int:
+    """Write `ip_port.json` — the Channel-B push-gateway address, and the single write
+    that actually re-homes the robot.
+
+    The robot reads this file first and prefers it over HTTP registration, so pointing
+    it here is what moves the robot off the cached Proscenic gateway. It takes effect
+    only on the next cold boot (the daemon re-reads `ip_port.json` session-free), so
+    power-cycle the robot afterwards. See PROTOCOL.md → "Rehoming".
+    """
     need_port(chan, args)
     reply = chan.command("setUrl", ip=args.ip, port=args.port_number)
     print("setUrl(ip/port) ok: %s" % json.dumps(reply, ensure_ascii=False))
+    print("wrote ip_port.json — this is the write that re-homes the robot.")
+    print("power-cycle the robot to apply it (there is no UDP reboot; with root,")
+    print("`killall network_proxy` has the same effect).")
     return EXIT_OK
 
 
@@ -495,17 +526,28 @@ def cmd_get_log(chan: Channel, args) -> int:
 
 
 def cmd_rehome(chan: Channel, args) -> int:
-    """The whole sequence, in the order that does not cut the branch we sit on."""
+    """The whole sequence, in the order that does not cut the branch we sit on.
+
+    Two of these writes matter and one is the point of the exercise. The `ip`+`port`
+    form of setUrl writes `/data/bin/Run/Config/ip_port.json`, the Channel-B push-gateway
+    address the robot dials; the robot reads that file first and keeps it across reboots,
+    so writing it is what actually re-homes the robot. The `url` form only rewrites the
+    cloud base URL used for HTTP registration. setUrl(url) + setSta on their own do NOT
+    move the robot off the cached Proscenic gateway (PROTOCOL.md → "Rehoming"), and none
+    of these commands makes the daemon re-read its config or drop its cached session — so
+    the sequence ends by telling the operator to power-cycle the robot.
+    """
     check_passphrase(args.pwd)
     url = normalise_url(args.url or "http://%s:%d/" % (args.server_host, args.http_port))
     gateway_ip = args.gateway_ip or args.server_host
 
     need_port(chan, args)
 
-    print("1/4 setUrl  %s" % url)
+    print("1/4 setUrl  cloud base URL  %s" % url)
     chan.command("setUrl", url=url)
 
-    print("2/4 setUrl  gateway %s:%d" % (gateway_ip, args.gateway_port))
+    print("2/4 setUrl  push gateway    %s:%d  (writes ip_port.json — the write that re-homes)"
+          % (gateway_ip, args.gateway_port))
     chan.command("setUrl", ip=gateway_ip, port=args.gateway_port)
 
     print("3/4 getCfg  (verify)")
@@ -527,9 +569,18 @@ def cmd_rehome(chan: Channel, args) -> int:
         print("    (expected if the AP went away as it switched — verify on your LAN)")
 
     print()
-    print("done. The robot is joining %s and will look for:" % args.ssid)
-    print("  channel A (HTTP)    %s" % url)
-    print("  channel B (gateway) %s:%d" % (gateway_ip, args.gateway_port))
+    print("writes done. Now the one step this channel cannot do for you:")
+    print()
+    print("    >>> POWER-CYCLE THE ROBOT <<<")
+    print()
+    print("Nothing here makes the daemon re-read ip_port.json or drop its cached cloud")
+    print("session, so until it reboots it keeps dialing the old gateway. On a cold boot")
+    print("it has no session, re-reads ip_port.json, and registers against you instead.")
+    print("(With root you can `killall network_proxy` instead; there is no UDP reboot.)")
+    print()
+    print("Then the robot joins %s and will look for:" % args.ssid)
+    print("  channel A (HTTP register)  %s" % url)
+    print("  channel B (push gateway)   %s:%d" % (gateway_ip, args.gateway_port))
     print("Start noobscenic on those ports and watch the traces.")
     return EXIT_OK
 
@@ -703,26 +754,33 @@ def cmd_point_here(chan: Channel, args) -> int:
     The robot reaches the vendor cloud through whatever setUrl holds, and 192.168.78.0/24
     is directly connected on its AP interface, so it can reach a server on that subnet
     with no Wi-Fi join and no default route. That sidesteps setSta entirely.
+
+    As in `rehome`, the `ip`+`port` write (ip_port.json) is the one that re-homes the
+    robot, and a power cycle afterwards is mandatory: the daemon only re-reads that file
+    and re-registers on a cold, session-free boot (PROTOCOL.md → "Rehoming").
     """
     need_port(chan, args)
     host = args.ip or local_ip_for(chan.target)
     url = normalise_url(args.url or "http://%s:%d/" % (host, args.http_port))
 
-    print("1/2 setUrl  %s" % url)
+    print("1/2 setUrl  cloud base URL  %s" % url)
     chan.command("setUrl", url=url)
-    print("2/2 setUrl  gateway %s:%d" % (host, args.gateway_port))
+    print("2/2 setUrl  push gateway    %s:%d  (writes ip_port.json — the write that re-homes)"
+          % (host, args.gateway_port))
     chan.command("setUrl", ip=host, port=args.gateway_port)
 
     print()
-    print("done. Stay joined to the robot's AP and run noobscenic on this machine:")
+    print("writes done. Run noobscenic on this machine:")
     print("    ./target/debug/noobscenic --data-dir ./var")
     print("The robot will look for:")
-    print("  channel A (HTTP)    %s" % url)
-    print("  channel B (gateway) %s:%d" % (host, args.gateway_port))
+    print("  channel A (HTTP register)  %s" % url)
+    print("  channel B (push gateway)   %s:%d" % (host, args.gateway_port))
     print()
-    print("If nothing arrives within a few minutes, power-cycle the robot: the daemon")
-    print("may only read the URL at start-up. Give this machine a static address on")
-    print("192.168.78.0/24 first, so it is still reachable when the robot comes back.")
+    print("Then power-cycle the robot — this is required, not a fallback: nothing on this")
+    print("channel makes the daemon re-read ip_port.json or drop its cached cloud session,")
+    print("so it keeps dialing the old gateway until a cold boot. Give this machine a")
+    print("static address on 192.168.78.0/24 first, and rejoin the robot's AP when it")
+    print("comes back, so it stays reachable. (Root: `killall network_proxy`.)")
     return EXIT_OK
 
 
@@ -824,11 +882,11 @@ def build_parser() -> argparse.ArgumentParser:
                         help="how long to wait for the scan result (default %(default)ss)")
     p_scan.set_defaults(func=cmd_scan)
 
-    p_url = subs.add_parser("set-url", help="set the channel-A base URL")
+    p_url = subs.add_parser("set-url", help="set the cloud base URL (HTTP register; does not re-home on its own)")
     p_url.add_argument("url", help="e.g. http://192.168.1.10:8080/")
     p_url.set_defaults(func=cmd_set_url)
 
-    p_gw = subs.add_parser("set-gateway", help="set the channel-B push-gateway address")
+    p_gw = subs.add_parser("set-gateway", help="write ip_port.json — the Channel-B gateway (the write that re-homes)")
     p_gw.add_argument("ip")
     p_gw.add_argument("port_number", type=int, metavar="port")
     p_gw.set_defaults(func=cmd_set_gateway)
@@ -883,7 +941,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_pr.add_argument("--verbose", "-v", action="store_true", help="show every refusal")
     p_pr.set_defaults(func=cmd_probe_sta)
 
-    p_re = subs.add_parser("rehome", help="setUrl + setSta, in the right order")
+    p_re = subs.add_parser("rehome", help="setUrl (url+gateway) + setSta in order; then power-cycle the robot")
     p_re.add_argument("--server-host", required=True, help="where noobscenic runs, as the robot sees it")
     p_re.add_argument("--http-port", type=int, default=8080)
     p_re.add_argument("--gateway-ip", help="defaults to --server-host")
