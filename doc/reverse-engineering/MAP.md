@@ -22,9 +22,10 @@ are from `network_proxy`, `navigator`, `slam_pose_provider`. **[static]** unless
   (key 100, 1000 KB), `ShowMap` (key 101, 2000 KB), `SegmentationMapShareMem`.
 
 ## Map upload message — `infoType` 20002 (device → cloud)
-`map_send.cpp` emits this same `20002` payload on **both** transports — as a Channel-B
-gateway frame **and** via Channel-A `cleanPack/uploadEvents` — so a replacement server
-should accept it on either. Exact template (from `network_proxy`):
+`map_send.cpp` emits this `20002` payload **only over HTTP**, as Channel-A
+`cleanPack/uploadEvents` (`FUNC_MAP.md` §2.1 corrects an earlier claim that it also went out on
+Channel B; inbound `20002`/`21014` on Channel B are "send the map now" requests, not uploads).
+Exact template (from `network_proxy`):
 ```json
 {"infoType":20002,"data":{
   "SN":"<serial>",
@@ -34,31 +35,40 @@ should accept it on either. Exact template (from `network_proxy`):
   "lz4_len":<int>,
   "area":[ <region>, … ],
   "map":"<base64>", "base64_len":<int>,
-  "chargeHandlePos":[<int x>,<int y>], "chargeHandlePhi":<int deg>,
+  "chargeHandlePos":[<int x, mm>,<int y, mm>], "chargeHandlePhi":<int, (phi+π)*1000 mrad>,
   "chargeHandleState":"find"        // or, when unknown: "chargeHandleState":"notFind" (no pos/phi)
 }}
 ```
 * **`map`** = `base64( LZ4_compress( occupancy_grid_bytes ) )`.
   `lz4_len` = length of the LZ4 stream, `base64_len` = length of the base64 text.
   Decode: `LZ4_decompress_safe( base64_decode(map), out, lz4_len, width*height )`
-  → a **`width*height`** cell buffer, row-major. Cell = MRPT occupancy
-  (1 byte/cell in the transported grid; higher = more likely occupied, with a
-  distinct "unknown" value). **Confirm the exact cell value mapping (free / occupied
-  / unknown) against one captured map** — the byte semantics were not pinned to a
-  constant in the binary.
-* **World mapping:** cell `(col,row)` → metres `x = x_min + col*resolution`,
-  `y = y_min + row*resolution`.
+  → a **`width*height`** cell buffer, row-major. One byte per cell; `FUN_00438660` quantizes it
+  for upload: raw `<200` → **`0x7F` (unknown)**, otherwise → **`0xFF` (free floor)**; on maps
+  wide enough for segmentation (>89 cells) `0xFF` cells are overwritten with a non-zero room-label
+  byte (`0x00` = wall; the label range is not guarded against `0x7F`/`0xFF`). Full table and
+  caveats: `FUNC_MAP.md` §2.3.
+* **World mapping:** the wire `x_min`/`y_min` is the **stored cell-0 centre minus 0.05 m**
+  (`DAT_00487a88`), so the centre of cell `(col,row)` is `x = x_min + 0.05 + col*resolution`,
+  `y = y_min + 0.05 + row*resolution` — half a cell from the corner reading this document used
+  before (`FUNC_MAP.md` §2.3).
+* **Dock:** `chargeHandlePos` is in **mm** (`(int)(x*1000)`, `(int)(y*1000)`); `chargeHandlePhi` is
+  the heading as `(int)((phi+π)*1000)` — **thousandths of a radian** (range 0..6283), **not
+  degrees** (`network_proxy` `ChargerControl::ReadCharger` `FUN_0043eda0`; see `FUNC_STATUS.md` §2).
 
 ## Region / room descriptor (the `area[]` elements, and `SetAreaTactics`)
 Each region:
 ```json
-{ "<geometry: point list>",
+{ "vertexs":[[x,y],…],
   "active":"<str>", "name":"<room name>", "tag":"<str>",
-  "id":<int areaId>, "mode":"<clean mode>", "forbidType":"<forbidden-zone type>" }
+  "id":<int areaId>, "mode":"<region kind>", "forbidType":"<forbidden-zone type>" }
 ```
 * `name` = user-visible room name; `id` = area id (ties to `autoAreaId` partitions).
-* `mode` = per-room clean mode; `forbidType` = for no-go/virtual-wall regions
-  (a region with a `forbidType` is a forbidden zone rather than a room).
+* `mode` = **region kind**; a no-go/virtual-wall zone is `active:"forbid"` — `forbidType` is used
+  only then (it is always present in the robot's output). Per-room clean mode is `cleanType`,
+  per-room fan is `workNoisy`; the corrected field table is `FUNC_MAP.md` §4.
+* ⚠ `name`, `tag` and `mode` are copied with no length check (unbounded `strcpy` into 32-byte
+  stack buffers; struct fields 32/32/31 bytes) — keep `name`/`tag` ≤31 and `mode` ≤30 UTF-8
+  bytes (`FUNC_MAP.md` §4).
 * Categories tracked internally: clean areas, forbid areas, `backWashArea`,
   `AutoForbidRegion` (auto-generated no-go around traps).
 

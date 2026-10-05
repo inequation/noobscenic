@@ -95,7 +95,10 @@ Your rehome server **will** receive these:
 - **`infoType 21006`** — keepalive ping `{"data":{}}` (**must pong**).
 - **`infoType 20002`** — occupancy-grid map upload (LZ4; see `MAP.md`).
 - **`infoType 21011`** — clean-path stream: `{userId,pathID,startPos,totalPoints,posArray,pointCounts}`.
-- **`infoType 21020`** — chunked pack transfer (`packId`; error `reason:"invalid json …"`).
+- **`infoType 21020`** — *(correction)* not a robot report: it is the **remote-control command**
+  (`data.ctrlCode` + optional `data.params`), server→robot, **no reply** on Channel B. The old
+  "chunked pack transfer (`packId`)" reading is the separate LAN UDP handler's ack
+  (`FUNC_COMMANDS.md` §2.1, `FUNC_MAP.md` §3).
 - **`infoType 10001`** — connect handshake (`connectionType`, empty `token`, `sn`).
 - **Status frame** (`event_send.cpp`): `reliable, elecReal(battery), subMode,
   isInForbidMode, cleanArea, allArea, cleanTime, allTime, workNoisy, errorState,

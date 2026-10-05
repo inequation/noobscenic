@@ -10,7 +10,8 @@ From RE of firmware `network_proxy` (see PROTOCOL.md section B):
     every frame it sends with '#\\t#' too, or the robot's splitter never completes.
   * Message object: {"infoType":<int>, "data":{...}} (+ "message"/"reason"/"packId").
   * Device -> server (plaintext, never encrypted): 10001 handshake, 21006 ping,
-    20002 map upload, 21011 clean-path, 21020 chunked pack.
+    20002 map upload, 21011 clean-path.  (21020 is NOT a device report: it is the
+    server->robot remote-control command, no reply — FUNC_COMMANDS.md §2.1.)
   * Server -> device command: {"infoType":N,"encrypt":0,"data":{...}}  (encrypt MUST
     be an integer or the frame is DROPPED; encrypt:0 => data is a plaintext object,
     the simplest correct path; encrypt:1 => data is base64(AES-128-ECB(json,
@@ -18,10 +19,15 @@ From RE of firmware `network_proxy` (see PROTOCOL.md section B):
   * Keepalive: the robot sends {"infoType":21006,"data":{}} periodically and drops +
     reconnects if not ponged. Pong immediately.
 
-Usage:
-  1) setUrl {"ip":"<host running this>","port":20009}   (writes ip_port.json)
-  2) python3 rehome_server.py 20009
-  3) reboot robot (or: adb/root  killall network_proxy)
+Usage (order matters — see PAIRING_LOG_ANALYSIS.md §8):
+  1) start this server FIRST:  python3 rehome_server.py <port>
+  2) setUrl {"ip":"<host running this>","port":<port>}   (writes ip_port.json; no
+     reboot/restart needed — the robot's 1 s heartbeat applies it live)
+  3) setID {"id":"<userId>","deviceSN":"<robot SN>"}     (arms the connect → robot dials here)
+  Do NOT send bindOk: on this firmware it close()s the local UDP socket without stopping
+  the listener and spins a ~85 forks/s log storm forever (PAIRING_LOG_ANALYSIS.md §5).
+  Pairing ends only after this server pongs 21006 AND the robot's Channel-A preBind POST
+  gets code:0 back (then the robot fires internal event EID 0x460).
 This is a logging + keepalive skeleton; fill send_command() calls for control.
 Command payloads (infoType N / data fields) -> see COMMANDS.md. If you use HTTP
 registration instead of the ip_port.json shortcut, your /cleanPack/register response

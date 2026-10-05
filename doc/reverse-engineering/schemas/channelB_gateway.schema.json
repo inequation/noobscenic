@@ -11,7 +11,6 @@
     "encrypt": {"type": "integer", "description": "MANDATORY on cloud->device commands. 0 = data is a plaintext JSON object; 1 = data is base64(AES-128-ECB(json, session[:16])). Missing => frame dropped (msg['encrypt'].isInt() gate in FUN_00457f08)."},
     "message": {"enum": ["ok","fail"]},
     "reason": {"type": "string", "description": "present on failures, e.g. 'invalid json format !!'"},
-    "packId": {"type": "integer", "description": "chunk id for packetized transfers (infoType 21020)"},
     "data": {"type": ["object","string"], "description": "device->cloud: plaintext JSON object. cloud->device command: object when encrypt:0, base64-AES string when encrypt:1."}
   },
   "$comment": "Per-infoType data shapes below (as $defs). Match on infoType then validate data.",
@@ -62,8 +61,8 @@
             "base64_len": {"type": "integer"},
             "map": {"type": "string", "description": "base64( LZ4_compress( width*height occupancy cells, row-major ) )"},
             "area": {"type": "array", "items": {"$ref": "#/$defs/region"}},
-            "chargeHandlePos": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2},
-            "chargeHandlePhi": {"type": "integer", "description": "dock orientation, degrees"},
+            "chargeHandlePos": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2, "description": "dock position, mm ((int)(x*1000), (int)(y*1000))"},
+            "chargeHandlePhi": {"type": "integer", "minimum": 0, "maximum": 6283, "description": "dock orientation as (int)((phi+pi)*1000) thousandths of a radian (0..6283), NOT degrees"},
             "chargeHandleState": {"enum": ["find","notFind"]}
           }}
       }
@@ -102,10 +101,12 @@
           }}
       }
     },
-    "pack_21020": {
+    "rc_21020_cloudToDevice": {
+      "description": "REMOTE CONTROL command (cloud->device). data.ctrlCode selects the action (3001..3013; FUNC_COMMANDS.md §3); optional data.params (e.g. {speed_v,speed_w} for 3013). The robot sends NO reply on Channel B — confirm via the status 'mode' echo. The packId/'rfctrl' ack belongs to the separate LAN UDP remote-control handler (FUN_00414140), not this channel.",
       "type": "object",
-      "properties": {"infoType": {"const": 21020}, "message": {"enum": ["ok","fail"]},
-        "packId": {"type": "integer"}, "reason": {"type": "string"}}
+      "properties": {"infoType": {"const": 21020}, "encrypt": {"const": 0},
+        "data": {"type": "object", "required": ["ctrlCode"],
+          "properties": {"ctrlCode": {"type": "integer"}, "params": {"type": "object"}}}}
     }
   }
 }

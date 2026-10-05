@@ -51,7 +51,7 @@ There are **three** separate channels. Do not conflate them.
 | Endpoint | Method | Purpose | Body / notable fields |
 |---|---|---|---|
 | `cleanPack/register` | POST | device registration → issues **session + cookie** | `sn=<sn>&ld_sn=<ld_sn>&sig=<urlenc b64>&ts=0` → resp `data.{session,cookies}` |
-| `cleanPack/binding` / `cleanPack/unbinding` | POST | bind/unbind device to a user account | sn, username/token |
+| `cleanPack/binding` / `cleanPack/unbinding` | POST | bind/unbind device to a user account | **observed body (this unit):** `sn=<sn>&ts=<sn>&userId=<userId>` — the `ts` field repeats the **SN** (vendor quirk, don't validate it) — resp `{"code":0}` = bind success |
 | `cleanPack/getSockAddr` | POST | get the **push-gateway** `ip:port` (channel B) | **cookie-authenticated**, runs after `register`; request body fields not fully pinned (⚠ gap — see note); resp `data.addr_list[]={ip,port}`, device iterates the list |
 | `cleanPack/sync` | POST | device-attribute / version sync (OTA check) | see below |
 | `cleanPack/response` | POST | device → cloud command ACK/results | infoType payloads |
@@ -80,6 +80,14 @@ sn=<serial>&companyId=<int>&mcuVer=<h185v60>&version=<0.7.1>&versionCode=<1241>
 `POST https://mobile.proscenic.cn/cleanPack/sync` currently returns
 `{"code":102,"message":"你的sid过期啦","data":{}}` — i.e. it needs a valid `sid`
 first obtained via `register`/login. **[live]**
+
+**Observed on the wire (robot → our server, 2026-10-05 19:56:14Z, 98 B) [proven]:**
+```
+sn=LSLDSM7PRO20403551&companyId=48&mcuVer=S6&version=0.7.1&versionCode=1241&gitSha=NULL&cloud=psnk
+```
+i.e. for this unit `companyId=48` (Proscenic), `mcuVer=S6` (the LS_S6 base),
+`version 0.7.1`, `versionCode 1241`, `gitSha=NULL`, `cloud=psnk` — all matching the
+analyzed image. Sent once right after the link came up, answered `{"code":0}`.
 
 **Firmware download URL** is a *signed* OSS request **[static]**:
 ```
@@ -120,15 +128,33 @@ The downloaded file is the RSA-signed container from `REPORT.md` §1.
   `data.addr_list[]={ip,port}` (device iterates the list). Note the on-wire response key
   is **`addr_list`** (a list), whereas the local `/data/bin/Run/Config/ip_port.json` file
   the device derives from it uses flat **`{"ip","port"}`**.
-* **⚠ Gap 2 — binding state machine (`bind_user.cpp`):** there is a `BindUser` flow
-  the endpoint one-liners understate: `StartBind`, `need to update bind, BDS_WAIT_CONN
-  -> BDS_SEND_BIND..`, `send preBind msg success..`, `directly bind success..`,
-  `check bind status timeOut..`, `Bind Timeout`, `Recv unexpect SetBindSuccess funccall`;
-  request templates `sn=%s&ts=%s&userId=%s` and `devType=3&sn=%s&ts=%s&qid=%s`.
-  A freshly re-homed device may sit in a preBind/retry state. **It is not established
-  whether map upload / command execution is gated on bind success** — determine this
-  from a capture or by testing the replacement server; if gated, the server must drive
-  the device to `SetBindSuccess`.
+* **Gap 2 — binding state machine (`bind_user.cpp`) — now CONFIRMED end-to-end
+  [proven, first live capture 2026-10-05].** The `BindUser` flow (`StartBind`,
+  `need to update bind, BDS_WAIT_CONN -> BDS_SEND_BIND..`, `send preBind msg
+  success..`, `directly bind success..`, `check bind status timeOut..`, `Bind
+  Timeout`, `Recv unexpect SetBindSuccess funccall`) POSTs its preBind to
+  **`cleanPack/binding`** (confirmed — was "likely"). The moment the device got a
+  working Channel-B session (TCP + `10001` + `21006` pongs), it fired **three Channel-A
+  requests within ~100 ms, on three separate connections** — all with the SN above and
+  all answered by a plain catch-all `{"code":0,"data":{}}`:
+
+  | # | endpoint | body (observed) | answer that mattered |
+  |---|---|---|---|
+  | 1 | `POST /cleanPack/binding` | `sn=LSLDSM7PRO20403551&ts=LSLDSM7PRO20403551&userId=Foo` (54 B) | `code:0` → **"directly bind success"** → EID `0x460` → **pairing indication ended** |
+  | 2 | `POST /cleanPack/register` | `sn=…&ld_sn=14411442DB220CBE&sig=<urlenc b64 RSA>&ts=0` (152 B) | `code:0` accepted, **no session/cookies issued** (see below) |
+  | 3 | `POST /cleanPack/sync` | see §A sync above (98 B) | `code:0` |
+
+  Two consequences:
+  * **A `code:0` catch-all is sufficient to complete the bind** — for a bind-only
+    rehome the server needs no real logic; the preBind's `code:0` is the whole trigger.
+  * Because no `session`/`cookies` were returned (and because `register`'s `ts` is a
+    literal `0`, `sig` covers `<SN>:<unix_time>`), the device sent **no `Cookie:`
+    header at all** — cookieed requests (`getSockAddr`, reporters) only start once a
+    register response actually carries `data.cookies`. And with an empty session there
+    is **no Channel-B AES key** → cloud→device commands must use `encrypt:0`.
+  * Still open: whether map upload / command execution is *gated* on bind success —
+    the bind here completed via catch-all, so the next capture (with real handlers)
+    settles it.
 
 ### App ⇄ cloud (from the RE-repo README, for completeness) **[static]**
 `POST /user/login` (JSON), `GET /user/getEquips/<user>`,
@@ -218,6 +244,12 @@ On first use the device registers (`get_register.cpp`, `FUN_0044ec90`, lazy glob
 2. `POST <base>/cleanPack/register` with body
    `sn=<custom.sn>&ld_sn=<ld_sn>&sig=<sig>&ts=0`
    (`custom.sn`, `ld_sn` from `/data/bin/sys_data/`).
+   **Observed live (152 B) [proven]:** `sn=LSLDSM7PRO20403551&ld_sn=14411442DB220CBE
+   &sig=<128 chars: URL-encoded base64 RSA>&ts=0`
+   — `ld_sn` is verbatim the contents of `/data/bin/sys_data/sn` (16 hex chars). When
+   the server answers `code:0` but with `data:{}` (no session/cookies), the device
+   accepts it and simply carries on with an empty session — **no re-register loop**
+   (observed).
 3. **Response `data` must contain TWO string fields** (verified: the device does
    `strncpy(store+0x00, data.session, 0x40)` and `strncpy(store+0x48, data.cookies, 0x38)`;
    log `mSession:%s\tmCookies:%s`; missing → `no session!!!`):
@@ -248,6 +280,9 @@ pong, and if the server stays silent it **drops and reconnects**
 sets the online flag; pong handler `FUN_00457b30`, log `"on new ping pong msg..."`).
 **A server that never answers pings will make the robot loop connect→drop→reconnect —
 it will not "stay connected."** The server MUST reply to each `21006` Ping.
+**Observed live (2026-10-05) [field]:** the first `21006` arrived within ~1 s of the
+`10001` handshake, then one every **~6 s** (matching the ~6-7 s heartbeat-loop cadence
+in `FUN_00455090`), and the link stayed up for the whole session once the server ponged.
 
 **Pong contract (recovered statically):** the pong handler `FUN_00457b30` calls
 `RecvPong` (`FUN_00454880`), which **marks the device online on receipt alone**
@@ -284,7 +319,7 @@ Wire `infoType`s seen as JSON literals in the binaries:
 | 21003 | cloud→device | `SetAreaTactics` (room/area/forbidden-zone config; **AES if encrypted path**) |
 | 21006 | device→cloud | **keepalive Ping** `{"data":{}}` — **server MUST pong** (see Heartbeat) |
 | 21011 | device→cloud | **clean-path** stream (`userId,pathID,startPos,totalPoints,posArray`) |
-| 21020 | both | chunked pack transfer (`packId`; error `reason:"invalid json …"`) |
+| 21020 | cloud→device | **remote control** — `data.ctrlCode` + optional `data.params`, **no reply** on this channel (confirm via the status `mode` echo). The `packId`/"rfctrl" ack belongs to the separate **LAN UDP** handler, not Channel B; the earlier "chunked pack transfer" reading was wrong (`FUNC_COMMANDS.md` §2.1, `FUNC_MAP.md` §3) |
 | 70001 | app-side only | crypto-token message seen in the RE-repo capture; the string `70001` is **absent from every robot binary**, so it is **not part of the robot's protocol** and irrelevant to a replacement server (the robot's AES key is the register `session`, not this). |
 
 Note: `infoType` on the wire and the internal `EID_*` bus IDs are **different number
@@ -296,14 +331,14 @@ type codes. The device maps between them in `response_handle.cpp`.
 
 ## (C) Local config channel — UDP JSON `{"cmd":…}`  ← this is how you re-home it
 
-> **⚠ Port differs by firmware.** This channel is documented from the `LS_S6`
-> firmware, whose listener binds a **random** UDP port in `9000–9999`
-> (`rand()%1000+9000`). The real shipping `Proscenic-6716_…`/M7 Pro unit instead exposes
-> Channel C on a **fixed UDP port `7913`** (owner-confirmed). An earlier field sweep of
-> only `9000–9407` missed it and wrongly reported the channel closed; that was a
-> wrong-port false negative, now corrected. The command set below is accurate; only the
-> discovery/port differs — on shipping firmware use **UDP `7913`**, and confirm from
-> the vendor app or extracted from its own firmware.
+> **✔ Port resolved (2026-10-04, late): `7913` is hardcoded in this image.**
+> The listener's `bind` constant in `network_proxy` is `sin_port = 0xe91e` (= 7913 in
+> network byte order, `FUN_00468a70`). The `rand()%1000+9000` on `9000–9999`
+> (`OpenUdpRemoteCtrl`) is a **different, cloud-triggered RemoteCtrl socket** — not this
+> provisioning channel. The earlier field sweep of `9000–9407` was a wrong-port false
+> negative; the live `6716` unit answers on **UDP `7913`** (verified end-to-end:
+> getSn/setUrl/setSta/applyCfg/setID/getLog all served over it — a full live session is
+> decoded line-by-line in `PAIRING_LOG_ANALYSIS.md`).
 
 Used by the app on the **local network** (most importantly while the robot is in its
 soft-AP: `apDemo` brings up AP at **192.168.78.1**, DHCP 192.168.78.50-150; the SSID is
@@ -312,56 +347,105 @@ soft-AP: `apDemo` brings up AP at **192.168.78.1**, DHCP 192.168.78.50-150; the 
 `interface/.../wifi_config.cpp`, `udp_server_interface.cpp`). **[static]**
 
 * **Transport:** **UDP datagrams** carrying a JSON object; the device replies with a
-  JSON datagram. The device’s LAN control server (`OpenUdpRemoteCtrl`, `cp_function.cpp`)
-  binds a **UDP port chosen as `rand()%1000 + 9000` (9000–9999)** on the `LS_S6`
-  sample; the app discovers the device/port via a broadcast `getID` exchange
-  (`getID` → `{"result":"ok","type":"ipfromapp"}`). **[static]** **On the shipping
-  `6716`/M7 Pro firmware the listener is instead on a fixed UDP port `7913`
-  (owner-confirmed) [field]** — so target `7913` directly there rather than sweeping
-  `9000–9999`. *(The command set and JSON schemas below are fully recovered; if unsure
-  of the port on a given unit, capture one real pairing session, or write the config
-  files directly with shell access, see “Re-home”.)*
+  JSON datagram. The provisioning listener binds **UDP `7913`** — hardcoded in this image
+  (`FUN_00468a70`: `sin_port = 0xe91e`) — and runs only while the robot is in **AP mode**
+  (started at boot when `/data/cfg/wifi_mode` == `"ap"`, or on AP-mode entry; it is *not*
+  stopped when the robot later switches to STA, which is why it was still reachable on the
+  LAN in the 2026-10-04 session). The `rand()%1000+9000` range
+  (`OpenUdpRemoteCtrl`, `cp_function.cpp`) is a **separate cloud-triggered RemoteCtrl
+  socket**, not this channel. **[static + field]** Note: a plain `{"cmd":"getID"}` probe is
+  answered `{"result":"invalue cmd"}` — **`getID` is not a real command**; the
+  `{"cmd":"getID","result":"ok","type":"ipfromapp"}` reply in old notes belongs to **`setID`**.
+  Identify a unit with `getSn`. *(The command set and JSON schemas below are fully recovered;
+  with shell access you can also write the config files directly — see “Re-home”.)*
 * **Request shape:** `{"cmd":"<name>", …fields…}` → **Response:**
   `{"cmd":"<name>","result":"ok"|"fail","code":<int>, …}`; unknown → `{"result":"invalue cmd"}`.
 
 ### Command reference **[static]**
 | `cmd` | Request fields | Response | Effect |
 |---|---|---|---|
-| `getID` | – | `{"result":"ok","type":"ipfromapp"}` | discovery / identify |
+| `getID` | – | `{"result":"invalue cmd"}` (probed live; **not a command**) | *(the `ok/type:ipfromapp` reply is setID's; identify units with `getSn`)* |
 | `getSn` | – | `{"result":"ok","sn":"<serial>"}` | read serial (from `/data/bin/sys_data/custom.sn`) |
 | `getWifi` | – | `{"result":"ok","wifi_list":[ … ]}` | scan nearby APs |
 | `checkPwd` | – | `{"result":"ok","code":<connState>}` | query Wi-Fi/join status |
 | `getCfg` | – | `{"result":"ok", …, "staName":"…","staPwd":"…","staIp":"…","staMac":"…"}` | current STA/config |
-| `applyCfg` | config object | `{"result":"ok","code":1}` / `fail,-1` | apply config |
-| **`setSta`** | **`{"ssid":"<name>","staPwd":"<8-64 char pass>"}`** | `{"result":"ok","code":2}` / `fail,-1` | **join a Wi-Fi network as client** (see below) |
+| **`applyCfg`** | – (no fields read) | `{"result":"ok","code":1}` / `fail,-1` (fail = no `staName` stored) | **commit: replies, then runs `cleanpack_mode -m sta` with the stored creds** (`FUN_00464ed0`/`FUN_00467ae8` → `FUN_00464cb8`) |
+| **`setSta`** | **`{"staName":"<ssid>","staPwd":"<8-64 char pass>"}`** | `{"result":"ok","code":2}` / `fail,-1` | **stores** the STA creds in memory only (no Wi-Fi change) — follow with `applyCfg` (see below) |
 | `setAp` | ap params | `{"result":"ok"}` / `fail` | switch back to soft-AP |
 | **`setUrl`** | **`{"url":"http://you/"}`** *or* **`{"ip":"1.2.3.4","port":<n>}`** | `{"result":"ok"}` | **set cloud base URL / push-gateway** |
 | `resetWifi` | – | `{"result":"ok"/"fail"}` | clear Wi-Fi config |
+| **`setID`** *(added 2026-10-04)* | **`{"id":"<userId>","deviceSN":"<robot SN>"}`** | `{"cmd":"getID","result":"ok","type":"ipfromapp"}` / `{"cmd":"getID","result":"fail"}` | **bind request.** `FUN_004647e0`: `deviceSN` must equal the robot's own SN (`DAT_004c5738`, same value `getSn` returns) or it fails. Then `FUN_00449158` stores `id` as the bind `userId` and the SN, sets "bind pending" and starts the `BindUser` thread (`bind_user.cpp`, see below). Note the reply says `getID`: the `getID` reply documented earlier is actually `setID`'s. |
+| **`bindOk`** *(corrected 2026-10-04)* | – | none | `FUN_00463c60`: logs "Close mSockFd" and `close()`s the UDP config socket **without stopping the listener** (it doesn't set fd=-1 or clear the run flag) → every following `recvfrom` fails instantly on the stale fd and the loop spins at ~28 iter/s, logging `buf2Json Fail` + empty + `{result:invalue cmd}` per iteration (~85 `system()` forks/s, ~2.5 KB/s, indefinitely). **Do not send it** — it serves no purpose for a rehome. Mechanism + live evidence: `PAIRING_LOG_ANALYSIS.md` §5. |
 | `{"req":"getLog"/"rmLog"}` | offset | log package (base64) | pull/remove logs |
 
-### What `setSta` is
+### What `setSta` is — and the `applyCfg` commit (corrected 2026-10-03)
 **“Set Station mode.”** Wi-Fi has two roles: **AP** (the robot *is* the access point,
-`LDRobot`, used for pairing) and **STA/station** (the robot is a *client* that joins
-your router). `setSta` hands the robot the SSID + password of the network it should
-join. Handler `FUN_00464cb8` validates the password length (**8–64 chars**) and runs:
-```
-sh /data/bin/cleanpack_mode -m sta -s "<ssid>" -p "<password>"
-```
-which writes `wpa_supplicant.conf`, switches `wifi_mode`→`sta`, tears down the AP and
-associates to your router. (Field names taken from the firmware’s JSON templates —
-`ssid` + `staPwd`; confirm against one real app capture if a byte-exact client is
-needed.)
+used for pairing) and **STA/station** (the robot is a *client* that joins your router).
+**Pairing is two commands, not one** **[static]**:
+
+1. **`setSta`** `{"cmd":"setSta","staName":"<ssid>","staPwd":"<password>"}` — handler
+   `FUN_00464498` (dup `FUN_00467570`, `wifi_config.cpp`). It reads the keys
+   **`staName`** and **`staPwd`** (string literals at `0x4644e8`/`0x464648`; *not*
+   `ssid`), `strncpy`s them into the config object (`+0x80` SSID, `+0xc0` password,
+   64 B each) and replies `{"cmd":"setSta","result":"ok","code":2}`. **It does nothing
+   else** — no Wi-Fi change. `getCfg` will now echo the new `staName`/`staPwd`, which
+   makes it look as if pairing succeeded while the robot stays on its own AP.
+2. **`applyCfg`** `{"cmd":"applyCfg"}` — handler `FUN_00464ed0` (dup `FUN_00467ae8`).
+   If no SSID is stored it replies `{"cmd":"applyCfg","result":"fail","code":-1}`
+   ("ApplyCfg Has Some Error"). Otherwise it **sends** `{"cmd":"applyCfg","result":"ok","code":1}`
+   first (explicit `sendto`, because the AP is about to go away) and then calls
+   `FUN_00464cb8` ("Config wifi begin"), which checks the password is empty or 8–64
+   chars, shell-escapes both values and runs
+   ```
+   sh /data/bin/cleanpack_mode -m sta -s "<ssid>" -p "<password>"
+   ```
+   — this writes `wpa_supplicant.conf`, switches `wifi_mode`→`sta`, tears down the AP
+   and associates to your router. A too-short/too-long password fails *silently* here
+   (event `0xfce` only, after the `ok` reply).
+
+Earlier revisions of this file attributed the `cleanpack_mode` call to `setSta` and
+named its SSID key `ssid`; both were wrong. Expect the `applyCfg` reply to be the last
+datagram you receive from the AP.
+
+*Field caveat (updated 2026-10-04):* this is the `LS_S6` 2020 sample, but the shipping
+`6716` unit runs the same build and answers the same `{"cmd":…}` set on UDP `7913`. Its
+2026-10-03 attempt showed the "stored creds, stayed on the AP" symptom of a missing
+`applyCfg`; the 2026-10-04 session sent `applyCfg` and the robot successfully left its AP
+and joined the owner's Wi-Fi — so the recipe below is confirmed on real hardware
+(`PAIRING_LOG_ANALYSIS.md` §2).
+
+### Bind state machine (`bind_user.cpp`) — added 2026-10-04 **[static]**
+`setID` only *arms* the bind; the `BindUser` thread (`FUN_004495d8`, 1 s tick) does the rest:
+* **`BDS_WAIT_CONN` (0):** waits until "bind pending" is set **and** the cloud link is up
+  (a flag in the cloud object, `(*(+0xa8)+0x20)+8`); then logs
+  "need to update bind, BDS_WAIT_CONN -> BDS_SEND_BIND..".
+* **`BDS_SEND_BIND` (1):** `FUN_004492c0` POSTs `sn=<SN>&ts=<field +0x10>&userId=<field +0x50>`
+  — the two strings `setID` stored. `+0x50` is the `id` value (userId); `+0x10` appears to be
+  the second `setID` string, which would put `deviceSN` in `ts` — the decompiler's local
+  tracking here is ambiguous, so treat that pairing as **unverified** — to a Channel-A URL taken from
+  the config (`+0x88`; `cleanPack/binding` is the likely endpoint, the only `*binding` string)
+  and expects JSON with integer `code`: `0` = success, `0x66` (102) = re-register first.
+  Retries each tick up to 61 times, then "send preBind msg timeOut..".
+* **On success:** "send preBind msg success.." / "directly bind success..", sets
+  `DAT_004c5ce4=1` (never read anywhere) and posts **EID `0x460` (1120)**, which is the
+  "bind success" event other processes (UI/voice) react to — plausibly what ends the
+  robot's "pairing mode" indication.
+So `setID` does **not** itself POST anything: it *arms* the connection (heartbeat
+`HeartOnlineLd+9` → read `ip_port.json` → dial Channel B) and the `BindUser` thread waits
+for the link to come up before sending the bind. If the robot never reaches Channel B/A,
+the cause is upstream of the bind POST.
 
 ### Re-home recipe (keep the vacuum alive on your own cloud)
 1. Put the robot in pairing mode (soft-AP `LDRobot`, it listens on 192.168.78.1) and
    join that AP from your machine.
-2. `getID`/`getSn` to discover it; `getWifi` to list networks.
+2. `getSn` to identify it (plain `getID` is not a command — see §C); `getWifi` to list networks.
 3. **`setUrl`** → point it at your replacement server:
    `{"cmd":"setUrl","url":"http://192.168.1.x:8080/"}` (and/or the `ip`/`port` form to
    set the push gateway). This just writes `/data/bin/Run/Config/url` /
    `ip_port.json`.
-4. **`setSta`** → `{"cmd":"setSta","ssid":"<your-wifi>","staPwd":"<password>"}` to move
-   it onto your LAN.
+4. **`setSta`** → `{"cmd":"setSta","staName":"<your-wifi>","staPwd":"<password>"}`, then
+   **`applyCfg`** → `{"cmd":"applyCfg"}` to actually move it onto your LAN (`setSta` alone
+   only stores the creds).
 5. Stand up a server answering the channel-A endpoints your flow needs:
    `register` → return `data.session` (≥16 B; `session[:16]` is your AES key) **and**
    `data.cookies` (the sid, echoed back as `Cookie: cookies=…`); `getSockAddr` →
@@ -389,8 +473,10 @@ those directly and skip the UDP channel entirely.
   `{"cmd","result",…}` (C).
 * **How to send local commands / re-home?** Channel C — UDP `{"cmd":…}` JSON to the
   robot in soft-AP mode (see recipe), or write the config files directly with root.
-* **What is `setSta`?** The command that puts the robot in Wi-Fi **station** mode and
-  joins it to a given SSID/password (shells out to `cleanpack_mode -m sta`).
+* **What is `setSta`?** It **stores** the Wi-Fi creds the robot will use in station mode
+  (`{"cmd":"setSta","staName":…,"staPwd":…}`); the actual switch — `cleanpack_mode -m sta`,
+  drop AP, join — happens on **`applyCfg`**. (Earlier revisions attributed the join to
+  `setSta` itself; that was wrong.)
 
 ---
 
@@ -434,22 +520,33 @@ power-cycle) where the first uplink triggers `register` against the *new* URL.
    Equivalent local effect = option 1 or 2.
 
 Order also matters: set the URL **before** the first uplink. Recommended local sequence:
-`setUrl` → `setSta` → **reboot** (or `killall network_proxy` with root).
+`setUrl` → `setSta` → `applyCfg` → `setID` → reboot only if you need to *force
+re-registration against a new URL* (the session-stickiness issue above). **Update
+2026-10-04 (late):** for the **Channel-B address** (`setUrl ip/port`) a reboot is **not**
+needed — the heartbeat applies it live (see the boxed steps in the Rehoming section); the
+reboot advice in this section is about the *registration session*, not the address file.
+And **never send `bindOk`** (`PAIRING_LOG_ANALYSIS.md` §5).
 
 ---
 
 # Rehoming — pointing the robot at your server
 
-> ## ‼ THE NECESSARY STEP — overwrite `ip_port.json`
-> The robot chooses its push-gateway (Channel B) from **`/data/bin/Run/Config/ip_port.json`**,
-> which it reads **first** and which is **sticky across reboots**. You rehome it by
-> **writing that file**, via `setUrl` in its **ip+port form**:
-> `{"cmd":"setUrl","ip":"<your host>","port":<your port>}`.
-> **`setUrl {"url":…}` + `setSta` do NOT rehome the robot** — they only change the cloud
-> base URL and the Wi‑Fi; the robot keeps dialing the cached Proscenic gateway. After
-> writing `ip_port.json`, **power-cycle the robot** (or root `killall network_proxy`) so
-> it re-reads the file. In `rehome.py` this is the `set-gateway` command / the gateway
-> step of `rehome` (NOT `set-url`).
+> ## ‼ THE NECESSARY STEPS
+> 1. **Overwrite `ip_port.json`** — the robot chooses its push-gateway (Channel B) from
+>    **`/data/bin/Run/Config/ip_port.json`**, read first and sticky across reboots. Write it
+>    with `setUrl` in its **ip+port form**: `{"cmd":"setUrl","ip":"<your host>","port":<port>}`.
+>    `setUrl {"url":…}` alone changes only the cloud base URL — **never** use it for the B
+>    target. **No reboot is needed:** `setUrl ip/port` updates the live connection object
+>    (`FUN_00454458` SetIpPort) and the 1 s heartbeat loop applies the new address
+>    (run-log line `mIpAndPort : [ip:port]`). *(An earlier revision said to power-cycle
+>    here — that was wrong; the reboot advice belongs to the session/URL machinery, not the
+>    address file.)*
+> 2. **Arm it with `setID`** (`{"id":<userId>,"deviceSN":"<SN>"}`) — this is what makes the
+>    robot resolve the address and start dialing your Channel-B server. Then the full chain
+>    must succeed: B handshake `10001` + `21006` pongs → Channel-A preBind answered
+>    `code:0` → EID `0x460` ends pairing. See `PAIRING_LOG_ANALYSIS.md` §4/§8.
+> 3. **Never send `bindOk`** — it kills the local channel and starts the fork storm
+>    (see its table row in §C).
 
 _This section corrects an earlier draft that wrongly said the robot speaks the app's
 20-byte imsocket protocol. **It does not.** The robot's control link is **Channel B**
@@ -474,23 +571,49 @@ redirecting the app's hardcoded `bl-im` host — out of scope for a headless reh
 
 ## How the robot chooses its Channel-B target
 
-`get_tcp_addr.cpp` (`FUN_00451cd0`), in priority order:
+`get_tcp_addr.cpp` (`FUN_00451cd0`), in priority order (re-verified by disassembly 2026-10-05):
 1. `/data/bin/Run/Config/ip_port.json` = `{"ip":"<addr>","port":<int>}` (keys literally
-   `ip`/`port`) — used directly if present and valid.
-2. Otherwise HTTP registration (§B: `POST <base>cleanPack/register`) returns the
-   address plus the `session`/`cookies` (the `session[:16]` is the Channel-B AES key).
+   `ip`/`port`; writer is the `setUrl ip/port` handler `FUN_00466af0`) — used directly if
+   present and valid. **This path makes no HTTP request at all**, so when it works there is
+   no Channel-A traffic before the Channel-B dial.
+2. Otherwise **`GET <base>cleanPack/getSockAddr?version=1&sn=<sn>&companyId=<n>`** (curl,
+   5 s timeout) → parse `{"code":0,"data":{"addr_list":[{"ip":"…","port":N}]}}` (key bytes
+   confirmed in the binary: `code`, `data`, `addr_list`, element `ip`/`port`). On failure:
+   0.2 s sleep, then the outer 1 s retry — so a rejected local file makes the robot poll
+   getSockAddr roughly every 1.2 s.
 
-`FUN_00455090` is the reconnect loop that maintains the Channel-B TCP connection.
+`FUN_00454998` is the blocking resolver/loop around it; it hands the list to the TCP client
+and returns only once ≥1 address exists. It runs (a) **unconditionally at heartbeat-thread
+start** (i.e. at every boot — the thread is started by `main` → manager `Start` →
+`HeartOnlineLd::Start`, even in AP mode) and (b) whenever `setID` arms the connect flag
+(`HeartOnlineLd+9`). Immediately after it returns, the heartbeat calls
+`TcpClientPort::Connect` (`FUN_0046a588`) + sends the `10001` handshake — **the TCP SYN is
+the first packet the rehome can produce**, and it follows within ~1 s of a valid
+`ip_port.json` existing.
+
+**Boot caveat (URL composition):** the base for all `cleanPack/*` endpoints is
+`/data/bin/Run/Config/url`, but the endpoint strings are only *rebuilt* by `FUN_004650c8`
+when a `setUrl` command runs (`<base> + cleanPack/register|binding|getSockAddr|…`). Before
+the first `setUrl(url)` of a process lifetime they are relative (`cleanPack/…`), curl
+rejects them locally without emitting a packet, and getSockAddr polling is silent. Default
+base (file unreadable) is the vendor `https://mobile.proscenic.cn/`.
+
+`FUN_00455090` is the heartbeat/reconnect loop that maintains the Channel-B TCP connection
+(handshake `10001`, pings `21006`, close+redial on `isOpen==0`).
 
 ## `setUrl` has TWO modes (verified this session, `FUN_00466af0`, `wifi_config.cpp`)
 
 - `{"url":"..."}` → writes `/data/bin/Run/Config/url` and reloads the HTTP base
   (`FUN_004650c8`). **Changes only the registration endpoint.**
-- `{"ip":"...","port":<int>}` → writes `/data/bin/Run/Config/ip_port.json` **directly**.
-  **Sets the Channel-B target, bypassing HTTP registration.** It does **not** itself
-  reconnect (no session reset in the handler); the reconnect loop only re-reads
-  `ip_port.json` after the link drops — so **reboot or `killall network_proxy`** to
-  apply it.
+- `{"ip":"...","port":<int>}` → writes `/data/bin/Run/Config/ip_port.json` **directly**
+  **and** updates the live connection object (`FUN_00454458` SetIpPort: stores the ip/port
+  fields, marks the address valid). The 1 s heartbeat loop then applies it
+  (`FUN_00455090`: builds the address list, hands it to the TCP client, logs
+  `mIpAndPort : [ip:port]` in the run log). **No reboot / restart is required** — verified
+  live 2026-10-04; an earlier revision of this file claimed otherwise, which was wrong. The
+  dial itself is the heartbeat's normal job (it reconnects on its ~15 s cadence / whenever
+  the link is down); `setID` additionally arms the resolve-and-connect path
+  (`HeartOnlineLd+9`) that drives the bind.
 
 ## Why `setUrl`(url)+`setSta` alone did NOT make the robot call your server
 
@@ -514,7 +637,10 @@ redirecting the app's hardcoded `bl-im` host — out of scope for a headless reh
      or the robot loops connect→drop→reconnect;
    - send commands as `{"infoType":N,"encrypt":0,"data":{…}}#\t#` (use `encrypt:0` to
      skip AES entirely).
-3. Reboot / `killall network_proxy` so the robot re-reads `ip_port.json`.
+3. Send **`setID`** (`{"id":…,"deviceSN":"<SN>"}`) to arm the bind and watch your B server
+   for the `10001` handshake. Pairing ends only after the full chain succeeds
+   (B handshake + `21006` pongs → Channel-A preBind `code:0` → EID `0x460`). **Do not send
+   `bindOk`.** No reboot is needed for the address file (see the boxed steps above).
 
 Cross-references: full Channel-B spec → §B above; command vocabulary → `COMMANDS.md`;
 app-side Channel-A imsocket protocol → `WIRE_PROTOCOL.md`; extraction of the app →

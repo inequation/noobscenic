@@ -4,15 +4,6 @@ How the Qihoo 360 **Jiagu**-protected APK was defeated and the real app dex
 extracted (`com.baole.blap`). This is the method of record; scripts referenced
 live under `tmp/proscenic/jiagu/` and dumps under `artifacts/proscenic-m7pro/dex/`.
 
-> **The extracted `app_main.dex`/`app_secondary.dex` are not stored in this repo.**
-> `app_main.dex` embeds a live Alibaba Cloud AccessKey ID (a vendor backend
-> credential, not ours) as a compiled string constant. Since it's baked into
-> compiled bytecode it can't be redacted in place without corrupting the DEX,
-> so the commit that originally added both files was rewritten to drop them.
-> They are gitignored (`doc/reverse-engineering/dex/*.dex`) and regenerated
-> locally instead — never commit them. Everything needed to reproduce them
-> from the original APK is in §4 below plus the scripts under `jiagu/`.
-
 ## 0. TL;DR
 
 The dex is encrypted with a key **derived from the app's signing certificate**, and
@@ -142,8 +133,8 @@ with `jadx`.
 | `.../assets/libjiagu_x86_sigpatch.so` | gate-1-patched loader (repacked) |
 | `emulator/certwork/orig_cert.der` / `.hex` | original `youren` signer cert |
 | `emulator/psnic_sig.apk` | patched, debug-signed x86 build used for the dump |
-| `doc/reverse-engineering/dex/app_main.dex` | **decrypted real app** (com.baole.blap) — regenerate locally, gitignored, **not tracked** (embeds a vendor Alibaba Cloud AccessKey ID) |
-| `doc/reverse-engineering/dex/app_secondary.dex` | decrypted library dex — regenerate locally, gitignored, not tracked |
+| `artifacts/proscenic-m7pro/dex/app_main.dex` | **decrypted real app** (com.baole.blap) |
+| `artifacts/proscenic-m7pro/dex/app_secondary.dex` | decrypted library dex |
 
 ## 7. Why this was necessary
 
