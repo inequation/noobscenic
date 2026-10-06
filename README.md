@@ -9,48 +9,43 @@ keeps working without ever talking to Proscenic.
 
 Protocol analysis and reverse-engineering artifacts live in [`doc/`](doc/).
 
-Status: phases 0–1 are done and phase 3 is implemented — the server answers on both
-channels now (A with a benign `code:0` catch-all, B with the `10001` handshake and
-`21006` pongs), so a re-homed robot can complete its bind; phase 2's real channel-A
-handlers and the live "stays connected for minutes" run are still pending.
+Status: phases 0–1 are done and phase 3 is implemented and verified on the bench unit
+— the robot has been re-homed, stays connected on channel B with every `21006` ping
+answered, and its `register`/`binding` posts get `code:0`; channel A's real endpoint
+handlers (phase 2) are the next implementation step.
 
-## Running the first re-home test
+## Re-homing a robot
 
-This is phase 0's one remaining checklist item — pointing an actual robot at a
-server you control — and it doubles as phase 1's "done when": a complete wire
-trace of everything the robot tries to do. Both channels answer now: channel A
-(HTTP, port 8080) replies `{"code":0}` to every endpoint, and channel B (the
-gateway, port 8081) accepts the robot's TCP connection, answers the `10001`
-handshake and pongs every `21006` — which, together with channel A's answer to
-the bind POST, is what makes the robot leave pairing mode.
+1. Start the server first and leave it running:
 
-You'll need this machine on two networks in turn: the robot's soft-AP first (to
-send it setup commands over channel C), then whatever Wi-Fi you're re-homing it
-onto, which is where the server needs to be reachable from.
+       cargo run -- --data-dir ./var
 
-1. Find this machine's LAN IP on the Wi-Fi network the robot will join (e.g.
-   `ipconfig`) — call it `<server-ip>`.
-2. Start the server so it's listening before the robot ever calls home:
-   `cargo run -- --data-dir ./var` (or run the binary from your `cargo build`
-   directly, e.g. `target/debug/noobscenic.exe`). Wire tracing is on by
-   default; traces land in `var/traces/wire-<date>.jsonl`, with verbatim
-   per-event copies under `var/traces/raw/` (the default format is "both").
-3. Put the robot into pairing mode (soft-AP `LDRobot`, robot at
-   `192.168.78.1`) and join this machine to that AP.
-4. Run the re-home:
-   `python tools/rehome.py --server-host <server-ip> --ssid <your-wifi-ssid> --pwd '<your-wifi-password>' --userid <any-user-id> --trace rehome-trace.jsonl`
-   It finds the robot's UDP port, points its channel-A URL and channel-B gateway
-   at this machine, verifies with `getCfg`, arms the bind with `setID`, then
-   stores the Wi-Fi credentials and commits with `applyCfg` last — that step
-   tears down the soft-AP, so reconnect this machine to its usual network too.
-5. Watch `var/traces/wire-<date>.jsonl` (or the server's stderr) for the
-   robot's `register` call and whatever else it tries: every channel-A request
-   is logged, persisted, and answered with a benign `{"code":0}`, even for
-   endpoints not implemented yet. Channel-B frames (the `10001` handshake and
-   the `21006` pings) show up in the same trace under `"channel":"B"`, each
-   ping followed by the server's pong.
+   It listens on `0.0.0.0:8080` (channel A) and `0.0.0.0:8081` (channel B). The
+   listeners survive the Wi-Fi switch below — the robot dials in, the server never
+   dials out.
 
-If the tool reports no robot, confirm the robot is actually in pairing mode and
-this machine is joined to the `LDRobot` AP, not still on its normal Wi-Fi.
-`--dry-run` prints the datagrams instead of sending them (give it `--port` to
-skip the discovery sweep).
+2. Put the robot into pairing mode, join this machine to its own open Wi-Fi (the
+   network name begins with `Proscenic-`), and run:
+
+       python tools/rehome.py --server-host <server-ip> \
+           --ssid <target-wifi-ssid> --pwd '<target-wifi-password>' --userid <any-id>
+
+   It finds the robot's UDP port, points its cloud URL and push gateway at the given
+   server, arms the bind, then stores the Wi-Fi credentials and commits the
+   configuration.
+
+3. The commit disables the robot's AP, so reconnect this machine to your normal Wi-Fi
+   and watch the server's log and traces for the `10001` handshake and the `21006`
+   pings.
+   
+### Re-homing - troubleshooting
+
+If the tool reports no robot, check the robot is in pairing mode and this machine is
+on the `Proscenic-` network, not still on its normal Wi-Fi.
+
+If nothing reaches the server after the switch, check the firewall — a missing
+inbound "allow" rule, or a "deny" rule may cause the robot's packets to be dropped
+silently. The ports used by default are 8080 and 8081, TCP.
+
+`--dry-run` prints the datagrams instead of sending them.
+`--port 7913` skips the port discovery sweep on this model.

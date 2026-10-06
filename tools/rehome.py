@@ -5,11 +5,12 @@ Points the robot's cloud at the noobscenic instance on this machine and joins it
 your Wi-Fi. This is the only channel-C operation the project has: the server itself
 never speaks channel C (doc/PLAN.md section 13), so this is a one-shot setup tool
 rather than a client library. Standard library only, on purpose: it usually runs from
-a laptop that has just joined the robot's `LDRobot` soft-AP with nothing installed.
-Protocol reference: doc/reverse-engineering/PROTOCOL.md section C.
+a laptop that has just joined the robot's own open Wi-Fi (the network name begins
+with `Proscenic-`) with nothing installed. Protocol reference:
+doc/reverse-engineering/PROTOCOL.md section C.
 
 Start noobscenic first — it must be listening on both of its ports before the robot
-is armed — then, with the robot in pairing mode (soft-AP `LDRobot`, robot at
+is armed — then, with the robot in pairing mode (its own `Proscenic-…` AP, robot at
 192.168.78.1):
 
     ./rehome.py --server-host 192.168.1.10 --ssid my-wifi --pwd 'secret' --userid me

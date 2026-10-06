@@ -565,8 +565,9 @@ laptop that has just joined the robot's soft-AP with nothing installed.
 
 Context: the robot's LAN control server binds a UDP port chosen as
 `rand()%1000 + 9000`, i.e. somewhere in 9000–9999, and the app finds it with a
-broadcast `getID` exchange [PROTOCOL §C]. In pairing mode the robot is the AP
-`LDRobot` at `192.168.78.1` (DHCP .50–.150).
+broadcast `getID` exchange [PROTOCOL §C]. In pairing mode the robot is the AP at
+`192.168.78.1` (DHCP .50–.150) — `LDRobot` on the firmware sample, vendor-branded
+on shipping units (`Proscenic-6716_<serial>`).
 
 It is a one-shot tool: running it performs the whole re-home, there are no
 subcommands, and the server itself never speaks channel C. The bench unit answers on
@@ -641,22 +642,22 @@ the moment the item is genuinely done, and commit that tick together with the wo
 describes — see `AGENTS.md`. Each phase ends in something observable.
 
 ### Phase 0 — Re-home tool (no Rust; unblocks every live test)
-- [x] `tools/rehome.py` skeleton: argparse, UDP send/recv with timeout + retries, `--dry-run`, `--trace`
-- [x] `discover` sprays `getID` across 9000–9999 and reports the robot's `ip:port`
-- [x] `info` / `scan` (`getSn`, `getCfg`, `checkPwd`, `getWifi`) against the real robot
-- [x] `set-url`, `set-gateway`, `set-sta`, `set-ap`, `reset-wifi`, `get-log`
-- [x] `rehome` runs the full sequence in the right order (`set-sta` last)
+- [x] `tools/rehome.py`: argparse, UDP send/recv with timeout + retries, `--dry-run`, `--trace`
+- [x] discovery sweeps 7000–9999 and finds the bench unit on **UDP 7913** (`getID` answered as `invalue cmd`)
+- [x] the run is one command: discover → `setUrl` (URL + gateway) → `getCfg` verify → `setID` → `setSta` + `applyCfg`
+- [x] end-to-end on the bench unit: it joins Wi-Fi, dials channel B (`10001` handshake) and its `register`/`binding` posts are answered `code:0`
 
-Every subcommand is verified against `tools/fakerobot.py`, a stand-in that answers the
-documented channel-C shapes. The bench unit (`Proscenic-6716_20403551`) answers on
-**UDP 7913**, outside the documented `rand()%1000 + 9000` range, which is why the sweep
-now defaults to `7000-9999`; `getSn`, `getCfg` and `checkPwd` all work against it. The
-open box is waiting only on `getWifi` — see
-[`doc/reverse-engineering/FIELD_NOTES.md`](reverse-engineering/FIELD_NOTES.md).
+Every step is exercised against `tools/fakerobot.py`, a stand-in that answers the
+documented channel-C shapes including `setID`. The bench unit
+(`Proscenic-6716_20403551`) answers on **UDP 7913**, outside the documented
+`rand()%1000 + 9000` range, which is why the sweep defaults to `7000-9999`. (`getWifi`
+never returned a scan on the bench unit — see
+[`doc/reverse-engineering/FIELD_NOTES.md`](reverse-engineering/FIELD_NOTES.md) — and
+scanning is no longer part of the tool.)
 
 **Done when:** the robot's channel-A base URL and channel-B gateway point at a host we
-choose, and it can reach that host. Joining our Wi-Fi is the obvious way but not the
-only one: `point-here` serves the robot over its own soft-AP, which needs no `setSta`.
+choose, and it can reach that host — first done on the bench unit on 2026-10-06: it
+took both writes, joined the LAN and dialed the gateway.
 
 ### Phase 1 — Skeleton
 - [x] Cargo project, module layout, `error.rs`, graceful shutdown on Ctrl-C
@@ -687,6 +688,9 @@ to do — valuable before a single endpoint is implemented.
 
 **Done when:** *the milestone that matters* — the robot stays connected for many
 minutes with no reconnect loop, and the trace shows every ping answered.
+**Verified on the bench unit (2026-10-06):** a 54-minute session of 559 `21006`
+pings and 559 pongs with no reconnect loop, and after re-homing the robot dialed
+the gateway within seconds and its `register`/`binding` posts were answered `code:0`.
 
 ### Phase 4 — Telemetry
 - [ ] `uploadEvents` → shared `proto::dispatch`; `response`, `uploadLogs`, `uploadStats`, `uploadSingle`
