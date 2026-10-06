@@ -480,6 +480,21 @@ def cmd_set_ap(chan: Channel, args) -> int:
     return EXIT_OK
 
 
+def cmd_apply_cfg(chan: Channel, args) -> int:
+    need_port(chan, args)
+    reply = chan.command("applyCfg")
+    print("applyCfg ok: %s" % json.dumps(reply, ensure_ascii=False))
+    return EXIT_OK
+
+
+# NOTE: Disabled because this triggers a bug in the robot firmware, a fork bomb vulnerability, essentially.
+#def cmd_bind_ok(chan: Channel, args) -> int:
+#    need_port(chan, args)
+#    reply = chan.command("bindOk")
+#    print("bindOk ok: %s" % json.dumps(reply, ensure_ascii=False))
+#    return EXIT_OK
+
+
 def cmd_reset_wifi(chan: Channel, args) -> int:
     need_port(chan, args)
     reply = chan.command("resetWifi")
@@ -543,24 +558,37 @@ def cmd_rehome(chan: Channel, args) -> int:
 
     need_port(chan, args)
 
-    print("1/4 setUrl  cloud base URL  %s" % url)
+    print("1/6 setUrl  cloud base URL  %s" % url)
     chan.command("setUrl", url=url)
 
-    print("2/4 setUrl  push gateway    %s:%d  (writes ip_port.json — the write that re-homes)"
+    print("2/6 setUrl  push gateway    %s:%d  (writes ip_port.json — the write that re-homes)"
           % (gateway_ip, args.gateway_port))
     chan.command("setUrl", ip=gateway_ip, port=args.gateway_port)
 
-    print("3/4 getCfg  (verify)")
+    print("3/6 getCfg  (verify)")
     try:
         cfg = chan.command("getCfg")
         print("    %s" % json.dumps(redact(cfg, chan.show_secrets), ensure_ascii=False))
     except ProtocolError as exc:
         # getCfg is a read; a failure here does not undo the writes above.
         print("    warning: could not verify: %s" % exc, file=sys.stderr)
+    
+    print("4/6 setID   set user ID  %s" % args.userid)
+    reply = chan.command("getSn")
+    sn = reply.get("sn", "")
+    print("    %s" % json.dumps(sn, ensure_ascii=False))
+    fields: dict = {}
+    fields["id"] = args.userid
+    fields["deviceSN"] = sn
+    reply = chan.command("setID", **fields)
+    print("    %s" % json.dumps(reply, ensure_ascii=False))
 
-    print("4/4 setSta  ssid=%s" % args.ssid)
     try:
+        print("5/6 setSta  ssid=%s" % args.ssid)
         chan.command("setSta", **{args.ssid_key: args.ssid, args.pwd_key: args.pwd})
+        print("6/6 applyCfg")
+        reply = chan.command("applyCfg")
+        print("applyCfg ok: %s" % json.dumps(reply, ensure_ascii=False))
     except NoReply as exc:
         # The device drops the soft-AP as it switches to station mode, so the
         # confirmation frequently never makes it back to us. That is not a failure,
@@ -569,16 +597,7 @@ def cmd_rehome(chan: Channel, args) -> int:
         print("    (expected if the AP went away as it switched — verify on your LAN)")
 
     print()
-    print("writes done. Now the one step this channel cannot do for you:")
-    print()
-    print("    >>> POWER-CYCLE THE ROBOT <<<")
-    print()
-    print("Nothing here makes the daemon re-read ip_port.json or drop its cached cloud")
-    print("session, so until it reboots it keeps dialing the old gateway. On a cold boot")
-    print("it has no session, re-reads ip_port.json, and registers against you instead.")
-    print("(With root you can `killall network_proxy` instead; there is no UDP reboot.)")
-    print()
-    print("Then the robot joins %s and will look for:" % args.ssid)
+    print("The robot joins %s and will look for:" % args.ssid)
     print("  channel A (HTTP register)  %s" % url)
     print("  channel B (push gateway)   %s:%d" % (gateway_ip, args.gateway_port))
     print("Start noobscenic on those ports and watch the traces.")
@@ -835,6 +854,18 @@ def cmd_probe_sta(chan: Channel, args) -> int:
     return EXIT_FAIL
 
 
+def cmd_set_id(chan: Channel, args) -> int:
+    need_port(chan, args)
+    reply = chan.command("getSn")
+    sn = reply.get("sn", "")
+    fields: dict = {}
+    fields["id"] = args.userid
+    fields["deviceSN"] = sn
+    reply = chan.command("setID", **fields)
+    print("setID ok: %s" % json.dumps(reply, ensure_ascii=False))
+    return EXIT_OK
+
+
 # -- argument parsing -----------------------------------------------------
 
 
@@ -902,6 +933,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_ap.add_argument("--segment", type=int, help="192.168.<segment>.x, device default 78")
     p_ap.set_defaults(func=cmd_set_ap)
 
+    p_ac = subs.add_parser("apply-cfg", help="apply the set configuration (exits pairing mode, connects to Wi-Fi and gateway/cloud set via set-url/set-sta)")
+    p_ac.set_defaults(func=cmd_apply_cfg)
+
+# NOTE: Disabled because this triggers a bug in the robot firmware, a fork bomb vulnerability, essentially.
+#    p_bo = subs.add_parser("bind-ok", help="apply the set configuration (exits pairing mode, connects to Wi-Fi and gateway/cloud set via set-url/set-sta)")
+#    p_bo.set_defaults(func=cmd_bind_ok)
+
     subs.add_parser("reset-wifi", help="clear the Wi-Fi configuration").set_defaults(func=cmd_reset_wifi)
 
     p_log = subs.add_parser("get-log", help="pull the device log package")
@@ -949,7 +987,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_re.add_argument("--url", help="override the derived base URL")
     p_re.add_argument("--ssid", required=True, help="the Wi-Fi network the robot should join")
     p_re.add_argument("--pwd", required=True, help="8-64 characters")
+    p_re.add_argument("--userid", required=True, help="the robot will identify using it with the cloud")
     p_re.set_defaults(func=cmd_rehome)
+
+    p_si = subs.add_parser("set-id", help="set user ID for the robot to identify with the cloud server")
+    p_si.add_argument("--userid", required=True, help="the robot will identify using it with the cloud")
+    p_si.set_defaults(func=cmd_set_id)
 
     return parser
 
