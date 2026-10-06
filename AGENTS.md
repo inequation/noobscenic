@@ -2,6 +2,14 @@
 
 Read [`README.md`](README.md) — the human-facing description of this project.
 
+## Clean room reverse engineering
+
+[`doc/reverse-engineering`](doc/reverse-engineering) contains rich documentation and
+artifacts from clean room reverse engineering of the robot's firmware and the Android
+app used to control it. Use it as reference for what the robot expects (protocols, JSON
+schemas, assumptions on how the server application should behave) such that
+communication with the robot works correctly.
+
 ## Tracking progress
 
 [`doc/PLAN.md`](doc/PLAN.md) is the implementation plan, and its **section 15
