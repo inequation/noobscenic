@@ -27,12 +27,16 @@ handlers (phase 2) are the next implementation step.
 2. Put the robot into pairing mode, join this machine to its own open Wi-Fi (the
    network name begins with `Proscenic-`), and run:
 
-       python tools/rehome.py --server-host <server-ip> \
+       python tools/rehome.py --server-host <server-address> \
            --ssid <target-wifi-ssid> --pwd '<target-wifi-password>' --userid <any-id>
 
    It finds the robot's UDP port, points its cloud URL and push gateway at the given
    server, arms the bind, then stores the Wi-Fi credentials and commits the
    configuration.
+   
+   **Note:** `server-address` must not change the next time you log back onto the
+   target Wi-Fi network (e.g. due to DHCP assigning a new IP address), so use a DHCP
+   reservation, a static IP address, or a DNS name.
 
 3. The commit disables the robot's AP, so reconnect this machine to your normal Wi-Fi
    and watch the server's log and traces for the `10001` handshake and the `21006`
