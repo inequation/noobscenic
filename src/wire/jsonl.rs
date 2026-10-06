@@ -61,11 +61,13 @@ impl JsonlSink {
         // A new day starts at index 0 and skips past whatever is already full, so a
         // restart mid-day appends rather than clobbering.
         let mut index = 0;
-        while self.rotate_bytes > 0 {
-            let candidate = self.dir.join(file_name(today, index));
-            match std::fs::metadata(&candidate) {
-                Ok(meta) if meta.len() >= self.rotate_bytes => index += 1,
-                _ => break,
+        if self.rotate_bytes > 0 {
+            loop {
+                let candidate = self.dir.join(file_name(today, index));
+                match std::fs::metadata(&candidate) {
+                    Ok(meta) if meta.len() >= self.rotate_bytes => index += 1,
+                    _ => break,
+                }
             }
         }
         self.open(today, index)
