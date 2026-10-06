@@ -8,15 +8,15 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 
+use noobscenic::AppState;
 use noobscenic::channel_b::codec::{self, Decoder};
 use noobscenic::config::{Config, Logging, Wire};
-use noobscenic::AppState;
 
 const SN: &str = "LSLDSM7PROTEST01";
 
@@ -31,7 +31,10 @@ async fn gateway(tag: &str) -> (SocketAddr, AppState, JoinHandle<()>) {
         data_dir: scratch(tag),
         logging: Logging {
             file_enabled: false,
-            wire: Wire { enabled: false, ..Wire::default() },
+            wire: Wire {
+                enabled: false,
+                ..Wire::default()
+            },
             ..Logging::default()
         },
         ..Config::default()
@@ -43,7 +46,9 @@ async fn gateway(tag: &str) -> (SocketAddr, AppState, JoinHandle<()>) {
 
     let serving = state.clone();
     let server = tokio::spawn(async move {
-        noobscenic::channel_b::serve(listener, serving, pending::<()>()).await.expect("serve");
+        noobscenic::channel_b::serve(listener, serving, pending::<()>())
+            .await
+            .expect("serve");
     });
     (addr, state, server)
 }
@@ -56,7 +61,11 @@ async fn read_frames(sock: &mut TcpStream, decoder: &mut Decoder, wanted: usize)
             .await
             .unwrap_or_else(|_| panic!("only {} of {wanted} frames arrived", frames.len()))
             .expect("socket read");
-        assert!(n > 0, "peer closed with {} of {wanted} frames", frames.len());
+        assert!(
+            n > 0,
+            "peer closed with {} of {wanted} frames",
+            frames.len()
+        );
         frames.extend(decoder.push(&buffer[..n]).expect("valid framing"));
     }
     frames
@@ -97,8 +106,18 @@ async fn handshake_is_acked_and_every_ping_is_ponged() {
     assert_eq!(pong["encrypt"], 0);
     assert_eq!(pong["data"]["isExistConnect"], true);
 
-    assert!(state.registry.is_online(SN), "the handshake must put the device online");
-    assert!(state.registry.get(SN).unwrap().peer.starts_with("127.0.0.1"));
+    assert!(
+        state.registry.is_online(SN),
+        "the handshake must put the device online"
+    );
+    assert!(
+        state
+            .registry
+            .get(SN)
+            .unwrap()
+            .peer
+            .starts_with("127.0.0.1")
+    );
 
     drop(sock);
     let unregistered = timeout(Duration::from_secs(5), async {
@@ -107,7 +126,10 @@ async fn handshake_is_acked_and_every_ping_is_ponged() {
         }
     })
     .await;
-    assert!(unregistered.is_ok(), "the registry entry must go away with the socket");
+    assert!(
+        unregistered.is_ok(),
+        "the registry entry must go away with the socket"
+    );
 
     cleanup(state, server).await;
 }
@@ -120,7 +142,10 @@ async fn unhandled_frames_are_persisted_and_the_link_survives() {
 
     sock.write_all(&handshake()).await.expect("write handshake");
     let frames = read_frames(&mut sock, &mut decoder, 1).await;
-    assert_eq!(serde_json::from_slice::<Value>(&frames[0]).unwrap()["infoType"], 10001);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&frames[0]).unwrap()["infoType"],
+        10001
+    );
 
     let mut out = codec::encode_json(&json!({"infoType": 31337, "data": {"x": 1}}));
     out.extend_from_slice(&codec::encode(b"not json"));
@@ -130,7 +155,10 @@ async fn unhandled_frames_are_persisted_and_the_link_survives() {
 
     let frames = read_frames(&mut sock, &mut decoder, 1).await;
     let pong: Value = serde_json::from_slice(&frames[0]).expect("pong is JSON");
-    assert_eq!(pong["infoType"], 21006, "an unhandled frame must not close the connection");
+    assert_eq!(
+        pong["infoType"], 21006,
+        "an unhandled frame must not close the connection"
+    );
 
     let rows: Vec<(Option<i64>, String)> =
         sqlx::query_as("SELECT info_type, payload FROM events WHERE channel = 'B' ORDER BY id")

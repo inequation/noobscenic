@@ -41,7 +41,10 @@ pub struct Decoder {
 
 impl Decoder {
     pub fn new(max_frame_bytes: usize) -> Decoder {
-        Decoder { buf: Vec::new(), max: max_frame_bytes }
+        Decoder {
+            buf: Vec::new(),
+            max: max_frame_bytes,
+        }
     }
 
     /// Feed one read's worth of bytes; return every frame completed by it.
@@ -56,7 +59,10 @@ impl Decoder {
         while let Some(at) = find_delimiter(&self.buf[start..]) {
             let end = start + at;
             if end > self.max {
-                return Err(DecodeError::Oversize { len: end, max: self.max });
+                return Err(DecodeError::Oversize {
+                    len: end,
+                    max: self.max,
+                });
             }
             frames.push(self.buf[start..end].to_vec());
             start = end + DELIMITER.len();
@@ -65,14 +71,18 @@ impl Decoder {
             self.buf.drain(..start);
         }
         if self.buf.len() > self.max {
-            return Err(DecodeError::Oversize { len: self.buf.len(), max: self.max });
+            return Err(DecodeError::Oversize {
+                len: self.buf.len(),
+                max: self.max,
+            });
         }
         Ok(frames)
     }
 }
 
 fn find_delimiter(buf: &[u8]) -> Option<usize> {
-    buf.windows(DELIMITER.len()).position(|window| window == &DELIMITER[..])
+    buf.windows(DELIMITER.len())
+        .position(|window| window == &DELIMITER[..])
 }
 
 #[cfg(test)]
@@ -87,7 +97,10 @@ mod tests {
     #[test]
     fn encode_terminates_the_frame() {
         assert_eq!(encode(b"{}"), b"{}#\t#");
-        assert_eq!(encode_json(&json!({"infoType": 21006})), b"{\"infoType\":21006}#\t#");
+        assert_eq!(
+            encode_json(&json!({"infoType": 21006})),
+            b"{\"infoType\":21006}#\t#"
+        );
     }
 
     #[test]

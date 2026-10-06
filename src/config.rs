@@ -53,7 +53,10 @@ pub struct Database {
 
 impl Default for Database {
     fn default() -> Self {
-        Database { url: None, max_connections: 5 }
+        Database {
+            url: None,
+            max_connections: 5,
+        }
     }
 }
 
@@ -68,7 +71,10 @@ pub struct Http {
 
 impl Default for Http {
     fn default() -> Self {
-        Http { bind: "0.0.0.0:8080".parse().expect("valid default"), tls: None }
+        Http {
+            bind: "0.0.0.0:8080".parse().expect("valid default"),
+            tls: None,
+        }
     }
 }
 
@@ -136,7 +142,10 @@ pub struct Registration {
 
 impl Default for Registration {
     fn default() -> Self {
-        Registration { accept_all: true, session_ttl_secs: None }
+        Registration {
+            accept_all: true,
+            session_ttl_secs: None,
+        }
     }
 }
 
@@ -237,10 +246,14 @@ impl Config {
         let path = path.unwrap_or_else(|| Path::new("config.json"));
 
         let mut config = if path.exists() {
-            let text = std::fs::read_to_string(path)
-                .map_err(|source| Error::ConfigRead { path: path.to_path_buf(), source })?;
-            serde_json::from_str(&text)
-                .map_err(|source| Error::ConfigParse { path: path.to_path_buf(), source })?
+            let text = std::fs::read_to_string(path).map_err(|source| Error::ConfigRead {
+                path: path.to_path_buf(),
+                source,
+            })?;
+            serde_json::from_str(&text).map_err(|source| Error::ConfigParse {
+                path: path.to_path_buf(),
+                source,
+            })?
         } else if explicit {
             return Err(Error::config(format!("{} does not exist", path.display())));
         } else {
@@ -272,7 +285,9 @@ impl Config {
             return Err(Error::config("database.max_connections must be at least 1"));
         }
         if self.gateway.max_frame_bytes < 4096 {
-            return Err(Error::config("gateway.max_frame_bytes is implausibly small"));
+            return Err(Error::config(
+                "gateway.max_frame_bytes is implausibly small",
+            ));
         }
         if let Some(list) = &self.gateway.advertise
             && list.is_empty()
@@ -304,7 +319,11 @@ impl Config {
     }
 
     pub fn wire_dir(&self) -> PathBuf {
-        self.logging.wire.dir.clone().unwrap_or_else(|| self.data_dir.join("traces"))
+        self.logging
+            .wire
+            .dir
+            .clone()
+            .unwrap_or_else(|| self.data_dir.join("traces"))
     }
 }
 
@@ -330,20 +349,29 @@ mod tests {
     #[test]
     fn data_dir_moves_the_derived_paths_together() {
         let mut config = Config::default();
-        config.apply(&Overrides { data_dir: Some("/srv/nb".into()), ..Default::default() });
+        config.apply(&Overrides {
+            data_dir: Some("/srv/nb".into()),
+            ..Default::default()
+        });
         assert_eq!(
             sqlite_path(&config.database_url()),
             Path::new("/srv/nb").join("noobscenic.db")
         );
         assert_eq!(config.wire_dir(), Path::new("/srv/nb").join("traces"));
-        assert_eq!(config.log_file(), Some(Path::new("/srv/nb").join("logs/noobscenic.log")));
+        assert_eq!(
+            config.log_file(),
+            Some(Path::new("/srv/nb").join("logs/noobscenic.log"))
+        );
     }
 
     #[test]
     fn explicit_paths_survive_a_data_dir_override() {
         let mut config = Config::default();
         config.logging.wire.dir = Some("/var/log/nb-traces".into());
-        config.apply(&Overrides { data_dir: Some("/srv/nb".into()), ..Default::default() });
+        config.apply(&Overrides {
+            data_dir: Some("/srv/nb".into()),
+            ..Default::default()
+        });
         assert_eq!(config.wire_dir(), PathBuf::from("/var/log/nb-traces"));
     }
 

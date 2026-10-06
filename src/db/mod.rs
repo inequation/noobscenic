@@ -4,9 +4,9 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::time::Duration;
 
+use sqlx::SqlitePool;
 use sqlx::migrate::Migrator;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
-use sqlx::SqlitePool;
 
 use crate::error::Result;
 
@@ -46,7 +46,10 @@ fn database_parent_dir(url: &str) -> Option<PathBuf> {
     if file.is_empty() || file == ":memory:" {
         return None;
     }
-    Path::new(file).parent().filter(|p| !p.as_os_str().is_empty()).map(Path::to_path_buf)
+    Path::new(file)
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(Path::to_path_buf)
 }
 
 /// Milliseconds since the Unix epoch, on the server's clock.
@@ -60,8 +63,14 @@ mod tests {
 
     #[test]
     fn parses_database_directories() {
-        assert_eq!(database_parent_dir("sqlite://./var/nb.db"), Some(PathBuf::from("./var")));
-        assert_eq!(database_parent_dir("sqlite:/srv/x/nb.db"), Some(PathBuf::from("/srv/x")));
+        assert_eq!(
+            database_parent_dir("sqlite://./var/nb.db"),
+            Some(PathBuf::from("./var"))
+        );
+        assert_eq!(
+            database_parent_dir("sqlite:/srv/x/nb.db"),
+            Some(PathBuf::from("/srv/x"))
+        );
         assert_eq!(database_parent_dir("sqlite://nb.db"), None);
         assert_eq!(database_parent_dir("sqlite::memory:"), None);
         assert_eq!(
@@ -77,7 +86,9 @@ mod tests {
         let path = dir.join("migrate.db");
         let _ = std::fs::remove_file(&path);
 
-        let pool = connect(&format!("sqlite://{}", path.display()), 1).await.unwrap();
+        let pool = connect(&format!("sqlite://{}", path.display()), 1)
+            .await
+            .unwrap();
         sqlx::query("INSERT INTO devices (sn, bind_state, first_seen_ms, last_seen_ms) VALUES (?, 'unbound', ?, ?)")
             .bind("TESTSN")
             .bind(now_ms())

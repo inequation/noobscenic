@@ -43,7 +43,10 @@ impl Registry {
     /// Remove `sn`'s entry, but only while it still belongs to `conn_id`.
     pub fn remove(&self, sn: &str, conn_id: &str) {
         let mut inner = self.lock();
-        if inner.get(sn).is_some_and(|handle| handle.conn_id == conn_id) {
+        if inner
+            .get(sn)
+            .is_some_and(|handle| handle.conn_id == conn_id)
+        {
             inner.remove(sn);
         }
     }
@@ -63,7 +66,9 @@ impl Registry {
     /// A poisoned lock must not take the gateway down; the map is only ever
     /// inserted into and removed from, so its contents stay sane either way.
     fn lock(&self) -> MutexGuard<'_, HashMap<String, ConnHandle>> {
-        self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        self.inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 }
 
@@ -77,7 +82,11 @@ pub struct Registration {
 
 impl Registration {
     pub fn new(registry: Arc<Registry>, sn: String, conn_id: String) -> Registration {
-        Registration { registry, sn, conn_id }
+        Registration {
+            registry,
+            sn,
+            conn_id,
+        }
     }
 }
 
@@ -139,7 +148,10 @@ mod tests {
             let _guard = Registration::new(registry.clone(), "SN1".into(), "b-000001".into());
             assert!(registry.is_online("SN1"));
         }
-        assert!(!registry.is_online("SN1"), "the guard must clean up after itself");
+        assert!(
+            !registry.is_online("SN1"),
+            "the guard must clean up after itself"
+        );
     }
 
     #[test]

@@ -124,8 +124,8 @@ mod tests {
     use super::*;
 
     fn scratch(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir()
-            .join(format!("noobscenic-jsonl-{}-{tag}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("noobscenic-jsonl-{}-{tag}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -148,10 +148,14 @@ mod tests {
         let mut sink = JsonlSink::new(dir.clone(), 0);
         sink.rotate_bytes = 32; // a size no real line will fit under twice
         for _ in 0..4 {
-            sink.write_line("2026-09-07", "0123456789012345678901234").unwrap();
+            sink.write_line("2026-09-07", "0123456789012345678901234")
+                .unwrap();
         }
         assert!(dir.join("wire-2026-09-07.jsonl").exists());
-        assert!(dir.join("wire-2026-09-07.1.jsonl").exists(), "should have rotated");
+        assert!(
+            dir.join("wire-2026-09-07.1.jsonl").exists(),
+            "should have rotated"
+        );
 
         sink.write_line("2026-09-08", "{}").unwrap();
         assert_eq!(sink.current_name(), "wire-2026-09-08.jsonl");

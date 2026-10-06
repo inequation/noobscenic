@@ -9,19 +9,19 @@
 
 use std::net::SocketAddr;
 
+use axum::Router;
 use axum::body::Body;
 use axum::extract::{ConnectInfo, Request, State};
-use axum::http::{header, HeaderMap, StatusCode};
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::Router;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use tokio::net::TcpListener;
 
+use crate::AppState;
 use crate::db::now_ms;
 use crate::error::Result;
 use crate::wire::{Direction, Record, Recorded};
-use crate::AppState;
 
 /// The device uploads LZ4 maps through `uploadEvents`, so bodies are not small; this
 /// is a sanity bound, not a policy.

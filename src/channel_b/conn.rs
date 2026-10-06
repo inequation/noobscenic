@@ -8,17 +8,17 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpStream;
+use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 
+use crate::AppState;
 use crate::db::now_ms;
 use crate::error::Result;
 use crate::wire::{Direction, Record, Recorded};
-use crate::AppState;
 
 use super::codec::{self, Decoder};
 use super::registry::{self, Registration};
@@ -42,8 +42,13 @@ pub(crate) async fn handle(state: AppState, stream: TcpStream, conn_id: String, 
 
     let (read_half, write_half) = stream.into_split();
     let (tx, rx) = mpsc::channel(WRITE_QUEUE);
-    let writer =
-        tokio::spawn(write_task(state.clone(), write_half, rx, conn_id.clone(), peer.clone()));
+    let writer = tokio::spawn(write_task(
+        state.clone(),
+        write_half,
+        rx,
+        conn_id.clone(),
+        peer.clone(),
+    ));
 
     if let Err(error) = read_task(state, read_half, tx, conn_id.clone(), peer.clone()).await {
         tracing::warn!(conn = %conn_id, %peer, %error, "channel-B read failed");
@@ -140,8 +145,9 @@ async fn write_task(
         let info_type = value.get("infoType").and_then(Value::as_i64);
         let bytes = codec::encode_json(&value);
 
-        let mut record =
-            Record::new("B", Direction::Out, "frame", &bytes).conn_id(conn_id.clone()).peer(peer.clone());
+        let mut record = Record::new("B", Direction::Out, "frame", &bytes)
+            .conn_id(conn_id.clone())
+            .peer(peer.clone());
         if let Some(info_type) = info_type {
             record = record.meta("info_type", info_type);
         }
@@ -211,14 +217,16 @@ impl Conn {
                     info_type = other,
                     "unhandled channel-B infoType; persisted"
                 );
-                self.persist(Some(other), &value.to_string(), recorded.as_ref()).await;
+                self.persist(Some(other), &value.to_string(), recorded.as_ref())
+                    .await;
             }
             None => {
                 tracing::warn!(
                     conn = %self.conn_id,
                     "channel-B frame has no integer infoType; persisted"
                 );
-                self.persist(None, &value.to_string(), recorded.as_ref()).await;
+                self.persist(None, &value.to_string(), recorded.as_ref())
+                    .await;
             }
         }
     }
@@ -243,7 +251,8 @@ impl Conn {
         }
 
         if self.state.config.gateway.ack_handshake {
-            self.send(json!({"infoType": HANDSHAKE, "message": "ok", "data": {}})).await;
+            self.send(json!({"infoType": HANDSHAKE, "message": "ok", "data": {}}))
+                .await;
         }
     }
 
@@ -252,10 +261,10 @@ impl Conn {
         if self.sn.as_deref() == Some(sn) {
             return;
         }
-        let previous = self
-            .state
-            .registry
-            .register(sn, registry::handle(&self.conn_id, &self.peer, self.tx.clone()));
+        let previous = self.state.registry.register(
+            sn,
+            registry::handle(&self.conn_id, &self.peer, self.tx.clone()),
+        );
         if let Some(previous) = previous {
             tracing::warn!(
                 sn = %sn,
@@ -291,7 +300,8 @@ impl Conn {
         } else {
             json!({})
         };
-        self.send(json!({"infoType": PING, "encrypt": 0, "data": data})).await;
+        self.send(json!({"infoType": PING, "encrypt": 0, "data": data}))
+            .await;
     }
 
     async fn send(&self, value: Value) {

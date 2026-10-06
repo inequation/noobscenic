@@ -7,7 +7,7 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 use tracing_subscriber::layer::SubscriberExt as _;
 use tracing_subscriber::util::SubscriberInitExt as _;
-use tracing_subscriber::{fmt, EnvFilter};
+use tracing_subscriber::{EnvFilter, fmt};
 
 use noobscenic::config::{Config, Overrides};
 
@@ -100,24 +100,33 @@ async fn main() -> ExitCode {
 }
 
 /// stderr always; a daily-rolled file too, unless it is switched off.
-fn init_tracing(config: &Config) -> std::io::Result<Option<tracing_appender::non_blocking::WorkerGuard>> {
+fn init_tracing(
+    config: &Config,
+) -> std::io::Result<Option<tracing_appender::non_blocking::WorkerGuard>> {
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new(config.logging.level.clone()));
     let stderr = fmt::layer().with_writer(std::io::stderr).with_target(false);
 
     let Some(path) = config.log_file() else {
-        tracing_subscriber::registry().with(filter).with(stderr).init();
+        tracing_subscriber::registry()
+            .with(filter)
+            .with(stderr)
+            .init();
         return Ok(None);
     };
 
-    let dir = path.parent().unwrap_or(std::path::Path::new(".")).to_path_buf();
+    let dir = path
+        .parent()
+        .unwrap_or(std::path::Path::new("."))
+        .to_path_buf();
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| "noobscenic.log".to_string());
     std::fs::create_dir_all(&dir)?;
 
-    let (writer, guard) = tracing_appender::non_blocking(tracing_appender::rolling::daily(dir, name));
+    let (writer, guard) =
+        tracing_appender::non_blocking(tracing_appender::rolling::daily(dir, name));
     tracing_subscriber::registry()
         .with(filter)
         .with(stderr)

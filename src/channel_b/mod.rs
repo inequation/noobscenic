@@ -24,8 +24,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use tokio::net::TcpListener;
 
-use crate::error::Result;
 use crate::AppState;
+use crate::error::Result;
 
 /// Process-wide connection numbering; `b-000001`, `b-000002`, … in the traces.
 static NEXT_CONN_ID: AtomicU64 = AtomicU64::new(1);

@@ -12,8 +12,8 @@
 pub mod jsonl;
 pub mod raw;
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use base64::Engine as _;
 use serde_json::{Map, Value};
@@ -149,7 +149,9 @@ impl Tap {
     }
 
     pub fn is_enabled(&self) -> bool {
-        self.inner.as_ref().is_some_and(|i| i.enabled.load(Ordering::Relaxed))
+        self.inner
+            .as_ref()
+            .is_some_and(|i| i.enabled.load(Ordering::Relaxed))
     }
 
     /// Runtime toggle, for the console's `trace on|off`.
@@ -229,7 +231,11 @@ impl Inner {
 
         object.insert("len".into(), record.body.len().into());
         let truncated = self.max_body_bytes > 0 && record.body.len() > self.max_body_bytes;
-        let body = if truncated { &record.body[..self.max_body_bytes] } else { record.body };
+        let body = if truncated {
+            &record.body[..self.max_body_bytes]
+        } else {
+            record.body
+        };
         if truncated {
             object.insert("truncated".into(), true.into());
         }
@@ -244,7 +250,9 @@ impl Inner {
             Err(_) => {
                 object.insert(
                     "body_b64".into(),
-                    base64::engine::general_purpose::STANDARD.encode(body).into(),
+                    base64::engine::general_purpose::STANDARD
+                        .encode(body)
+                        .into(),
                 );
             }
         }
@@ -298,10 +306,14 @@ fn mask_json_value(text: &str, key: &str) -> String {
 
         let after = rest.trim_start();
         let gap = rest.len() - after.len();
-        let Some(after) = after.strip_prefix(':') else { continue };
+        let Some(after) = after.strip_prefix(':') else {
+            continue;
+        };
         let value = after.trim_start();
         let value_gap = after.len() - value.len();
-        let Some(value) = value.strip_prefix('"') else { continue };
+        let Some(value) = value.strip_prefix('"') else {
+            continue;
+        };
         let Some(end) = value.find('"') else { continue };
 
         out.push_str(&rest[..gap]);
@@ -340,28 +352,40 @@ mod tests {
             r#"{"cookies": "***"}"#
         );
         // Non-string values are left alone rather than mangled.
-        assert_eq!(mask_json_value(r#"{"session":0}"#, "session"), r#"{"session":0}"#);
+        assert_eq!(
+            mask_json_value(r#"{"session":0}"#, "session"),
+            r#"{"session":0}"#
+        );
     }
 
     #[test]
     fn redaction_covers_every_secret_key() {
         let line = r#"{"session":"A","cookies":"B"}&sig=C"#;
         let masked = redact_secrets(line);
-        assert!(!masked.contains('A') && !masked.contains('B') && !masked.contains('C'), "{masked}");
+        assert!(
+            !masked.contains('A') && !masked.contains('B') && !masked.contains('C'),
+            "{masked}"
+        );
     }
 
     #[test]
     fn a_disabled_tap_records_nothing() {
         let tap = Tap::disabled();
         assert!(!tap.is_enabled());
-        assert_eq!(tap.record(Record::new("A", Direction::In, "request", b"x")), None);
+        assert_eq!(
+            tap.record(Record::new("A", Direction::In, "request", b"x")),
+            None
+        );
     }
 
     #[test]
     fn records_carry_a_usable_reference() {
         let dir = std::env::temp_dir().join(format!("noobscenic-tap-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let config = Wire { redact_secrets: true, ..Wire::default() };
+        let config = Wire {
+            redact_secrets: true,
+            ..Wire::default()
+        };
         let tap = Tap::new(&config, dir.clone()).unwrap();
 
         let first = tap
@@ -374,13 +398,18 @@ mod tests {
         assert_eq!(first.seq, 1);
         assert!(first.reference.ends_with("#1"), "{}", first.reference);
 
-        let second = tap.record(Record::new("B", Direction::Out, "frame", b"{}")).unwrap();
+        let second = tap
+            .record(Record::new("B", Direction::Out, "frame", b"{}"))
+            .unwrap();
         assert_eq!(second.seq, 2);
 
         let name = first.reference.split('#').next().unwrap();
         let text = std::fs::read_to_string(dir.join(name)).unwrap();
         assert!(text.contains("\"path\":\"/cleanPack/register\""), "{text}");
-        assert!(text.contains("sig=***"), "redaction applies to the JSONL sink: {text}");
+        assert!(
+            text.contains("sig=***"),
+            "redaction applies to the JSONL sink: {text}"
+        );
         // ...but never to the raw copy.
         let raw = std::fs::read(
             dir.join("raw")
@@ -391,7 +420,10 @@ mod tests {
         assert_eq!(raw, b"sn=ABC&sig=SECRET");
 
         tap.set_enabled(false);
-        assert!(tap.record(Record::new("A", Direction::In, "request", b"x")).is_none());
+        assert!(
+            tap.record(Record::new("A", Direction::In, "request", b"x"))
+                .is_none()
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -399,11 +431,16 @@ mod tests {
     fn oversized_bodies_are_truncated_in_jsonl_only() {
         let dir = std::env::temp_dir().join(format!("noobscenic-trunc-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let config = Wire { max_body_bytes: 8, ..Wire::default() };
+        let config = Wire {
+            max_body_bytes: 8,
+            ..Wire::default()
+        };
         let tap = Tap::new(&config, dir.clone()).unwrap();
 
         let body = vec![b'x'; 64];
-        let recorded = tap.record(Record::new("B", Direction::In, "frame", &body)).unwrap();
+        let recorded = tap
+            .record(Record::new("B", Direction::In, "frame", &body))
+            .unwrap();
         let name = recorded.reference.split('#').next().unwrap();
         let text = std::fs::read_to_string(dir.join(name)).unwrap();
         assert!(text.contains("\"truncated\":true"), "{text}");
