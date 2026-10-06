@@ -169,7 +169,7 @@ tools/
   catchall.py           logs whatever connects, with TLS SNI extraction (diagnosis)
   fakerobot.py          channel C stand-in, for testing rehome.py without hardware
 tests/
-  framing.rs  form.rs  register_flow.rs  e2e_simdev.rs
+  channel_b.rs  framing.rs  form.rs  register_flow.rs  e2e_simdev.rs
 ```
 
 ---
@@ -192,6 +192,7 @@ soup beyond that.
                "ping_timeout_secs": 120,
                "max_frame_bytes": 8388608,
                "ack_handshake": true,
+               "announce_app_online": true,
                "encrypt_commands": false,
                "command_ttl_secs": 300 },
   "console": { "enabled": true },
@@ -220,6 +221,10 @@ soup beyond that.
 * `registration.session_ttl_secs: null` = sessions never expire. Setting it makes the
   server answer `code:102` after the TTL, which is the documented way to force a
   re-register — useful for exercising that path on purpose. [PROTOCOL §B]
+* `gateway.announce_app_online` (default `true`) makes the `21006` pong carry
+  `"isExistConnect":true`. That is the pong the device both accepts *and* acts on:
+  without the integer `encrypt` the frame is dropped at the inbound gate, and
+  without the flag the robot never pushes status or map uploads. [FUNC_STATUS §2.3]
 * `http.tls` stays `null` for v1. The robot does **no** certificate validation
   [REPORT §3], so a self-signed cert is enough whenever we do want `https://` — the
   only reason to bother is a DNS-override deployment that impersonates
@@ -436,8 +441,12 @@ interleave mid-frame).
   `"Unknown infoType"` log line, so this is a config toggle rather than a guess baked
   into the code (§16).
 * **`21006` Ping** — pong **immediately**, before any other work on that frame:
-  `{"infoType":21006,"data":{}}` (plus `"isExistConnect":true` when configured).
-  Receipt alone marks the device online device-side [PROTOCOL §B].
+  `{"infoType":21006,"encrypt":0,"data":{"isExistConnect":true}}` with
+  `announce_app_online` (default on), or `"data":{}` with it off. The integer
+  `encrypt` is what gets the pong past the device's inbound gate, and the flag is
+  what tells the robot an app/cloud is online, so it pushes status and maps
+  [FUNC_STATUS §2.3]. Any complete frame already refreshes the device's online
+  timer, so the pong keeps the link alive either way.
 * **Watchdog** — no ping within `ping_timeout_secs` (default 120; the device's actual
   interval is a runtime variable, so this is measured from the first live session and
   tuned) → mark offline, close, let the device reconnect.
@@ -663,11 +672,11 @@ to do — valuable before a single endpoint is implemented.
 **Done when:** the robot stops re-registering and opens a TCP connection to the gateway.
 
 ### Phase 3 — Channel B alive
-- [ ] `#\t#` frame codec with unit tests: partial, back-to-back, split delimiter, oversize
-- [ ] Listener, per-connection read/write tasks, raw byte capture, panic isolation
-- [ ] `10001` handshake → registry binding, online state, optional ack
-- [ ] `21006` ping → immediate pong; watchdog on `ping_timeout_secs`
-- [ ] Unknown `infoType` persisted and warned about, never fatal
+- [x] `#\t#` frame codec with unit tests: partial, back-to-back, split delimiter, oversize
+- [x] Listener, per-connection read/write tasks, raw byte capture, panic isolation
+- [x] `10001` handshake → registry binding, online state, optional ack
+- [x] `21006` ping → immediate pong; watchdog on `ping_timeout_secs`
+- [x] Unknown `infoType` persisted and warned about, never fatal
 
 **Done when:** *the milestone that matters* — the robot stays connected for many
 minutes with no reconnect loop, and the trace shows every ping answered.

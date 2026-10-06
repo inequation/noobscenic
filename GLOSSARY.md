@@ -65,3 +65,18 @@ calls into. It can write to two independent sinks, controlled by config:
 Every database row that was produced by reading the wire keeps a `trace_ref`
 (e.g. `"wire-2026-09-07.jsonl#1841"`) pointing back at the exact bytes that
 produced it, so any stored fact can be traced back to its source on the wire.
+
+## Connection registry
+
+The gateway's index of which robots are connected *right now*. Channel B is a TCP
+connection the **robot** opens, so the server can never dial a device itself —
+anything that wants to send it a command has to find the socket the robot already
+has open. The registry (`channel_b::Registry`) is that lookup: serial number →
+the connection's id, peer address, connect time, and the writer queue for
+outbound frames. An entry appears at the `10001` handshake and disappears when
+the connection ends, via a `Registration` guard owned by the connection task, so
+it is cleaned up even if that task panics; a robot that reconnects simply
+replaces its own older entry.
+
+It is deliberately not the database: the `devices` table remembers what has been
+seen, while the registry only holds what is live and addressable.

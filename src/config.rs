@@ -82,6 +82,10 @@ pub struct Gateway {
     pub ping_timeout_secs: u64,
     pub max_frame_bytes: usize,
     pub ack_handshake: bool,
+    /// Answer `21006` pings with `"isExistConnect":true`, telling the robot an
+    /// app/cloud is online — that is what enables its status and map pushes
+    /// (FUNC_STATUS.md §2.3). `false` pongs keep the link alive but silent.
+    pub announce_app_online: bool,
     pub encrypt_commands: bool,
     pub command_ttl_secs: u64,
 }
@@ -94,6 +98,7 @@ impl Default for Gateway {
             ping_timeout_secs: 120,
             max_frame_bytes: 8 * 1024 * 1024,
             ack_handshake: true,
+            announce_app_online: true,
             encrypt_commands: false,
             command_ttl_secs: 300,
         }
@@ -312,18 +317,26 @@ mod tests {
         let config = Config::default();
         assert_eq!(config.http.bind.port(), 8080);
         assert_eq!(config.gateway.bind.port(), 8081);
-        assert_eq!(config.database_url(), "sqlite://./var/noobscenic.db");
-        assert_eq!(config.wire_dir(), PathBuf::from("./var/traces"));
+        assert_eq!(
+            sqlite_path(&config.database_url()),
+            Path::new("./var").join("noobscenic.db")
+        );
+        assert_eq!(config.wire_dir(), Path::new("./var").join("traces"));
         assert!(config.registration.accept_all);
+        assert!(config.gateway.ack_handshake);
+        assert!(config.gateway.announce_app_online);
     }
 
     #[test]
     fn data_dir_moves_the_derived_paths_together() {
         let mut config = Config::default();
         config.apply(&Overrides { data_dir: Some("/srv/nb".into()), ..Default::default() });
-        assert_eq!(config.database_url(), "sqlite:///srv/nb/noobscenic.db");
-        assert_eq!(config.wire_dir(), PathBuf::from("/srv/nb/traces"));
-        assert_eq!(config.log_file(), Some(PathBuf::from("/srv/nb/logs/noobscenic.log")));
+        assert_eq!(
+            sqlite_path(&config.database_url()),
+            Path::new("/srv/nb").join("noobscenic.db")
+        );
+        assert_eq!(config.wire_dir(), Path::new("/srv/nb").join("traces"));
+        assert_eq!(config.log_file(), Some(Path::new("/srv/nb").join("logs/noobscenic.log")));
     }
 
     #[test]
@@ -349,8 +362,8 @@ mod tests {
           "http":    { "bind": "0.0.0.0:8080", "tls": null },
           "gateway": { "bind": "0.0.0.0:8081", "advertise": null,
                        "ping_timeout_secs": 120, "max_frame_bytes": 8388608,
-                       "ack_handshake": true, "encrypt_commands": false,
-                       "command_ttl_secs": 300 },
+                       "ack_handshake": true, "announce_app_online": true,
+                       "encrypt_commands": false, "command_ttl_secs": 300 },
           "console": { "enabled": true },
           "registration": { "accept_all": true, "session_ttl_secs": null },
           "ota":     { "enabled": false },
@@ -363,5 +376,11 @@ mod tests {
         let config: Config = serde_json::from_str(text).expect("documented example must parse");
         assert_eq!(config.gateway.ping_timeout_secs, 120);
         assert!(config.logging.wire.format.jsonl() && config.logging.wire.format.raw());
+    }
+
+    /// `sqlite://<path>` as a `PathBuf`, so the tests do not care about the
+    /// platform's separator.
+    fn sqlite_path(url: &str) -> PathBuf {
+        PathBuf::from(url.strip_prefix("sqlite://").expect("sqlite URL"))
     }
 }

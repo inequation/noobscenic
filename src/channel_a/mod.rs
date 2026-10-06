@@ -16,6 +16,7 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::Router;
 use serde_json::{json, Map, Value};
+use tokio::net::TcpListener;
 
 use crate::db::now_ms;
 use crate::error::Result;
@@ -34,11 +35,10 @@ pub fn router(state: AppState) -> Router {
 }
 
 pub async fn serve(
+    listener: TcpListener,
     state: AppState,
-    bind: SocketAddr,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<()> {
-    let listener = tokio::net::TcpListener::bind(bind).await?;
     tracing::info!(addr = %listener.local_addr()?, "channel A (HTTP) listening");
 
     axum::serve(

@@ -4,6 +4,7 @@
 //! the design is derived from.
 
 pub mod channel_a;
+pub mod channel_b;
 pub mod config;
 pub mod db;
 pub mod error;
@@ -22,6 +23,8 @@ pub struct AppState {
     pub db: SqlitePool,
     pub tap: Arc<Tap>,
     pub config: Arc<Config>,
+    /// Who is connected on channel B right now (doc/PLAN.md §10.2).
+    pub registry: Arc<channel_b::Registry>,
 }
 
 /// Open everything the server needs. Fails loudly here, so that once we are serving,
@@ -41,20 +44,44 @@ pub async fn start(config: Config) -> Result<AppState> {
         tracing::warn!("wire tracing is off; traces are the point of this phase");
     }
 
-    Ok(AppState { db, tap: Arc::new(tap), config: Arc::new(config) })
+    Ok(AppState {
+        db,
+        tap: Arc::new(tap),
+        config: Arc::new(config),
+        registry: Arc::new(channel_b::Registry::new()),
+    })
 }
 
 /// Run until Ctrl-C.
 pub async fn run(config: Config) -> Result<()> {
     let http_bind = config.http.bind;
+    let gateway_bind = config.gateway.bind;
     let state = start(config).await?;
 
-    let result = channel_a::serve(state.clone(), http_bind, shutdown_signal()).await;
+    // Bind before serving: a port clash must be a startup failure, not a server
+    // that answers on one channel and silently not the other.
+    let http = tokio::net::TcpListener::bind(http_bind).await?;
+    let gateway = tokio::net::TcpListener::bind(gateway_bind).await?;
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
+    let signal = tokio::spawn(async move {
+        shutdown_signal().await;
+        let _ = shutdown_tx.send(());
+    });
+    let wait = |mut rx: tokio::sync::watch::Receiver<()>| async move {
+        let _ = rx.changed().await;
+    };
+
+    let result = tokio::try_join!(
+        channel_a::serve(http, state.clone(), wait(shutdown_rx.clone())),
+        channel_b::serve(gateway, state.clone(), wait(shutdown_rx)),
+    );
+    signal.abort();
 
     // Give the pool a chance to checkpoint the WAL rather than leaving it to recovery.
     state.db.close().await;
     tracing::info!("stopped");
-    result
+    result.map(|_| ())
 }
 
 async fn shutdown_signal() {

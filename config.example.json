@@ -8,6 +8,7 @@
                "ping_timeout_secs": 120,
                "max_frame_bytes": 8388608,
                "ack_handshake": true,
+               "announce_app_online": true,
                "encrypt_commands": false,
                "command_ttl_secs": 300 },
   "console": { "enabled": true },

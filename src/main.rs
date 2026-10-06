@@ -44,7 +44,7 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
-    /// Serve channel A (and, from phase 3, the gateway). The default.
+    /// Serve the channel-A HTTP API and the channel-B gateway. The default.
     Serve,
     /// Create or migrate the database, then exit.
     Migrate,
