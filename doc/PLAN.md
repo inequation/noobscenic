@@ -568,39 +568,46 @@ Context: the robot's LAN control server binds a UDP port chosen as
 broadcast `getID` exchange [PROTOCOL §C]. In pairing mode the robot is the AP
 `LDRobot` at `192.168.78.1` (DHCP .50–.150).
 
-Subcommands:
+It is a one-shot tool: running it performs the whole re-home, there are no
+subcommands, and the server itself never speaks channel C. The bench unit answers on
+**UDP 7913**, outside the documented range, so the discovery sweep defaults to
+7000–9999 and `--discover-ports` widens it.
 
-| Command | Datagram | Purpose |
+The run, in order (this order is the tool):
+
+| Step | Datagram | Purpose |
 |---|---|---|
-| `discover` | `{"cmd":"getID"}` | sprays 9000–9999 at the target/broadcast, collects `{"result":"ok","type":"ipfromapp"}` replies, prints `ip:port` |
-| `info` | `getSn`, `getCfg`, `checkPwd` | serial, current STA config, join state |
-| `scan` | `getWifi` | nearby APs |
-| `set-url` | `{"cmd":"setUrl","url":"http://<host>:8080/"}` | point channel A at us |
-| `set-gateway` | `{"cmd":"setUrl","ip":"<host>","port":8081}` | point channel B at us |
-| `set-sta` | `{"cmd":"setSta","ssid":…,"staPwd":…}` | join our Wi-Fi |
-| `set-ap` / `reset-wifi` | `setAp` / `resetWifi` | back out |
-| `get-log` | `{"req":"getLog","offset":N}` | pull the device log package (base64) |
-| `portscan` | TCP connect + UDP `getID` probe | find what a unit actually listens on when `discover` comes back empty; a connected UDP socket surfaces the device's ICMP port-unreachable as `ECONNREFUSED`, which separates *closed* from *no answer* without root |
-| `listen` | – | bind and wait, sending nothing, in case the device announces itself |
-| `point-here` | `setUrl` at this machine's own address | serve the robot over its **own** soft-AP, with no Wi-Fi join at all — its AP subnet is directly connected, so `setSta` is not needed |
-| `probe-sta` | `setSta` with each candidate field name | work out what a unit's `setSta` actually wants when the documented names are refused |
-| `rehome` | the whole sequence | `discover` → `set-url` → `set-gateway` → verify with `getCfg` → `set-sta` last |
+| discovery | `{"cmd":"getID"}` | sweep the ports, collect any well-formed JSON reply (`invalue cmd` counts — not every unit implements `getID`), pin the robot's `ip:port` |
+| `setUrl` | `{"cmd":"setUrl","url":"http://<host>:8080/"}` | point channel A at us |
+| `setUrl` | `{"cmd":"setUrl","ip":"<host>","port":8081}` | write `ip_port.json` — the write that re-homes |
+| `getCfg` | — | verify the writes landed (a read; a failure does not undo them) |
+| `setID` | `{"cmd":"setID","id":<user>,"deviceSN":<sn>}` | arm the bind: the robot resolves the gateway and starts dialing |
+| `setSta` | `{"cmd":"setSta","staName":…,"staPwd":…}` | store the Wi-Fi credentials |
+| `applyCfg` | `{"cmd":"applyCfg"}` | commit: drop the soft-AP, join the network |
 
 Details that matter:
 
-* `set-sta` is **last** in `rehome` — it tears down the AP we are talking over.
+* `applyCfg` (not `setSta`) is what switches the robot to station mode, so it is
+  **last** — it tears down the AP we are talking over and its reply often never
+  arrives; that silence is expected, not a failure.
+* The robot leaves pairing mode only once the full chain succeeds: channel B
+  `10001` handshake + `21006` pongs, then channel A answering the preBind with
+  `code:0`. noobscenic must be listening on **both** ports before `setID` is sent
+  (PAIRING_LOG_ANALYSIS.md §4/§8).
+* `bindOk` is never sent: on this firmware it kills the local channel and starts a
+  fork storm that only a reboot clears (PAIRING_LOG_ANALYSIS.md §5).
 * Passphrase length is validated client-side to 8–64 characters, matching the device
   handler, so a bad password fails locally instead of half-way through.
-* `--dry-run` prints the exact datagrams and sends nothing; `--timeout`, `--retries`,
-  `--port` (skip discovery) for a flaky UDP path; responses are `{"result":"ok"|"fail",
-  "code":N}` and a `fail`/`invalue cmd` is reported loudly.
+* `--dry-run` prints the exact datagrams and sends nothing (give `--port` to skip
+  discovery); `--timeout` and `--retries` tune a flaky UDP path; responses are
+  `{"result":"ok"|"fail","code":N}` and a `fail` is reported loudly.
 * The script writes its own JSONL trace (`--trace FILE`) of every datagram sent and
-  received, same spirit as the server's tap.
-* The Wi-Fi password is never printed unless `--show-secrets`.
+  received, same spirit as the server's tap. The Wi-Fi password is redacted in it
+  (and on the console) unless `--show-secrets`.
 * Field names `ssid`/`staPwd` and the `url` vs `ip`/`port` forms of `setUrl` come from
   firmware JSON templates and are flagged in the RE docs as "confirm against a live
-  capture" — the script therefore accepts `--pwd-key` to switch `staPwd`→`pwd` if a
-  capture says otherwise.
+  capture" — the script therefore accepts `--ssid-key`/`--pwd-key` to switch to the
+  documented names if a capture says a unit wants them.
 * Documented alternative for a rooted device: these commands only write
   `/data/bin/Run/Config/url`, `ip_port.json`, `wpa_supplicant.conf` and `wifi_mode`
   [PROTOCOL §C] — the README notes that shell access can set them directly.
@@ -636,7 +643,7 @@ describes — see `AGENTS.md`. Each phase ends in something observable.
 ### Phase 0 — Re-home tool (no Rust; unblocks every live test)
 - [x] `tools/rehome.py` skeleton: argparse, UDP send/recv with timeout + retries, `--dry-run`, `--trace`
 - [x] `discover` sprays `getID` across 9000–9999 and reports the robot's `ip:port`
-- [ ] `info` / `scan` (`getSn`, `getCfg`, `checkPwd`, `getWifi`) against the real robot
+- [x] `info` / `scan` (`getSn`, `getCfg`, `checkPwd`, `getWifi`) against the real robot
 - [x] `set-url`, `set-gateway`, `set-sta`, `set-ap`, `reset-wifi`, `get-log`
 - [x] `rehome` runs the full sequence in the right order (`set-sta` last)
 

@@ -37,21 +37,20 @@ onto, which is where the server needs to be reachable from.
    per-event copies under `var/traces/raw/` (the default format is "both").
 3. Put the robot into pairing mode (soft-AP `LDRobot`, robot at
    `192.168.78.1`) and join this machine to that AP.
-4. Sanity-check that the channel-C tool can talk to it:
-   `python tools/rehome.py info`
-5. Run the full re-home sequence:
-   `python tools/rehome.py rehome --server-host <server-ip> --ssid <your-wifi-ssid> --pwd '<your-wifi-password>' --trace rehome-trace.jsonl`
-   This sets the channel-A URL and the channel-B gateway address, verifies with
-   `getCfg`, then joins the robot to your Wi-Fi last — that step tears down the
-   soft-AP, so reconnect this machine to its usual network too.
-6. Watch `var/traces/wire-<date>.jsonl` (or the server's stderr) for the
+4. Run the re-home:
+   `python tools/rehome.py --server-host <server-ip> --ssid <your-wifi-ssid> --pwd '<your-wifi-password>' --userid <any-user-id> --trace rehome-trace.jsonl`
+   It finds the robot's UDP port, points its channel-A URL and channel-B gateway
+   at this machine, verifies with `getCfg`, arms the bind with `setID`, then
+   stores the Wi-Fi credentials and commits with `applyCfg` last — that step
+   tears down the soft-AP, so reconnect this machine to its usual network too.
+5. Watch `var/traces/wire-<date>.jsonl` (or the server's stderr) for the
    robot's `register` call and whatever else it tries: every channel-A request
    is logged, persisted, and answered with a benign `{"code":0}`, even for
    endpoints not implemented yet. Channel-B frames (the `10001` handshake and
    the `21006` pings) show up in the same trace under `"channel":"B"`, each
    ping followed by the server's pong.
 
-If `discover`/`info` finds nothing, confirm the robot is actually in pairing
-mode and this machine is joined to the `LDRobot` AP, not still on its normal
-Wi-Fi. `--dry-run` on any `rehome.py` subcommand prints what would be sent
-without sending it.
+If the tool reports no robot, confirm the robot is actually in pairing mode and
+this machine is joined to the `LDRobot` AP, not still on its normal Wi-Fi.
+`--dry-run` prints the datagrams instead of sending them (give it `--port` to
+skip the discovery sweep).

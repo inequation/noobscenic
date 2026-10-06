@@ -1,50 +1,49 @@
 #!/usr/bin/env python3
-"""Re-home a Proscenic M7 Pro onto your own server — channel C (UDP JSON) client.
+"""Re-home a Proscenic M7 Pro onto your own server — channel C (UDP JSON), one run.
 
-Protocol reference: ../doc/reverse-engineering/PROTOCOL.md section C, and
-doc/PLAN.md section 13. Standard library only, on purpose: this usually runs from a
-laptop that has just joined the robot's `LDRobot` soft-AP with nothing installed.
+Points the robot's cloud at the noobscenic instance on this machine and joins it to
+your Wi-Fi. This is the only channel-C operation the project has: the server itself
+never speaks channel C (doc/PLAN.md section 13), so this is a one-shot setup tool
+rather than a client library. Standard library only, on purpose: it usually runs from
+a laptop that has just joined the robot's `LDRobot` soft-AP with nothing installed.
+Protocol reference: doc/reverse-engineering/PROTOCOL.md section C.
 
-The robot's LAN control server binds a UDP port that the firmware sample picks as
-rand()%1000 + 9000, so `discover` has to sweep for it. Do not trust that range: the
-bench unit answers on **7913**, outside it entirely (see FIELD_NOTES.md), so the sweep
-defaults to 7000-9999 and `--discover-ports` widens it.
+Start noobscenic first — it must be listening on both of its ports before the robot
+is armed — then, with the robot in pairing mode (soft-AP `LDRobot`, robot at
+192.168.78.1):
 
-Typical use, with the robot in pairing mode (soft-AP `LDRobot`, robot at
-192.168.78.1) and this machine joined to that AP:
+    ./rehome.py --server-host 192.168.1.10 --ssid my-wifi --pwd 'secret' --userid me
 
-    ./rehome.py discover
-    ./rehome.py info
-    ./rehome.py rehome --server-host 192.168.1.10 --ssid my-wifi --pwd 'secret'
-    # ...then power-cycle the robot (see below).
+The sequence, in the order that does not cut the branch we are sitting on:
 
-`setUrl` has two forms, and they write two different files (PROTOCOL.md → "Rehoming").
-The `url` form rewrites the cloud base URL that HTTP registration uses
-(`/data/bin/Run/Config/url`); the `ip`+`port` form writes the Channel-B push-gateway
-address (`/data/bin/Run/Config/ip_port.json`) directly. The robot reads `ip_port.json`
-first and keeps it across reboots, so it is the `ip`+`port` write that actually re-homes
-the robot — `setUrl(url)` + `setSta` on their own leave it dialing the cached Proscenic
-gateway. `rehome` writes both and switches the Wi-Fi last, because that last step tears
-down the AP we are talking over.
+  1. discovery: find the robot's UDP control port. The firmware sample picks
+     rand()%1000 + 9000, but the bench unit answers on 7913, outside that range, so
+     the default sweep covers 7000-9999 (--discover-ports widens it further).
+  2. `setUrl url` rewrites the Channel-A base URL (/data/bin/Run/Config/url), which
+     is what HTTP registration and the preBind POST are built from.
+  3. `setUrl ip/port` writes /data/bin/Run/Config/ip_port.json — the Channel-B push
+     gateway. The robot reads that file first and keeps it across reboots, so this
+     is the write that actually re-homes the robot; setUrl(url) + setSta alone leave
+     it dialing the cached vendor gateway.
+  4. `getCfg` verifies the writes landed (a read; failing does not undo them).
+  5. `setID` arms the bind. The robot resolves the gateway address and starts
+     dialing; pairing ends only once channel B answers its 10001 handshake and every
+     21006 ping, and channel A answers the preBind with code:0 (see
+     PAIRING_LOG_ANALYSIS.md section 4).
+  6. `setSta` + `applyCfg` store the Wi-Fi credentials and commit. This is last
+     because the robot drops its soft-AP as it joins your network, so the reply
+     often never arrives; that silence is expected, not a failure.
 
-Then you MUST power-cycle the robot. Nothing on this channel makes the daemon re-read
-`ip_port.json` or drop its cached cloud session, so it keeps using the old gateway until
-a cold, session-free boot — there is no UDP reboot command (with root, `killall
-network_proxy` does the same). `rehome` and `point-here` both say so when they finish.
-
-If `discover` finds nothing, the unit may not speak this protocol at all — see
-../doc/reverse-engineering/FIELD_NOTES.md. `portscan` and `listen` are the tools for
-working out what it does speak.
+Never send `bindOk` on this firmware: it close()s the local socket without stopping
+the listener and spins ~85 shell forks per second until the robot reboots
+(PAIRING_LOG_ANALYSIS.md section 5). `--dry-run` prints every datagram instead of
+sending it.
 """
 
 from __future__ import annotations
 
 import argparse
-import base64
-import binascii
-import concurrent.futures
 import json
-import selectors
 import socket
 import sys
 import time
@@ -57,15 +56,7 @@ DEFAULT_DISCOVER_PORTS = "7000-9999"
 PWD_MIN, PWD_MAX = 8, 64  # enforced by the device's setSta handler
 SECRET_KEYS = ("staPwd", "pwd", "password")
 
-EXIT_OK, EXIT_FAIL, EXIT_USAGE = 0, 1, 2
-
-# Ports worth a look when the documented 9000-9999 range comes back closed, as it
-# does on the Proscenic-6716 unit (see ../doc/reverse-engineering/FIELD_NOTES.md):
-# common IoT provisioning and discovery services.
-SUSPECT_UDP_PORTS = (
-    "53,67,68,123,161,1900,3702,5353,5683,6666,6667,7777,8888,9000-9010,"
-    "10000,18888,30303,38899,48899,49152,54321,58866"
-)
+EXIT_OK, EXIT_FAIL = 0, 1
 
 
 class ProtocolError(Exception):
@@ -84,23 +75,6 @@ def now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()) + ".%03dZ" % (
         int(time.time() * 1000) % 1000
     )
-
-
-# setSta is refused by at least one unit with the documented field names, and the
-# firmware notes flag them as unverified. These are the plausible alternatives; the
-# getter is documented to return staName/staPwd, so the setter may well want the pair.
-SSID_KEYS = ("staName", "ssid", "name", "wifiName", "staSsid")
-PWD_KEYS = ("staPwd", "pwd", "password", "passwd", "psk", "key")
-
-
-def local_ip_for(target: str) -> str:
-    """This machine's address on the route to `target`, without sending anything."""
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        sock.connect((target, 9))  # UDP connect only sets the route, sends no packet
-        return sock.getsockname()[0]
-    finally:
-        sock.close()
 
 
 def quiet_icmp_resets(sock: socket.socket) -> None:
@@ -206,7 +180,7 @@ class Channel:
         """Send a command and return the robot's reply, retrying on silence."""
         port = port or self.port
         if port is None:
-            raise ProtocolError("no port known — run `discover` first, or pass --port")
+            raise ProtocolError("no port known — discovery did not run, or pass --port")
         peer = "%s:%d" % (self.target, port)
 
         if self.dry_run:
@@ -337,271 +311,7 @@ class Channel:
                 self._say("  found %s:%d  %s" % (addr[0], addr[1], json.dumps(reply)))
 
 
-# -- subcommands ----------------------------------------------------------
-
-
-def need_port(chan: Channel, args) -> None:
-    """Make sure the channel knows which port to talk to."""
-    if chan.port is not None:
-        return
-    ports = parse_ports(args.discover_ports)
-    print("discovering (sweeping UDP %d-%d on %s)..." % (ports[0], ports[-1], chan.target))
-    found = chan.discover(ports, args.settle, args.probe_cmd)
-    if not found:
-        raise ProtocolError(
-            "no robot answered getID on %s. Is the robot in pairing mode and is this "
-            "machine on its network?" % chan.target
-        )
-    if len(found) > 1:
-        print("warning: %d responders; using the first" % len(found), file=sys.stderr)
-    chan.port = found[0][1]
-    chan.target = found[0][0]
-    print("using %s:%d" % (chan.target, chan.port))
-
-
-def cmd_discover(chan: Channel, args) -> int:
-    ports = parse_ports(args.discover_ports)
-    print("sweeping UDP %d-%d on %s..." % (ports[0], ports[-1], chan.target))
-    found = chan.discover(ports, args.settle, args.probe_cmd)
-    if not found:
-        print("no responders", file=sys.stderr)
-        return EXIT_FAIL
-    for ip, port in found:
-        print("%s:%d" % (ip, port))
-    return EXIT_OK
-
-
-def cmd_info(chan: Channel, args) -> int:
-    need_port(chan, args)
-    answered = 0
-    for cmd in ("getSn", "getCfg", "checkPwd"):
-        try:
-            reply = chan.command(cmd)
-        except ProtocolError as exc:
-            print("%-9s !! %s" % (cmd, exc), file=sys.stderr)
-            continue
-        answered += 1
-        print("%-9s %s" % (cmd, json.dumps(redact(reply, chan.show_secrets), ensure_ascii=False)))
-    print("%-9s %s  (this machine, as the robot sees it)" % ("localIp", local_ip_for(chan.target)))
-    # One command failing is worth reporting but not fatal; all three failing means
-    # we are not talking to the robot at all.
-    return EXIT_OK if answered else EXIT_FAIL
-
-
-def cmd_scan(chan: Channel, args) -> int:
-    need_port(chan, args)
-    # A scan takes the radio off the channel it is serving the AP on, so the result
-    # arrives seconds later and anything we send meanwhile can be lost. Wait, do not
-    # retry into the gap.
-    chan.timeout = args.scan_timeout
-    chan.retries = 0
-    reply = chan.command("getWifi")
-    networks = reply.get("wifi_list", [])
-    if not networks:
-        print("(no networks reported)")
-    for entry in networks:
-        print(json.dumps(entry, ensure_ascii=False))
-    return EXIT_OK
-
-
-def normalise_url(url: str) -> str:
-    # Endpoints are appended to this base as `cleanPack/register`, so it must end in "/".
-    if not url.endswith("/"):
-        print("note: appending a trailing '/' to the base URL", file=sys.stderr)
-        url += "/"
-    return url
-
-
-def cmd_set_url(chan: Channel, args) -> int:
-    """Write the cloud base URL (`/data/bin/Run/Config/url`), used for HTTP registration.
-
-    This alone does NOT re-home the robot: it keeps dialing the Channel-B push gateway
-    cached in `ip_port.json`. Use `set-gateway` (or `rehome`) to change that, then
-    power-cycle the robot. See PROTOCOL.md → "Rehoming".
-    """
-    need_port(chan, args)
-    reply = chan.command("setUrl", url=normalise_url(args.url))
-    print("setUrl ok: %s" % json.dumps(reply, ensure_ascii=False))
-    print("note: this sets only the HTTP registration base. To re-home the robot you")
-    print("must also write ip_port.json (`set-gateway`) and power-cycle it.")
-    return EXIT_OK
-
-
-def cmd_set_gateway(chan: Channel, args) -> int:
-    """Write `ip_port.json` — the Channel-B push-gateway address, and the single write
-    that actually re-homes the robot.
-
-    The robot reads this file first and prefers it over HTTP registration, so pointing
-    it here is what moves the robot off the cached Proscenic gateway. It takes effect
-    only on the next cold boot (the daemon re-reads `ip_port.json` session-free), so
-    power-cycle the robot afterwards. See PROTOCOL.md → "Rehoming".
-    """
-    need_port(chan, args)
-    reply = chan.command("setUrl", ip=args.ip, port=args.port_number)
-    print("setUrl(ip/port) ok: %s" % json.dumps(reply, ensure_ascii=False))
-    print("wrote ip_port.json — this is the write that re-homes the robot.")
-    print("power-cycle the robot to apply it (there is no UDP reboot; with root,")
-    print("`killall network_proxy` has the same effect).")
-    return EXIT_OK
-
-
-def check_passphrase(pwd: str) -> None:
-    if not PWD_MIN <= len(pwd) <= PWD_MAX:
-        raise ProtocolError(
-            "Wi-Fi passphrase must be %d-%d characters (the device rejects anything "
-            "else); got %d" % (PWD_MIN, PWD_MAX, len(pwd))
-        )
-
-
-def cmd_set_sta(chan: Channel, args) -> int:
-    need_port(chan, args)
-    check_passphrase(args.pwd)
-    try:
-        reply = chan.command("setSta", **{args.ssid_key: args.ssid, args.pwd_key: args.pwd})
-        print("setSta ok: %s" % json.dumps(reply, ensure_ascii=False))
-    except NoReply as exc:
-        print("no confirmation: %s" % exc, file=sys.stderr)
-        print("(expected if the AP went away as it switched — verify on your LAN)")
-    print("the robot is switching to station mode; the soft-AP is going away now.")
-    return EXIT_OK
-
-
-def cmd_set_ap(chan: Channel, args) -> int:
-    need_port(chan, args)
-    fields: dict = {}
-    if args.ssid:
-        fields["ssid"] = args.ssid
-    if args.pwd:
-        fields["pwd"] = args.pwd
-    if args.segment is not None:
-        fields["segment"] = args.segment
-    reply = chan.command("setAp", **fields)
-    print("setAp ok: %s" % json.dumps(reply, ensure_ascii=False))
-    return EXIT_OK
-
-
-def cmd_apply_cfg(chan: Channel, args) -> int:
-    need_port(chan, args)
-    reply = chan.command("applyCfg")
-    print("applyCfg ok: %s" % json.dumps(reply, ensure_ascii=False))
-    return EXIT_OK
-
-
-# NOTE: Disabled because this triggers a bug in the robot firmware, a fork bomb vulnerability, essentially.
-#def cmd_bind_ok(chan: Channel, args) -> int:
-#    need_port(chan, args)
-#    reply = chan.command("bindOk")
-#    print("bindOk ok: %s" % json.dumps(reply, ensure_ascii=False))
-#    return EXIT_OK
-
-
-def cmd_reset_wifi(chan: Channel, args) -> int:
-    need_port(chan, args)
-    reply = chan.command("resetWifi")
-    print("resetWifi ok: %s" % json.dumps(reply, ensure_ascii=False))
-    return EXIT_OK
-
-
-def cmd_get_log(chan: Channel, args) -> int:
-    """Pull the device log package. Chunk field shapes are unverified (PLAN section 16)."""
-    need_port(chan, args)
-    offset, chunks, total = 0, [], None
-    for _ in range(args.max_chunks):
-        reply = chan.request({"req": "getLog", "offset": offset})
-        if reply.get("result") not in (None, "ok"):
-            raise ProtocolError("getLog failed: %s" % json.dumps(reply, ensure_ascii=False))
-        package = reply.get("package")
-        if not package:
-            break
-        try:
-            blob = base64.b64decode(package)
-        except (binascii.Error, ValueError) as exc:
-            raise ProtocolError("getLog chunk at offset %d is not base64: %s" % (offset, exc))
-        chunks.append(blob)
-        total = reply.get("totalLen", total)
-        advance = reply.get("pLen") or len(blob)
-        if advance <= 0:
-            break
-        offset += advance
-        if total is not None and offset >= total:
-            break
-    else:
-        print("warning: stopped at --max-chunks; log may be truncated", file=sys.stderr)
-
-    data = b"".join(chunks)
-    if not data:
-        print("no log data returned", file=sys.stderr)
-        return EXIT_FAIL
-    with open(args.out, "wb") as handle:
-        handle.write(data)
-    print("wrote %d bytes to %s" % (len(data), args.out))
-    if total is not None and len(data) != total:
-        print("warning: device reported totalLen=%s, got %d" % (total, len(data)), file=sys.stderr)
-    return EXIT_OK
-
-
-def cmd_rehome(chan: Channel, args) -> int:
-    """The whole sequence, in the order that does not cut the branch we sit on.
-
-    Two of these writes matter and one is the point of the exercise. The `ip`+`port`
-    form of setUrl writes `/data/bin/Run/Config/ip_port.json`, the Channel-B push-gateway
-    address the robot dials; the robot reads that file first and keeps it across reboots,
-    so writing it is what actually re-homes the robot. The `url` form only rewrites the
-    cloud base URL used for HTTP registration. setUrl(url) + setSta on their own do NOT
-    move the robot off the cached Proscenic gateway (PROTOCOL.md → "Rehoming"), and none
-    of these commands makes the daemon re-read its config or drop its cached session — so
-    the sequence ends by telling the operator to power-cycle the robot.
-    """
-    check_passphrase(args.pwd)
-    url = normalise_url(args.url or "http://%s:%d/" % (args.server_host, args.http_port))
-    gateway_ip = args.gateway_ip or args.server_host
-
-    need_port(chan, args)
-
-    print("1/6 setUrl  cloud base URL  %s" % url)
-    chan.command("setUrl", url=url)
-
-    print("2/6 setUrl  push gateway    %s:%d  (writes ip_port.json — the write that re-homes)"
-          % (gateway_ip, args.gateway_port))
-    chan.command("setUrl", ip=gateway_ip, port=args.gateway_port)
-
-    print("3/6 getCfg  (verify)")
-    try:
-        cfg = chan.command("getCfg")
-        print("    %s" % json.dumps(redact(cfg, chan.show_secrets), ensure_ascii=False))
-    except ProtocolError as exc:
-        # getCfg is a read; a failure here does not undo the writes above.
-        print("    warning: could not verify: %s" % exc, file=sys.stderr)
-    
-    print("4/6 setID   set user ID  %s" % args.userid)
-    reply = chan.command("getSn")
-    sn = reply.get("sn", "")
-    print("    %s" % json.dumps(sn, ensure_ascii=False))
-    fields: dict = {}
-    fields["id"] = args.userid
-    fields["deviceSN"] = sn
-    reply = chan.command("setID", **fields)
-    print("    %s" % json.dumps(reply, ensure_ascii=False))
-
-    try:
-        print("5/6 setSta  ssid=%s" % args.ssid)
-        chan.command("setSta", **{args.ssid_key: args.ssid, args.pwd_key: args.pwd})
-        print("6/6 applyCfg")
-        reply = chan.command("applyCfg")
-        print("applyCfg ok: %s" % json.dumps(reply, ensure_ascii=False))
-    except NoReply as exc:
-        # The device drops the soft-AP as it switches to station mode, so the
-        # confirmation frequently never makes it back to us. That is not a failure,
-        # and reporting it as one would send you chasing a re-home that worked.
-        print("    no confirmation: %s" % exc, file=sys.stderr)
-        print("    (expected if the AP went away as it switched — verify on your LAN)")
-
-    print()
-    print("The robot joins %s and will look for:" % args.ssid)
-    print("  channel A (HTTP register)  %s" % url)
-    print("  channel B (push gateway)   %s:%d" % (gateway_ip, args.gateway_port))
-    print("Start noobscenic on those ports and watch the traces.")
-    return EXIT_OK
+# -- the re-home sequence -------------------------------------------------
 
 
 def parse_ports(spec: str) -> list[int]:
@@ -622,247 +332,87 @@ def parse_ports(spec: str) -> list[int]:
     return sorted(ports)
 
 
-def probe_tcp(host: str, port: int, timeout: float) -> bool:
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.settimeout(timeout)
-    try:
-        sock.connect((host, port))
-        return True
-    except OSError:
-        return False
-    finally:
-        sock.close()
+def need_port(chan: Channel, args) -> None:
+    """Make sure the channel knows which port to talk to."""
+    if chan.port is not None:
+        return
+    ports = parse_ports(args.discover_ports)
+    print("discovering (sweeping UDP %d-%d on %s)..." % (ports[0], ports[-1], chan.target))
+    found = chan.discover(ports, args.settle, args.probe_cmd)
+    if not found:
+        raise ProtocolError(
+            "no robot answered %s on %s. Is the robot in pairing mode and is this "
+            "machine on its network?" % (args.probe_cmd, chan.target)
+        )
+    if len(found) > 1:
+        print("warning: %d responders; using the first" % len(found), file=sys.stderr)
+    chan.port = found[0][1]
+    chan.target = found[0][0]
+    print("using %s:%d" % (chan.target, chan.port))
 
 
-def probe_udp(host: str, port: int, payload: bytes, timeout: float) -> tuple[str, bytes | None]:
-    """Classify a UDP port by connecting the socket first.
-
-    A connected UDP socket surfaces the ICMP port-unreachable the device sends for a
-    closed port as ECONNREFUSED, which is what lets this tell "closed" apart from
-    "nothing came back" without root or a raw socket. Note that the device rate-limits
-    ICMP errors (Linux does ~1/second), so on a wide sweep most closed ports still look
-    like `no-response`; pace the scan if you need certainty.
-    """
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.settimeout(timeout)
-    try:
-        sock.connect((host, port))
-        sock.send(payload)
-        try:
-            return "open", sock.recv(65535)
-        except (ConnectionRefusedError, ConnectionResetError):
-            return "closed", None          # Windows reports the ICMP error as a reset
-        except socket.timeout:
-            return "no-response", None
-    except (ConnectionRefusedError, ConnectionResetError):
-        return "closed", None
-    except OSError as exc:
-        return "error: %s" % exc, None
-    finally:
-        sock.close()
+def normalise_url(url: str) -> str:
+    # Endpoints are appended to this base as `cleanPack/register`, so it must end in "/".
+    if not url.endswith("/"):
+        print("note: appending a trailing '/' to the base URL", file=sys.stderr)
+        url += "/"
+    return url
 
 
-def cmd_portscan(chan: Channel, args) -> int:
-    """Find out what the robot is actually listening on."""
-    found_any = False
-
-    if args.proto in ("tcp", "both"):
-        ports = parse_ports(args.tcp_ports)
-        print("TCP: scanning %d ports on %s..." % (len(ports), chan.target))
-        opened = []
-        with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as pool:
-            futures = {pool.submit(probe_tcp, chan.target, p, args.probe_timeout): p for p in ports}
-            for future in concurrent.futures.as_completed(futures):
-                if future.result():
-                    opened.append(futures[future])
-        for port in sorted(opened):
-            print("  %5d/tcp  open" % port)
-            found_any = True
-        if not opened:
-            print("  (nothing open)")
-
-    if args.proto in ("udp", "both"):
-        ports = parse_ports(args.udp_ports)
-        payload = json.dumps({"cmd": "getID"}).encode("utf-8")
-        print("UDP: probing %d ports on %s with %s..."
-              % (len(ports), chan.target, payload.decode()))
-        closed = 0
-        for port in ports:
-            verdict, data = probe_udp(chan.target, port, payload, args.probe_timeout)
-            if verdict == "closed":
-                closed += 1
-                continue
-            if verdict == "open":
-                text = data.decode("utf-8", "replace") if data else ""
-                print("  %5d/udp  ANSWERED  %s" % (port, text[:200]))
-                found_any = True
-            elif verdict.startswith("error"):
-                print("  %5d/udp  %s" % (port, verdict))
-            elif args.show_all:
-                print("  %5d/udp  no-response" % port)
-            if args.pace_ms:
-                time.sleep(args.pace_ms / 1000.0)
-        print("  %d ports answered ICMP unreachable (definitely closed)" % closed)
-
-    return EXIT_OK if found_any else EXIT_FAIL
+def check_passphrase(pwd: str) -> None:
+    if not PWD_MIN <= len(pwd) <= PWD_MAX:
+        raise ProtocolError(
+            "Wi-Fi passphrase must be %d-%d characters (the device rejects anything "
+            "else); got %d" % (PWD_MIN, PWD_MAX, len(pwd))
+        )
 
 
-def cmd_listen(chan: Channel, args) -> int:
-    """Bind and wait, sending nothing, in case the device announces itself.
-
-    This only sees datagrams aimed at the ports it binds. For complete coverage use a
-    real capture (`tcpdump -i <iface> -n udp`); this is the no-tcpdump fallback.
-    """
-    ports = parse_ports(args.ports)
-    selector = selectors.DefaultSelector()
-    socks = []
-    for port in ports:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        try:
-            sock.bind(("", port))
-        except OSError as exc:
-            print("  cannot bind %d: %s" % (port, exc), file=sys.stderr)
-            sock.close()
-            continue
-        selector.register(sock, selectors.EVENT_READ, port)
-        socks.append(sock)
-
-    if not socks:
-        raise ProtocolError("could not bind any of the requested ports")
-
-    print("listening on %d UDP ports for %.0fs (sending nothing)..."
-          % (len(socks), args.duration))
-    deadline = time.monotonic() + args.duration
-    heard = 0
-    try:
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                break
-            for key, _ in selector.select(timeout=min(remaining, 1.0)):
-                data, addr = key.fileobj.recvfrom(65535)
-                heard += 1
-                try:
-                    traced = data.decode("utf-8")
-                except UnicodeDecodeError:
-                    traced = "base64:" + base64.b64encode(data).decode("ascii")
-                text = data.decode("utf-8", "replace")
-                chan._record("rx", "%s:%d" % addr, traced, None)
-                print("  %s  %s:%d -> :%d  %d bytes"
-                      % (now_iso(), addr[0], addr[1], key.data, len(data)))
-                try:
-                    print("      json: %s" % json.dumps(json.loads(text), ensure_ascii=False))
-                except json.JSONDecodeError:
-                    print("      raw:  %r" % data[:200])
-    except KeyboardInterrupt:
-        print("  interrupted")
-    finally:
-        for sock in socks:
-            sock.close()
-        selector.close()
-
-    print("heard %d datagram(s)" % heard)
-    return EXIT_OK if heard else EXIT_FAIL
-
-
-def cmd_point_here(chan: Channel, args) -> int:
-    """Point the robot at this machine over its own soft-AP, without touching Wi-Fi.
-
-    The robot reaches the vendor cloud through whatever setUrl holds, and 192.168.78.0/24
-    is directly connected on its AP interface, so it can reach a server on that subnet
-    with no Wi-Fi join and no default route. That sidesteps setSta entirely.
-
-    As in `rehome`, the `ip`+`port` write (ip_port.json) is the one that re-homes the
-    robot, and a power cycle afterwards is mandatory: the daemon only re-reads that file
-    and re-registers on a cold, session-free boot (PROTOCOL.md → "Rehoming").
-    """
-    need_port(chan, args)
-    host = args.ip or local_ip_for(chan.target)
-    url = normalise_url(args.url or "http://%s:%d/" % (host, args.http_port))
-
-    print("1/2 setUrl  cloud base URL  %s" % url)
-    chan.command("setUrl", url=url)
-    print("2/2 setUrl  push gateway    %s:%d  (writes ip_port.json — the write that re-homes)"
-          % (host, args.gateway_port))
-    chan.command("setUrl", ip=host, port=args.gateway_port)
-
-    print()
-    print("writes done. Run noobscenic on this machine:")
-    print("    ./target/debug/noobscenic --data-dir ./var")
-    print("The robot will look for:")
-    print("  channel A (HTTP register)  %s" % url)
-    print("  channel B (push gateway)   %s:%d" % (host, args.gateway_port))
-    print()
-    print("Then power-cycle the robot — this is required, not a fallback: nothing on this")
-    print("channel makes the daemon re-read ip_port.json or drop its cached cloud session,")
-    print("so it keeps dialing the old gateway until a cold boot. Give this machine a")
-    print("static address on 192.168.78.0/24 first, and rejoin the robot's AP when it")
-    print("comes back, so it stays reachable. (Root: `killall network_proxy`.)")
-    return EXIT_OK
-
-
-def cmd_probe_sta(chan: Channel, args) -> int:
-    """Work out what setSta actually wants, by trying the plausible field names.
-
-    The device answers in milliseconds and deterministically, so this is cheap. Real
-    credentials are used, which means a combination that works re-homes the robot for
-    real — so stop at the first one that does.
-    """
-    need_port(chan, args)
+def rehome(chan: Channel, args) -> int:
+    """Point the robot at this machine's noobscenic, arm the bind, then join Wi-Fi."""
     check_passphrase(args.pwd)
-    chan.retries = 0  # a wrong guess is answered at once; retrying only wastes time
+    url = normalise_url(args.url or "http://%s:%d/" % (args.server_host, args.http_port))
+    gateway_ip = args.gateway_ip or args.server_host
 
-    attempts = [
-        ({sk: args.ssid, pk: args.pwd}, "%s + %s" % (sk, pk))
-        for sk in SSID_KEYS
-        for pk in PWD_KEYS
-    ]
-    # staName + staPwd is what Unit A accepts; try it first so a known-good unit is
-    # re-homed on the first datagram rather than after six refusals.
-    verified = ({"staName": args.ssid, "staPwd": args.pwd}, "staName + staPwd")
-    attempts = [verified] + [a for a in attempts if a[1] != verified[1]]
-    # Last resort: every candidate name at once. A handler that reads the fields it
-    # knows and ignores the rest will accept this even if no single pair is right.
-    shotgun = {k: args.ssid for k in SSID_KEYS}
-    shotgun.update({k: args.pwd for k in PWD_KEYS})
-    attempts.append((shotgun, "every name at once"))
-
-    print("trying %d field-name combinations against setSta..." % len(attempts))
-    for fields, label in attempts:
-        try:
-            reply = chan.request(dict({"cmd": args.cmd}, **fields))
-        except NoReply:
-            # Silence here is suspicious in a good way: a working setSta tears down the
-            # AP we are talking over, so the reply can genuinely go missing.
-            print("  %-28s NO REPLY — the AP may have dropped, which would mean this"
-                  " WORKED. Check whether the robot joined your network." % label)
-            return EXIT_OK
-        if reply.get("result") == "ok":
-            print("  %-28s *** ACCEPTED *** %s"
-                  % (label, json.dumps(reply, ensure_ascii=False)))
-            print()
-            print("Record this in doc/reverse-engineering/FIELD_NOTES.md.")
-            return EXIT_OK
-        if args.verbose:
-            print("  %-28s %s" % (label, json.dumps(reply, ensure_ascii=False)))
-    print("  every combination was refused.")
-    print("  Next: is the SSID 2.4GHz? Does a successful `scan` first change anything?")
-    print("  Does the passphrase contain \" $ ` or \\, which would break the shell")
-    print("  command the handler builds?")
-    return EXIT_FAIL
-
-
-def cmd_set_id(chan: Channel, args) -> int:
     need_port(chan, args)
-    reply = chan.command("getSn")
-    sn = reply.get("sn", "")
-    fields: dict = {}
-    fields["id"] = args.userid
-    fields["deviceSN"] = sn
-    reply = chan.command("setID", **fields)
-    print("setID ok: %s" % json.dumps(reply, ensure_ascii=False))
+
+    print("1/6 setUrl  cloud base URL  %s" % url)
+    chan.command("setUrl", url=url)
+
+    print("2/6 setUrl  push gateway    %s:%d  (writes ip_port.json — the write that re-homes)"
+          % (gateway_ip, args.gateway_port))
+    chan.command("setUrl", ip=gateway_ip, port=args.gateway_port)
+
+    print("3/6 getCfg  (verify)")
+    try:
+        cfg = chan.command("getCfg")
+        print("    %s" % json.dumps(redact(cfg, chan.show_secrets), ensure_ascii=False))
+    except ProtocolError as exc:
+        # getCfg is a read; a failure here does not undo the writes above.
+        print("    warning: could not verify: %s" % exc, file=sys.stderr)
+
+    print("4/6 setID   arm the bind   id=%s" % args.userid)
+    sn = chan.command("getSn").get("sn", "")
+    reply = chan.command("setID", id=args.userid, deviceSN=sn)
+    print("    sn=%s  %s" % (sn, json.dumps(reply, ensure_ascii=False)))
+
+    try:
+        print("5/6 setSta  ssid=%s" % args.ssid)
+        chan.command("setSta", **{args.ssid_key: args.ssid, args.pwd_key: args.pwd})
+        print("6/6 applyCfg  (commit; the soft-AP goes away now)")
+        reply = chan.command("applyCfg")
+        print("    %s" % json.dumps(reply, ensure_ascii=False))
+    except NoReply as exc:
+        # The device drops the soft-AP as it switches to station mode, so the
+        # confirmation frequently never makes it back to us. That is not a failure,
+        # and reporting it as one would send you chasing a re-home that worked.
+        print("    no confirmation: %s" % exc, file=sys.stderr)
+        print("    (expected if the AP went away as it switched — verify on your LAN)")
+
+    print()
+    print("The robot joins %s and will look for:" % args.ssid)
+    print("  channel A (HTTP)           %s" % url)
+    print("  channel B (push gateway)   %s:%d" % (gateway_ip, args.gateway_port))
+    print("noobscenic must be listening on both; watch its traces for the bind.")
     return EXIT_OK
 
 
@@ -872,127 +422,51 @@ def cmd_set_id(chan: Channel, args) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="rehome.py",
-        description="Point a Proscenic M7 Pro at your own server (channel C, UDP JSON).",
+        description="Point a Proscenic M7 Pro at your own noobscenic server (channel C, UDP JSON).",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="Run with the robot in pairing mode (soft-AP `LDRobot`) or on the LAN.",
+        epilog="Never sends bindOk (firmware fork storm, PAIRING_LOG_ANALYSIS.md section 5).",
     )
-    parser.add_argument("-t", "--target", default=DEFAULT_TARGET, help="robot IP (default %(default)s)")
-    parser.add_argument("-p", "--port", type=int, help="robot UDP port; skips discovery")
-    parser.add_argument("--timeout", type=float, default=1.0, help="per-reply timeout, seconds")
-    parser.add_argument("--retries", type=int, default=2, help="resends before giving up")
-    parser.add_argument("--settle", type=float, default=2.0, help="discovery collection window, seconds")
-    parser.add_argument("--discover-ports", default=DEFAULT_DISCOVER_PORTS, metavar="RANGE",
+
+    target = parser.add_argument_group("robot")
+    target.add_argument("-t", "--target", default=DEFAULT_TARGET, help="robot IP (default %(default)s)")
+    target.add_argument("-p", "--port", type=int, help="robot UDP port; skips discovery")
+    target.add_argument("--discover-ports", default=DEFAULT_DISCOVER_PORTS, metavar="RANGE",
                         help="ports the discovery sweep covers (default %(default)s)")
-    parser.add_argument("--probe-cmd", default="getID", metavar="CMD",
+    target.add_argument("--probe-cmd", default="getID", metavar="CMD",
                         help="command the sweep sends (default %(default)s; getSn is a "
                              "good alternative on firmware that lacks getID)")
-    parser.add_argument("--trace", metavar="FILE", help="append a JSONL trace of every datagram")
-    parser.add_argument("--dry-run", action="store_true", help="print datagrams, send nothing")
-    parser.add_argument("--show-secrets", action="store_true", help="do not redact passphrases")
-    parser.add_argument("--quiet", "-q", action="store_true", help="less chatter")
-    parser.add_argument(
-        "--pwd-key",
-        default="staPwd",
-        choices=("staPwd", "pwd"),
-        help="JSON key for the Wi-Fi passphrase (default %(default)s; some builds use 'pwd')",
-    )
-    parser.add_argument(
-        "--ssid-key",
-        default="staName",
-        choices=("staName", "ssid"),
-        help="JSON key for the SSID. Defaults to %(default)s, which is what real hardware "
-             "accepts; PROTOCOL.md documents 'ssid', which the bench unit refuses.",
-    )
+    target.add_argument("--settle", type=float, default=2.0,
+                        help="discovery collection window, seconds (default %(default)s)")
+    target.add_argument("--timeout", type=float, default=1.0, help="per-reply timeout, seconds")
+    target.add_argument("--retries", type=int, default=2, help="resends before giving up")
 
-    subs = parser.add_subparsers(dest="command", required=True)
+    cloud = parser.add_argument_group("new cloud")
+    cloud.add_argument("--server-host", required=True,
+                       help="where noobscenic runs, as the robot sees it")
+    cloud.add_argument("--http-port", type=int, default=8080,
+                       help="channel A port (default %(default)s)")
+    cloud.add_argument("--gateway-ip", help="channel B address; defaults to --server-host")
+    cloud.add_argument("--gateway-port", type=int, default=8081,
+                       help="channel B port (default %(default)s)")
+    cloud.add_argument("--url", help="override the derived channel-A base URL")
+    cloud.add_argument("--userid", required=True,
+                       help="the robot binds to it; any non-empty string will do")
 
-    subs.add_parser("discover", help="find the robot's UDP control port").set_defaults(func=cmd_discover)
-    subs.add_parser("info", help="getSn + getCfg + checkPwd").set_defaults(func=cmd_info)
-    p_scan = subs.add_parser("scan", help="getWifi — list nearby access points")
-    p_scan.add_argument("--scan-timeout", type=float, default=20.0,
-                        help="how long to wait for the scan result (default %(default)ss)")
-    p_scan.set_defaults(func=cmd_scan)
+    wifi = parser.add_argument_group("wi-fi")
+    wifi.add_argument("--ssid", required=True, help="the Wi-Fi network the robot should join")
+    wifi.add_argument("--pwd", required=True, help="8-64 characters")
+    wifi.add_argument("--ssid-key", default="staName", choices=("staName", "ssid"),
+                      help="JSON key for the SSID; %(default)s is what real hardware accepts, "
+                           "PROTOCOL.md documents 'ssid'")
+    wifi.add_argument("--pwd-key", default="staPwd", choices=("staPwd", "pwd"),
+                      help="JSON key for the passphrase (default %(default)s; some builds use 'pwd')")
 
-    p_url = subs.add_parser("set-url", help="set the cloud base URL (HTTP register; does not re-home on its own)")
-    p_url.add_argument("url", help="e.g. http://192.168.1.10:8080/")
-    p_url.set_defaults(func=cmd_set_url)
-
-    p_gw = subs.add_parser("set-gateway", help="write ip_port.json — the Channel-B gateway (the write that re-homes)")
-    p_gw.add_argument("ip")
-    p_gw.add_argument("port_number", type=int, metavar="port")
-    p_gw.set_defaults(func=cmd_set_gateway)
-
-    p_sta = subs.add_parser("set-sta", help="join a Wi-Fi network (ends the soft-AP)")
-    p_sta.add_argument("--ssid", required=True)
-    p_sta.add_argument("--pwd", required=True, help="8-64 characters")
-    p_sta.set_defaults(func=cmd_set_sta)
-
-    p_ap = subs.add_parser("set-ap", help="switch back to soft-AP mode")
-    p_ap.add_argument("--ssid")
-    p_ap.add_argument("--pwd")
-    p_ap.add_argument("--segment", type=int, help="192.168.<segment>.x, device default 78")
-    p_ap.set_defaults(func=cmd_set_ap)
-
-    p_ac = subs.add_parser("apply-cfg", help="apply the set configuration (exits pairing mode, connects to Wi-Fi and gateway/cloud set via set-url/set-sta)")
-    p_ac.set_defaults(func=cmd_apply_cfg)
-
-# NOTE: Disabled because this triggers a bug in the robot firmware, a fork bomb vulnerability, essentially.
-#    p_bo = subs.add_parser("bind-ok", help="apply the set configuration (exits pairing mode, connects to Wi-Fi and gateway/cloud set via set-url/set-sta)")
-#    p_bo.set_defaults(func=cmd_bind_ok)
-
-    subs.add_parser("reset-wifi", help="clear the Wi-Fi configuration").set_defaults(func=cmd_reset_wifi)
-
-    p_log = subs.add_parser("get-log", help="pull the device log package")
-    p_log.add_argument("-o", "--out", default="device-log.bin")
-    p_log.add_argument("--max-chunks", type=int, default=512)
-    p_log.set_defaults(func=cmd_get_log)
-
-    p_ps = subs.add_parser("portscan", help="find what the robot actually listens on")
-    p_ps.add_argument("--proto", choices=("tcp", "udp", "both"), default="both")
-    p_ps.add_argument("--tcp-ports", default="1-65535")
-    p_ps.add_argument("--udp-ports", default=SUSPECT_UDP_PORTS)
-    p_ps.add_argument("--workers", type=int, default=256, help="TCP concurrency")
-    p_ps.add_argument("--probe-timeout", type=float, default=0.5,
-                      help="per-port timeout; separate from the global --timeout")
-    p_ps.add_argument("--pace-ms", type=float, default=0.0,
-                      help="delay between UDP probes; the device rate-limits ICMP errors")
-    p_ps.add_argument("--show-all", action="store_true", help="list no-response UDP ports too")
-    p_ps.set_defaults(func=cmd_portscan)
-
-    p_li = subs.add_parser("listen", help="wait for the device to announce itself")
-    p_li.add_argument("--ports", default=SUSPECT_UDP_PORTS)
-    p_li.add_argument("--duration", type=float, default=60.0, help="seconds")
-    p_li.set_defaults(func=cmd_listen)
-
-    p_ph = subs.add_parser("point-here",
-                           help="point the robot at this machine over its own AP (no setSta)")
-    p_ph.add_argument("--ip", help="override the auto-detected address of this machine")
-    p_ph.add_argument("--http-port", type=int, default=8080)
-    p_ph.add_argument("--gateway-port", type=int, default=8081)
-    p_ph.add_argument("--url", help="override the derived base URL")
-    p_ph.set_defaults(func=cmd_point_here)
-
-    p_pr = subs.add_parser("probe-sta", help="brute-force the setSta field names")
-    p_pr.add_argument("--ssid", required=True)
-    p_pr.add_argument("--pwd", required=True, help="8-64 characters")
-    p_pr.add_argument("--cmd", default="setSta", help="command to probe (try applyCfg too)")
-    p_pr.add_argument("--verbose", "-v", action="store_true", help="show every refusal")
-    p_pr.set_defaults(func=cmd_probe_sta)
-
-    p_re = subs.add_parser("rehome", help="setUrl (url+gateway) + setSta in order; then power-cycle the robot")
-    p_re.add_argument("--server-host", required=True, help="where noobscenic runs, as the robot sees it")
-    p_re.add_argument("--http-port", type=int, default=8080)
-    p_re.add_argument("--gateway-ip", help="defaults to --server-host")
-    p_re.add_argument("--gateway-port", type=int, default=8081)
-    p_re.add_argument("--url", help="override the derived base URL")
-    p_re.add_argument("--ssid", required=True, help="the Wi-Fi network the robot should join")
-    p_re.add_argument("--pwd", required=True, help="8-64 characters")
-    p_re.add_argument("--userid", required=True, help="the robot will identify using it with the cloud")
-    p_re.set_defaults(func=cmd_rehome)
-
-    p_si = subs.add_parser("set-id", help="set user ID for the robot to identify with the cloud server")
-    p_si.add_argument("--userid", required=True, help="the robot will identify using it with the cloud")
-    p_si.set_defaults(func=cmd_set_id)
+    debug = parser.add_argument_group("debugging")
+    debug.add_argument("--trace", metavar="FILE", help="append a JSONL trace of every datagram")
+    debug.add_argument("--dry-run", action="store_true",
+                       help="print every datagram, send nothing (give --port to skip discovery)")
+    debug.add_argument("--show-secrets", action="store_true", help="do not redact passphrases")
+    debug.add_argument("--quiet", "-q", action="store_true", help="less chatter")
 
     return parser
 
@@ -1010,7 +484,7 @@ def main(argv: list[str]) -> int:
         quiet=args.quiet,
     )
     try:
-        return args.func(chan, args)
+        return rehome(chan, args)
     except ProtocolError as exc:
         print("error: %s" % exc, file=sys.stderr)
         return EXIT_FAIL

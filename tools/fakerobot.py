@@ -7,7 +7,8 @@ the re-home tool can be exercised end to end without the vacuum — the same rol
 `simdev` plays for the Rust server.
 
     ./fakerobot.py --port 9123        # or omit --port to pick one like the robot does
-    ./rehome.py -t 127.0.0.1 discover
+    ./rehome.py -t 127.0.0.1 -p 9123 --server-host 127.0.0.1 \
+        --ssid test-wifi --pwd password1 --userid tester
 
 Config writes are kept in memory and reflected back by getCfg, so a full `rehome` run
 can be verified.
@@ -24,6 +25,7 @@ import sys
 
 STATE = {
     "sn": "FAKE0123456789",
+    "userId": "",
     "staName": "",
     "staPwd": "",
     "staIp": "192.168.78.1",
@@ -78,6 +80,13 @@ def handle(msg: dict) -> dict:
         else:
             return {"cmd": cmd, "result": "fail", "code": -1}
         return {"cmd": cmd, "result": "ok"}
+    if cmd == "setID":
+        # The firmware insists deviceSN is the robot's own SN, and answers the
+        # command as if it had been getID (PROTOCOL.md section C).
+        if msg.get("deviceSN") != STATE["sn"]:
+            return {"cmd": "getID", "result": "fail"}
+        STATE["userId"] = msg.get("id", "")
+        return {"cmd": "getID", "result": "ok", "type": "ipfromapp"}
     if cmd == "setSta":
         pwd = msg.get("staPwd", msg.get("pwd", ""))
         # Unit A accepts staName and refuses the documented ssid; mirror that, so a
