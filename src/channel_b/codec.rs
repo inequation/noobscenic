@@ -10,6 +10,24 @@ use serde_json::Value;
 /// The frame delimiter, verbatim from the firmware (`#` `\t` `#`).
 pub const DELIMITER: &[u8; 3] = b"#\t#";
 
+/// The cloud→device envelope (`doc/reverse-engineering/CHANNEL_B_INBOUND.md`): the
+/// outer object carries only `encrypt` and `data`, and the device dispatches the
+/// **inner** object found there. A flat `{"infoType":…,"encrypt":…,"data":…}` frame
+/// passes the outer gate and is then dropped with a log-only `WTF!!! Recv Json`.
+pub fn envelope(encrypt: i64, message: Value) -> Value {
+    serde_json::json!({"encrypt": encrypt, "data": message})
+}
+
+/// The inner message the device's dispatcher actually processes. Commands whose
+/// handlers reply must carry `dInfo` (`{"ts":"…","userId":"…"}`, both strings) or the
+/// reply POST is refused.
+pub fn message(info_type: i64, data: Value, d_info: Option<Value>) -> Value {
+    match d_info {
+        Some(d_info) => serde_json::json!({"infoType": info_type, "data": data, "dInfo": d_info}),
+        None => serde_json::json!({"infoType": info_type, "data": data}),
+    }
+}
+
 /// A decoded frame exceeded the configured limit and the connection must be dropped.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum DecodeError {

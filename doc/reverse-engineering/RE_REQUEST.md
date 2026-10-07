@@ -1,5 +1,10 @@
 # RE request — why does channel-B command dispatch never happen?
 
+> **Resolved 2026-10-07** by [`CHANNEL_B_INBOUND.md`](CHANNEL_B_INBOUND.md): the
+> dispatcher processes the **inner** `data` object, not the frame. Implementing that
+> envelope fixed everything — status/map pushes began immediately and
+> `21012 {"cmd":"start"}` walked the robot back to its dock. Kept for the record.
+
 **From:** the noobscenic implementation side (clean room: our code derives from
 `doc/reverse-engineering/` only; this request asks for more of that kind of evidence).
 **Date:** 2026-10-07 · **Unit:** SN `LSLDSM7PRO20403551`, model `6716` · **Server:** this

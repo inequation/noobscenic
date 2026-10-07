@@ -11,16 +11,16 @@
 use std::sync::OnceLock;
 
 use base64::Engine as _;
-use serde_json::{Value, json};
+use serde_json::Value;
 
-/// The `encrypt:1` form of a command, or `None` when the session key is too short
-/// to hold an AES-128 key.
-pub fn encrypt_command(info_type: i64, data: &Value, session_key: &str) -> Option<Value> {
+/// Encrypt an inner message for an `encrypt:1` envelope:
+/// `base64(AES-128-ECB(json(message)))` with space padding. `None` when the session
+/// key is too short to hold an AES-128 key.
+pub fn encrypt_message(message: &Value, session_key: &str) -> Option<String> {
     let key: [u8; 16] = session_key.as_bytes().get(..16)?.try_into().ok()?;
-    let plaintext = serde_json::to_vec(data).ok()?;
+    let plaintext = serde_json::to_vec(message).ok()?;
     let ciphertext = Aes128::new(&key).encrypt_ecb(&space_pad(&plaintext));
-    let encoded = base64::engine::general_purpose::STANDARD.encode(ciphertext);
-    Some(json!({"infoType": info_type, "encrypt": 1, "data": encoded}))
+    Some(base64::engine::general_purpose::STANDARD.encode(ciphertext))
 }
 
 /// Space (`0x20`) padding to a 16-byte multiple; already-aligned input is untouched
@@ -184,6 +184,7 @@ fn gf_pow(base: u8, mut exponent: u32) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     fn hex(text: &str) -> Vec<u8> {
         (0..text.len())
@@ -230,25 +231,31 @@ mod tests {
     }
 
     #[test]
-    fn an_encrypted_command_is_well_formed() {
-        let frame = encrypt_command(
-            21024,
-            &json!({"cmd": "setledswitch", "value": 0}),
-            &"a".repeat(32),
-        )
-        .expect("32-character keys hold an AES-128 key");
-        assert_eq!(frame["infoType"], 21024);
-        assert_eq!(frame["encrypt"], 1);
+    fn an_encrypted_message_is_well_formed() {
+        let message = json!({
+            "infoType": 21024,
+            "data": {"cmd": "setledswitch", "value": 0},
+            "dInfo": {"ts": "1", "userId": "probe"},
+        });
+        let encoded = encrypt_message(&message, &"a".repeat(32))
+            .expect("32-character keys hold an AES-128 key");
         let ciphertext = base64::engine::general_purpose::STANDARD
-            .decode(frame["data"].as_str().unwrap())
+            .decode(&encoded)
             .unwrap();
-        // `{"cmd":"setledswitch","value":0}` is 31 bytes, so one space pads it to 32.
+        let plaintext_len = serde_json::to_vec(&message).unwrap().len();
         assert_eq!(
             ciphertext.len(),
-            32,
+            plaintext_len.div_ceil(16) * 16,
             "space padding lands on a block multiple"
         );
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD
+                .decode(encrypt_message(&message, &"a".repeat(32)).unwrap())
+                .unwrap(),
+            ciphertext,
+            "ECB encryption is deterministic"
+        );
 
-        assert!(encrypt_command(21024, &json!({}), "tooshort").is_none());
+        assert!(encrypt_message(&message, "tooshort").is_none());
     }
 }

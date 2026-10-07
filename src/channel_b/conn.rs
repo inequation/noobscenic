@@ -255,11 +255,13 @@ impl Conn {
         }
 
         if self.state.config.gateway.ack_handshake {
-            // `encrypt` is present on purpose: without it the frame is dropped at the
-            // device's inbound gate before anything can look at it, so the "optional"
-            // ack would never be delivered at all.
-            self.send(json!({"infoType": HANDSHAKE, "encrypt": 0, "message": "ok", "data": {}}))
-                .await;
+            // The dispatcher has no 10001 handler, so this only earns a device-side
+            // "Unknown infoType" log — but it goes out in the corrected envelope.
+            self.send(codec::envelope(
+                0,
+                codec::message(HANDSHAKE, json!({}), None),
+            ))
+            .await;
         }
     }
 
@@ -306,12 +308,15 @@ impl Conn {
             tracing::debug!(conn = %self.conn_id, "pongs are off; leaving the ping unanswered");
             return;
         }
-        let data = if self.state.config.gateway.announce_app_online {
+        let payload = if self.state.config.gateway.announce_app_online {
             json!({"isExistConnect": true})
         } else {
             json!({})
         };
-        self.send(json!({"infoType": PING, "encrypt": 0, "data": data}))
+        // `isExistConnect` belongs to the *inner* message's data
+        // (CHANNEL_B_INBOUND.md §7): a flat pong only refreshes liveness, so the
+        // app-online flag never gets set and no status or map pushes follow.
+        self.send(codec::envelope(0, codec::message(PING, payload, None)))
             .await;
     }
 

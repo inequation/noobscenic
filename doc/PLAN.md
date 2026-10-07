@@ -440,17 +440,17 @@ interleave mid-frame).
   `token` is empty, that is expected [PROTOCOL §B]. Bind the connection to `sn` in the
   registry (replacing any older connection for the same `sn`), mark the device online,
   then flush any pending commands. `gateway.ack_handshake` (default `true`) sends
-  `{"infoType":10001,"message":"ok","data":{}}`; the RE docs do not confirm the device
-  expects a reply, and an unexpected `infoType` only produces a device-side
-  `"Unknown infoType"` log line, so this is a config toggle rather than a guess baked
-  into the code (§16).
+  the ack in the corrected envelope (below) with inner `infoType` 10001; the dispatcher
+  has no 10001 handler, so it only earns a device-side `"Unknown infoType"` log — a
+  config toggle, not a guess baked into the code (§16).
 * **`21006` Ping** — pong **immediately**, before any other work on that frame:
-  `{"infoType":21006,"encrypt":0,"data":{"isExistConnect":true}}` with
-  `announce_app_online` (default on), or `"data":{}` with it off. The integer
-  `encrypt` is what gets the pong past the device's inbound gate, and the flag is
-  what tells the robot an app/cloud is online, so it pushes status and maps
-  [FUNC_STATUS §2.3]. Any complete frame already refreshes the device's online
-  timer, so the pong keeps the link alive either way.
+  `{"encrypt":0,"data":{"infoType":21006,"data":{"isExistConnect":true}}}` with
+  `announce_app_online` (default on), or inner `"data":{}` with it off. The device
+  dispatches the **inner** message [CHANNEL_B_INBOUND.md]: the outer integer `encrypt`
+  passes the inbound gate, the inner `infoType` reaches the pong handler, and the flag
+  tells the robot an app/cloud is online so it pushes status and maps. A *flat* pong
+  only refreshes the link timer — it never runs the handler, so no pushes ever start
+  (verified live 2026-10-07).
 * **Watchdog** — no ping within `ping_timeout_secs` (default 120; the device's actual
   interval is a runtime variable, so this is measured from the first live session and
   tuned) → mark offline, close, let the device reconnect.
@@ -463,15 +463,20 @@ interleave mid-frame).
 ### 10.3 Sending commands
 
 ```
-{"infoType":<N>,"encrypt":0,"data":{ … }}#\t#
+{"encrypt":0,"data":{"infoType":<N>,"data":{ … },"dInfo":{"ts":"<ms>","userId":"<id>"}}}#\t#
 ```
 
-`encrypt` **must be an integer** or the frame is dropped by the device;
-`encrypt:0` means `data` is a plaintext object and skips AES entirely — that is the
-default and the simplest correct path [PROTOCOL §B].
+The dispatcher processes the **inner** object, not the frame; the outer envelope is
+discarded as soon as it passes the gate. `encrypt` **must be an integer** or the frame
+is dropped; `encrypt:0` means the inner message is plaintext JSON — the default and the
+simplest correct path. `dInfo` (`ts` and `userId`, both **strings**) is required for any
+command whose handler replies: without it the reply builder refuses to POST, and the
+robot echoes both back in `cleanPack/response` [CHANNEL_B_INBOUND.md]. Verified live
+2026-10-07 — `21012 {"cmd":"start"}` walked the robot back to its dock, streaming status
+pushes the whole way.
 
 `encrypt:1` support lives in `crypto.rs` behind `gateway.encrypt_commands`, for when
-we want to prove the path works: `base64(AES-128-ECB(json, session_key[0..16]))`, with
+we want to prove the path works: `base64(AES-128-ECB(inner message, session_key[0..16]))`, with
 **padding disabled** and the plaintext **space-padded (`0x20`)** to a 16-byte multiple
 — the device does not strip padding, it NUL-terminates and hands the buffer to jsoncpp,
 so trailing spaces are safe and trailing NULs are not [PROTOCOL §B].

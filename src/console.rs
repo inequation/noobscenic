@@ -11,13 +11,14 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::watch;
 
 use crate::AppState;
+use crate::channel_b::codec;
 
 const HELP: &str = "\
 commands:
   devices                          who is connected on channel B
   send <sn> <infoType> <json>      queue one cloud->device frame (encrypt:0)
   send-enc <sn> <infoType> <json>  same, but encrypt:1 with the device's session key
-  send-full <sn> <json>            send the given JSON object as the whole frame
+  send-full <sn> <json>            send the given JSON object as the inner message
   style compact|styled             how channel-B frames are written
   pongs on|off                     answer 21006 pings (liveness experiment)
   quit                             shut the server down";
@@ -56,7 +57,8 @@ pub fn spawn(state: AppState, shutdown: watch::Sender<()>) {
                     info_type,
                     data,
                 } => {
-                    let frame = json!({"infoType": info_type, "encrypt": 0, "data": data});
+                    let message = codec::message(info_type, data, Some(reply_info()));
+                    let frame = codec::envelope(0, message);
                     send(&state, &sn, frame, &format!("infoType {info_type}")).await;
                 }
                 Command::SendEncrypted {
@@ -65,8 +67,10 @@ pub fn spawn(state: AppState, shutdown: watch::Sender<()>) {
                     data,
                 } => match crate::db::queries::latest_session_key(&state.db, &sn).await {
                     Ok(Some(key)) => {
-                        match crate::channel_b::crypto::encrypt_command(info_type, &data, &key) {
-                            Some(frame) => {
+                        let message = codec::message(info_type, data, Some(reply_info()));
+                        match crate::channel_b::crypto::encrypt_message(&message, &key) {
+                            Some(ciphertext) => {
+                                let frame = codec::envelope(1, Value::String(ciphertext));
                                 send(
                                     &state,
                                     &sn,
@@ -91,7 +95,7 @@ pub fn spawn(state: AppState, shutdown: watch::Sender<()>) {
                     );
                 }
                 Command::SendFull { sn, frame } => {
-                    send(&state, &sn, frame, "frame").await;
+                    send(&state, &sn, codec::envelope(0, frame), "message").await;
                 }
                 Command::Pongs { on } => {
                     state.pongs.store(on, std::sync::atomic::Ordering::Relaxed);
@@ -123,6 +127,13 @@ async fn send(state: &AppState, sn: &str, frame: Value, label: &str) {
         },
         None => println!("{sn} is not online"),
     }
+}
+
+/// The reply-correlation object the device's reply builder requires — both members
+/// must be strings, or the device refuses to POST the reply. The robot just echoes
+/// them back in `cleanPack/response`.
+fn reply_info() -> Value {
+    json!({"ts": crate::db::now_ms().to_string(), "userId": "console"})
 }
 
 #[derive(Debug, PartialEq)]
