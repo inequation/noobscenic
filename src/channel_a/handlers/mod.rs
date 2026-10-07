@@ -1,8 +1,11 @@
 //! The channel-A endpoints, phase by phase (doc/PLAN.md §9).
 
 pub mod register;
+pub mod response;
 pub mod sock_addr;
 pub mod sync;
+pub mod upload_events;
+pub mod uploads;
 
 use axum::Json;
 use axum::http::StatusCode;

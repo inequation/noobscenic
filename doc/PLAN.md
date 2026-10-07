@@ -109,7 +109,7 @@ console, not a third socket.
 | CLI | `clap` (derive) | `serve`, `migrate`, `devices`, `send`, `trace` |
 | crypto (optional) | `aes` + `cipher` | AES-128-ECB, **padding disabled**, manual 16-byte block loop |
 | base64 | `base64` | `Engine` API |
-| map decode | `lz4_flex` | **block** format (`LZ4_compress_default`), not frame [MAP.md] |
+| map decode | none | local `map::lz4_block` (the plan's `lz4_flex` is not available offline); **block** format (`LZ4_compress_default`), not frame [MAP.md] |
 | ids/keys | `rand` | session/cookie minting |
 | time | `chrono` | display only; stored as `INTEGER` epoch millis |
 
@@ -507,18 +507,23 @@ transport and is the only place that understands payloads.
 
 * **`20002` map upload** [MAP.md] — fields `SN`, `mapId`, `autoAreaId`, `pathId`,
   `width`, `height`, `resolution`, `x_min`, `y_min`, `lz4_len`, `map` (base64),
-  `area[]`, `chargeHandlePos/Phi/State`. Store the row; decode lazily in `map.rs`:
-  `base64 -> lz4_flex block decompress with expected size width*height -> row-major
-  cells`. Cell `(col,row)` maps to metres as `x = x_min + col*resolution`,
-  `y = y_min + row*resolution`. Free/occupied/unknown byte values are **not pinned by
-  the RE** (§16) — `map.rs` exposes the raw bytes plus a histogram helper so the
-  mapping can be settled from one real upload without touching the storage format.
-* **`21011` clean path** — flat `posArray` `[x0,y0,x1,y1,…]` with `startPos` /
-  `totalPoints` for incremental append; `path.rs` assembles chunks keyed by
-  `(sn, pathID)` and marks `complete` when the assembled count reaches `totalPoints`.
-  Out-of-order and duplicate chunks are tolerated.
-* **`21020` pack** — `packId`-chunked transfer; reassembly buffer per `(sn, packId)`
-  with a size cap and a timeout, then re-dispatch of the assembled payload.
+  `area[]`, `chargeHandlePos/Phi/State`. It arrives over **HTTP** (`uploadEvents`), not
+  channel B [FUNC_MAP §2.1]. Store the row compressed as received; decode lazily in
+  `map.rs`: `base64 -> LZ4 block -> width*height row-major cells`, with a histogram.
+  Cell `(col,row)`'s centre is `x = x_min + 0.05 + col*resolution` (the wire origin is
+  half a cell off the corner), `y` likewise [MAP.md]. A live upload settled the cell
+  semantics: `0x00` wall, `0x7F` unknown, `0xFF` free, other bytes room labels
+  [FUNC_MAP §2.3].
+* **`21011` clean path** — a **response** to a cloud request
+  (`{"startPos":N,"mask":N}` over channel B), not a stream: the robot POSTs
+  `cleanPack/response` with `posArray` as `[[x,y],…]` pairs in **millimetres** whose low
+  2 bits tag the point type [FUNC_MAP §3]. `path.rs` assembles chunks keyed by
+  `(sn, pathID)` in a sparse, index-addressed slot list (`points_json` holds `null`
+  for points not yet seen) and marks `complete` once every slot is filled;
+  out-of-order chunks, duplicates and corrections are all tolerated.
+* **`21020`** — *not* a pack transfer: it is the direct remote-control command
+  (`data.ctrlCode`), no reply on this channel, and the `packId` ack belongs to the
+  separate LAN UDP handler [FUNC_COMMANDS §2.1, FUNC_MAP §3].
 * **`21003` SetAreaTactics** — outbound only in v1: the console accepts a region list
   and enqueues it. Region descriptors (`id`, `name`, `tag`, `active`, `mode`,
   `forbidType`) are shared with the map's `area[]` parsing.
@@ -706,13 +711,19 @@ pings and 559 pongs with no reconnect loop, and after re-homing the robot dialed
 the gateway within seconds and its `register`/`binding` posts were answered `code:0`.
 
 ### Phase 4 — Telemetry
-- [ ] `uploadEvents` → shared `proto::dispatch`; `response`, `uploadLogs`, `uploadStats`, `uploadSingle`
-- [ ] `20002` map upload stored; `map.rs` base64 + LZ4-block decode with a cell histogram
-- [ ] `21011` clean-path chunk assembly (out-of-order and duplicate tolerant)
-- [ ] `21020` pack reassembly with size cap and timeout
-- [ ] Every stored row carries a working `trace_ref`
+- [x] `uploadEvents` → shared `proto::dispatch`; `response`, `uploadLogs`, `uploadStats`, `uploadSingle`
+- [x] `20002` map upload stored; `map.rs` base64 + LZ4-block decode with a cell histogram
+- [x] `21011` clean-path chunk assembly (out-of-order and duplicate tolerant)
+- [x] `21020` "pack reassembly" — superseded by the corrected RE: 21020 is the
+  remote-control command with no reply, and there is no pack transfer on this channel
+  to reassemble [FUNC_COMMANDS §2.1]
+- [x] Every stored row carries a working `trace_ref`
 
 **Done when:** a real cleaning run leaves a decodable map and path in the database.
+**Status (2026-10-07):** verified against the live robot — a forced map upload decoded
+as 172×107 (419 wall / 12634 unknown / 5351 free), a 21011 request produced a complete
+(single-chunk) path row, and status pushes plus command replies landed in `events` with
+trace references. Multi-chunk paths will exercise themselves on the next long clean.
 
 ### Phase 5 — Control
 - [ ] `commands` table as the queue, polled by the gateway; TTL expiry
@@ -747,7 +758,7 @@ has a designed-in tolerance; all are settled by reading one real trace.
 | Ping interval and drop timeout (runtime variables) | PROTOCOL §B | Pong immediately, never on a timer; `ping_timeout_secs` is generous (120) and gets tuned from a measured session. |
 | Whether uploads want a channel-B ACK | PROTOCOL §B | Config toggle per class, default off; a missing ACK shows up as a device retry in the trace. |
 | AES `encrypt:1` pad byte | PROTOCOL §B | Default is `encrypt:0`, which sidesteps it entirely; space padding when enabled. |
-| Map cell value semantics (free/occupied/unknown) | MAP.md | Grids stored as received; decoding is a separate, replaceable step. |
+| Map cell value semantics (free/occupied/unknown) | MAP.md | **Settled live 2026-10-07:** `0x00` wall, `0x7F` unknown, `0xFF` free; grids still stored as received, decoding stays replaceable. |
 | `setSta` key names (`staPwd` vs `pwd`); discovery port | PROTOCOL §C | `--pwd-key` override; discovery sprays the whole 9000–9999 range. |
 | Version-check response shape (top level vs `data`) | PROTOCOL §A vs schema | Emit both. |
 

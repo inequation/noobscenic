@@ -136,3 +136,155 @@ pub async fn revoke_session(pool: &SqlitePool, cookie: &str) -> Result<()> {
         .await?;
     Ok(())
 }
+
+/// Every semantic message that has no dedicated table lands here verbatim.
+#[allow(clippy::too_many_arguments)]
+pub async fn insert_event(
+    pool: &SqlitePool,
+    sn: &str,
+    channel: &str,
+    endpoint: Option<&str>,
+    info_type: Option<i64>,
+    event_code: Option<i64>,
+    task_id: Option<&str>,
+    user_id: Option<&str>,
+    device_ts: Option<&str>,
+    payload: &str,
+    trace_ref: Option<&str>,
+) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO events (sn, channel, direction, endpoint, info_type, event_code, task_id,
+                             user_id, device_ts, payload, trace_ref, received_ms)
+         VALUES (?, ?, 'in', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(sn)
+    .bind(channel)
+    .bind(endpoint)
+    .bind(info_type)
+    .bind(event_code)
+    .bind(task_id)
+    .bind(user_id)
+    .bind(device_ts)
+    .bind(payload)
+    .bind(trace_ref)
+    .bind(now_ms())
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// The 20002 grid, stored as received (LZ4 block); decode is a separate step.
+pub async fn insert_map_upload(
+    pool: &SqlitePool,
+    sn: &str,
+    upload: &crate::map::MapUpload,
+    compressed: &[u8],
+    trace_ref: Option<&str>,
+) -> Result<()> {
+    let (dock_x, dock_y) = upload
+        .charge_handle_pos
+        .as_ref()
+        .and_then(|pos| Some((*pos.first()?, *pos.get(1)?)))
+        .map(|(x, y)| (Some(x), Some(y)))
+        .unwrap_or((None, None));
+    sqlx::query(
+        "INSERT INTO map_uploads (sn, map_id, auto_area_id, path_id, width, height, resolution,
+                                  x_min, y_min, lz4_len, cells_lz4, dock_x, dock_y, dock_phi,
+                                  dock_state, areas_json, trace_ref, received_ms)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(sn)
+    .bind(upload.map_id)
+    .bind(upload.auto_area_id)
+    .bind(upload.path_id)
+    .bind(upload.width)
+    .bind(upload.height)
+    .bind(upload.resolution)
+    .bind(upload.x_min)
+    .bind(upload.y_min)
+    .bind(upload.lz4_len)
+    .bind(compressed)
+    .bind(dock_x)
+    .bind(dock_y)
+    .bind(upload.charge_handle_phi)
+    .bind(upload.charge_handle_state.as_deref())
+    .bind(serde_json::to_string(&upload.area).unwrap_or_else(|_| "[]".to_string()))
+    .bind(trace_ref)
+    .bind(now_ms())
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// The stored assembly for `(sn, path_id)`: `(points_json, total_points, complete)`.
+pub async fn load_clean_path(
+    pool: &SqlitePool,
+    sn: &str,
+    path_id: i64,
+) -> Result<Option<(String, i64, i64)>> {
+    Ok(sqlx::query_as(
+        "SELECT points_json, total_points, complete FROM clean_paths WHERE sn = ? AND path_id = ?",
+    )
+    .bind(sn)
+    .bind(path_id)
+    .fetch_optional(pool)
+    .await?)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn upsert_clean_path(
+    pool: &SqlitePool,
+    sn: &str,
+    path_id: i64,
+    user_id: Option<&str>,
+    total_points: i64,
+    points_json: &str,
+    complete: bool,
+    trace_ref: Option<&str>,
+) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO clean_paths (sn, path_id, user_id, total_points, points_json, complete,
+                                  updated_ms, trace_ref)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(sn, path_id) DO UPDATE SET
+             user_id      = COALESCE(excluded.user_id, clean_paths.user_id),
+             total_points = excluded.total_points,
+             points_json  = excluded.points_json,
+             complete     = excluded.complete,
+             updated_ms   = excluded.updated_ms,
+             trace_ref    = excluded.trace_ref",
+    )
+    .bind(sn)
+    .bind(path_id)
+    .bind(user_id)
+    .bind(total_points)
+    .bind(points_json)
+    .bind(i64::from(complete))
+    .bind(now_ms())
+    .bind(trace_ref)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// `uploadLogs` / `uploadStats` / `uploadSingle`: kept exactly as received.
+pub async fn insert_upload_raw(
+    pool: &SqlitePool,
+    sn: Option<&str>,
+    endpoint: &str,
+    fields_json: &str,
+    trace_ref: Option<&str>,
+) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO uploads_raw (sn, endpoint, fields_json, trace_ref, received_ms)
+         VALUES (?, ?, ?, ?, ?)",
+    )
+    .bind(sn)
+    .bind(endpoint)
+    .bind(fields_json)
+    .bind(trace_ref)
+    .bind(now_ms())
+    .execute(pool)
+    .await?;
+    Ok(())
+}

@@ -30,6 +30,7 @@ impl Form {
         let text = String::from_utf8_lossy(body).into_owned();
         let mut fields = Vec::new();
         let mut data_raw = None;
+        let mut data = None;
         let mut cursor = 0;
 
         while cursor < text.len() {
@@ -41,16 +42,32 @@ impl Form {
             let (key, value) = item.split_once('=').unwrap_or((item, ""));
 
             if key == "data" {
-                // Everything after `data=` belongs to the JSON blob, `&` included.
                 let start = cursor + key.len() + 1;
-                data_raw = Some(text.get(start..).unwrap_or_default().to_string());
-                break;
+                let remainder = text.get(start..).unwrap_or_default();
+                // `data` is last in the upload templates but **first** in the
+                // device's `cleanPack/response` bodies, so taking the rest of the
+                // body is not enough: take the longest prefix that parses as JSON
+                // and keep parsing the fields that follow it.
+                match split_data(remainder) {
+                    Some((raw, parsed, end)) => {
+                        data_raw = Some(raw);
+                        data = Some(parsed);
+                        cursor = start + end;
+                        if cursor < text.len() {
+                            cursor += 1; // step over the '&' that follows the blob
+                        }
+                        continue;
+                    }
+                    None => {
+                        data_raw = Some(remainder.to_string());
+                        break;
+                    }
+                }
             }
             fields.push((percent_decode(key), percent_decode(value)));
             cursor = next;
         }
 
-        let data = data_raw.as_deref().and_then(parse_data);
         Form {
             fields,
             data_raw,
@@ -69,6 +86,11 @@ impl Form {
         self.get(key)?.trim().parse().ok()
     }
 
+    /// Every scalar field, in wire order — for the endpoints that store the lot.
+    pub fn entries(&self) -> &[(String, String)] {
+        &self.fields
+    }
+
     /// Keys that were neither used nor recognised, for the permanent record.
     pub fn unknown<'a>(&'a self, known: &'a [&'a str]) -> Vec<(&'a str, &'a str)> {
         self.fields
@@ -83,6 +105,20 @@ fn parse_data(raw: &str) -> Option<Value> {
     serde_json::from_str(raw)
         .ok()
         .or_else(|| serde_json::from_str(&percent_decode(raw)).ok())
+}
+
+/// The `data=` value: the longest prefix that parses as JSON, and how many bytes it
+/// consumed. `None` when nothing parses — the caller then keeps it as opaque text.
+fn split_data(remainder: &str) -> Option<(String, Value, usize)> {
+    let mut ends: Vec<usize> = remainder.match_indices('&').map(|(at, _)| at).collect();
+    ends.push(remainder.len());
+    for end in ends {
+        let candidate = &remainder[..end];
+        if let Some(value) = parse_data(candidate) {
+            return Some((candidate.to_string(), value, end));
+        }
+    }
+    None
 }
 
 /// `%XX` and `+`, byte-wise and total: a malformed escape is kept literally.
@@ -174,6 +210,20 @@ mod tests {
         assert!(form.data.is_none());
         assert_eq!(form.data_raw.as_deref(), Some("not json at all"));
         assert_eq!(form.get("sn"), Some("ABC"));
+    }
+
+    #[test]
+    fn data_first_bodies_keep_the_fields_that_follow_it() {
+        // The device's `cleanPack/response` template puts `data` first, unlike the
+        // upload templates where it is last.
+        let body =
+            b"data={\"message\":\"ok\",\"infoType\":21011}&infoType=21011&sn=ABC&ts=5&userId=u";
+        let form = Form::parse(body);
+        assert_eq!(form.get("sn"), Some("ABC"));
+        assert_eq!(form.get_i64("infoType"), Some(21011));
+        assert_eq!(form.get("ts"), Some("5"));
+        assert_eq!(form.get("userId"), Some("u"));
+        assert_eq!(form.data, Some(json!({"message": "ok", "infoType": 21011})));
     }
 
     #[test]

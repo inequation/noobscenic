@@ -9,6 +9,9 @@ pub mod config;
 pub mod console;
 pub mod db;
 pub mod error;
+pub mod map;
+pub mod path;
+pub mod proto;
 pub mod session;
 pub mod wire;
 

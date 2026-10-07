@@ -14,6 +14,15 @@ pub enum Error {
     #[error("json: {0}")]
     Json(#[from] serde_json::Error),
 
+    #[error("base64: {0}")]
+    Base64(#[from] base64::DecodeError),
+
+    #[error("lz4: {0}")]
+    Lz4(String),
+
+    #[error("protocol payload: {0}")]
+    Payload(String),
+
     #[error("database: {0}")]
     Db(#[from] sqlx::Error),
 

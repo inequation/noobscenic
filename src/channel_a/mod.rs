@@ -49,6 +49,20 @@ pub fn router(state: AppState) -> Router {
             get(handlers::sock_addr::sock_addr).post(handlers::sock_addr::sock_addr),
         )
         .route("/cleanPack/sync", post(handlers::sync::sync))
+        .route(
+            "/cleanPack/uploadEvents",
+            post(handlers::upload_events::upload_events),
+        )
+        .route("/cleanPack/response", post(handlers::response::response))
+        .route("/cleanPack/uploadLogs", post(handlers::uploads::upload_raw))
+        .route(
+            "/cleanPack/uploadStats",
+            post(handlers::uploads::upload_raw),
+        )
+        .route(
+            "/cleanPack/uploadSingle",
+            post(handlers::uploads::upload_raw),
+        )
         .fallback(catch_all)
         // The gate sits inside the tap (the last layer added runs first), so the
         // `code:102` answers it produces are traced like every other response.

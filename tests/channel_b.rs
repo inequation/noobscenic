@@ -97,14 +97,15 @@ async fn handshake_is_acked_and_every_ping_is_ponged() {
 
     let frames = read_frames(&mut sock, &mut decoder, 2).await;
     let ack: Value = serde_json::from_slice(&frames[0]).expect("ack is JSON");
-    assert_eq!(ack["infoType"], 10001);
+    assert_eq!(ack["encrypt"], 0, "the outer gate needs an integer encrypt");
+    assert_eq!(ack["data"]["infoType"], 10001);
 
     let pong: Value = serde_json::from_slice(&frames[1]).expect("pong is JSON");
-    assert_eq!(pong["infoType"], 21006);
-    // No integer `encrypt` and the device's inbound gate drops the frame; without
-    // `isExistConnect:true` the robot never pushes status or maps.
+    // CHANNEL_B_INBOUND.md: the device dispatches the *inner* message, and
+    // `isExistConnect` must live in the inner `data` or no status/map pushes follow.
     assert_eq!(pong["encrypt"], 0);
-    assert_eq!(pong["data"]["isExistConnect"], true);
+    assert_eq!(pong["data"]["infoType"], 21006);
+    assert_eq!(pong["data"]["data"]["isExistConnect"], true);
 
     assert!(
         state.registry.is_online(SN),
@@ -143,7 +144,7 @@ async fn unhandled_frames_are_persisted_and_the_link_survives() {
     sock.write_all(&handshake()).await.expect("write handshake");
     let frames = read_frames(&mut sock, &mut decoder, 1).await;
     assert_eq!(
-        serde_json::from_slice::<Value>(&frames[0]).unwrap()["infoType"],
+        serde_json::from_slice::<Value>(&frames[0]).unwrap()["data"]["infoType"],
         10001
     );
 
@@ -156,7 +157,7 @@ async fn unhandled_frames_are_persisted_and_the_link_survives() {
     let frames = read_frames(&mut sock, &mut decoder, 1).await;
     let pong: Value = serde_json::from_slice(&frames[0]).expect("pong is JSON");
     assert_eq!(
-        pong["infoType"], 21006,
+        pong["data"]["infoType"], 21006,
         "an unhandled frame must not close the connection"
     );
 

@@ -16,9 +16,10 @@ use tokio::sync::mpsc;
 use tokio::time::Instant;
 
 use crate::AppState;
-use crate::db::now_ms;
 use crate::error::Result;
-use crate::wire::{Direction, Record, Recorded};
+use crate::proto;
+use crate::proto::info_type;
+use crate::wire::{Direction, Record};
 
 use super::codec::{self, Decoder};
 use super::registry::{self, Registration};
@@ -28,12 +29,6 @@ use super::registry::{self, Registration};
 /// a slow write.
 const WRITE_QUEUE: usize = 32;
 const READ_CHUNK: usize = 16 * 1024;
-
-/// The handshake type: the device announces its serial, and we bind it to this
-/// connection (PROTOCOL.md §B).
-const HANDSHAKE: i64 = 10001;
-/// The keepalive ping; every one must be ponged or the robot reconnects.
-const PING: i64 = 21006;
 
 pub(crate) async fn handle(state: AppState, stream: TcpStream, conn_id: String, peer: SocketAddr) {
     let _ = stream.set_nodelay(true);
@@ -208,29 +203,51 @@ impl Conn {
                 bytes = frame.len(),
                 "channel-B frame is not JSON; persisted"
             );
-            self.persist(None, &text, recorded.as_ref()).await;
+            let sn = self.sn.clone().unwrap_or_default();
+            let result = crate::db::queries::insert_event(
+                &self.state.db,
+                &sn,
+                "B",
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                &text,
+                recorded.as_ref().map(|r| r.reference.as_str()),
+            )
+            .await;
+            if let Err(error) = result {
+                tracing::error!(%error, "could not persist the channel-B frame");
+            }
             return;
         };
 
         match info_type {
-            Some(HANDSHAKE) => self.handshake(&value).await,
-            Some(PING) => self.pong().await,
-            Some(other) => {
-                tracing::warn!(
-                    conn = %self.conn_id,
-                    info_type = other,
-                    "unhandled channel-B infoType; persisted"
-                );
-                self.persist(Some(other), &value.to_string(), recorded.as_ref())
-                    .await;
-            }
-            None => {
-                tracing::warn!(
-                    conn = %self.conn_id,
-                    "channel-B frame has no integer infoType; persisted"
-                );
-                self.persist(None, &value.to_string(), recorded.as_ref())
-                    .await;
+            Some(info_type::HANDSHAKE) => self.handshake(&value).await,
+            Some(info_type::PING) => self.pong().await,
+            _ => {
+                // Telemetry or an unknown type: the shared dispatcher persists it with
+                // the trace reference and decides what is worth warning about.
+                let payload = value.get("data").cloned().unwrap_or(Value::Null);
+                let sn = self.sn.clone().unwrap_or_default();
+                proto::dispatch(
+                    &self.state,
+                    proto::dispatch::Incoming {
+                        sn: &sn,
+                        channel: "B",
+                        endpoint: None,
+                        trace_ref: recorded.as_ref().map(|r| r.reference.as_str()),
+                        info_type,
+                        data: &payload,
+                        event: None,
+                        task_id: None,
+                        device_ts: None,
+                        user_id: None,
+                    },
+                )
+                .await;
             }
         }
     }
@@ -259,7 +276,7 @@ impl Conn {
             // "Unknown infoType" log — but it goes out in the corrected envelope.
             self.send(codec::envelope(
                 0,
-                codec::message(HANDSHAKE, json!({}), None),
+                codec::message(info_type::HANDSHAKE, json!({}), None),
             ))
             .await;
         }
@@ -316,33 +333,16 @@ impl Conn {
         // `isExistConnect` belongs to the *inner* message's data
         // (CHANNEL_B_INBOUND.md §7): a flat pong only refreshes liveness, so the
         // app-online flag never gets set and no status or map pushes follow.
-        self.send(codec::envelope(0, codec::message(PING, payload, None)))
-            .await;
+        self.send(codec::envelope(
+            0,
+            codec::message(info_type::PING, payload, None),
+        ))
+        .await;
     }
 
     async fn send(&self, value: Value) {
         if self.tx.send(value).await.is_err() {
             tracing::warn!(conn = %self.conn_id, "channel-B writer is gone; frame dropped");
-        }
-    }
-
-    /// Record a frame we do not (yet) handle. A database failure is logged and
-    /// swallowed: it must never cost the robot its connection.
-    async fn persist(&self, info_type: Option<i64>, payload: &str, trace_ref: Option<&Recorded>) {
-        let result = sqlx::query(
-            "INSERT INTO events (sn, channel, direction, endpoint, info_type, payload, trace_ref, received_ms)
-             VALUES (?, 'B', 'in', NULL, ?, ?, ?, ?)",
-        )
-        .bind(self.sn.as_deref())
-        .bind(info_type)
-        .bind(payload)
-        .bind(trace_ref.map(|recorded| recorded.reference.as_str()))
-        .bind(now_ms())
-        .execute(&self.state.db)
-        .await;
-
-        if let Err(error) = result {
-            tracing::error!(conn = %self.conn_id, %error, "could not persist the channel-B frame");
         }
     }
 }
