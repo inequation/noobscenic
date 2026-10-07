@@ -162,8 +162,11 @@ src/
   map.rs                base64 -> lz4 block -> occupancy grid; area/region parsing
   path.rs               21011 chunk assembly
   console.rs            stdin/stdout operator console (§12)
+  web.rs                the web UI's API handlers (§19)
   bin/
     simdev.rs           device simulator for tests (§14)
+web/
+  index.html            the UI page, embedded at compile time (§19)
 tools/
   rehome.py             channel C client (§13)
   catchall.py           logs whatever connects, with TLS SNI extraction (diagnosis)
@@ -779,6 +782,18 @@ out), and the binding state machine plus `encrypt:1` are implemented and
 live-verified. The trace renderer, replay mode and TLS are deliberately postponed;
 nothing else in this phase is needed for the phase's goal.
 
+### Phase 7 — Web UI
+- [ ] `GET /` serves the page and still answers the robot's version-check query
+- [ ] `GET /api/robots` list, `?id=` selection (`bind_user` first, `sn` fallback)
+- [ ] map + path endpoints, canvas rendering, ~1.5 s summary poll
+- [ ] presence-gated `21011` path poller (only while a UI session is live)
+- [ ] command dropdown (`smartClean` / `pause` / `continue` / `stop` / `findCharge`) → the queue
+- [ ] integration tests for the API, the `GET /` split and the catalog
+- [ ] README: a short "web UI" note in the operator guide
+
+**Done when:** a phone on the home LAN can watch a clean on the map, start one and
+stop it, from a bookmarked `?id=` URL. Design and non-goals: §19.
+
 ---
 
 ## 16. Known unknowns
@@ -827,9 +842,82 @@ has a designed-in tolerance; all are settled by reading one real trace.
 
 ## 18. Later
 
-Map rendering and a web UI; a local JSON API, and a Home Assistant / MQTT bridge on
-top of it;
-scheduling; multi-device fleet view; serving our own OTA (the `updater` trust anchor is
-a vendor RSA-1024 key, so this needs the device-side key replacement described in
-`REPORT.md` §6.3 and stays firmly optional); support for other LDRobot-platform
-vacuums, which the channel abstraction already anticipates.
+A Home Assistant / MQTT bridge on top of the phase-7 API (§19); scheduling;
+multi-device fleet view; serving our own OTA (the `updater` trust anchor is a vendor
+RSA-1024 key, so this needs the device-side key replacement described in `REPORT.md`
+§6.3 and stays firmly optional); support for other LDRobot-platform vacuums, which
+the channel abstraction already anticipates.
+
+---
+
+## 19. Web UI (phase 7)
+
+A single page served by the channel-A listener at `GET /` — same process, same
+database, same command queue. That is deliberate: the deployment target is one home
+and the page's only client is the operator on the same LAN. **There is no
+authentication in the MVP**: anyone who can reach port 8080 can drive the robot.
+That is the accepted threat model, and it is stated here so nobody mistakes it for an
+oversight.
+
+Surface (all on 8080; `{id}` is `devices.bind_user` — the id `setID` set — with the
+`sn` as fallback):
+
+| Route | Purpose |
+|---|---|
+| `GET /` | the page; if the query carries `version`/`sn` (the device's OTA check) the request goes to the existing `version_check` instead |
+| `GET /api/robots` | `{robots:[{id,sn,online,bind_state,last_seen_ms}]}` for the dropdown |
+| `GET /api/robot/{id}/summary` | latest 20001 status plus path and map metadata; polled every ~1.5 s |
+| `GET /api/robot/{id}/map` | base64 of the *decompressed* grid + frame (w, h, resolution, x_min, y_min, dock) |
+| `GET /api/robot/{id}/path` | stored points with the 2-bit type tags stripped |
+| `POST /api/robot/{id}/command` | form `name=<raw name>` from the catalog below → `insert_command` |
+
+`web/index.html` is embedded at compile time (`include_str!`), so there is no static
+file serving and no runtime path lookup. Layout: top bar with the robot `<select>`,
+a `<canvas>` filling the viewport, bottom bar with the command `<select>` and Send;
+changing the robot sets `location.search`, so `?id=` stays bookmarkable and the back
+button works. Rendering is client-side: base64 → `Uint8Array` → `ImageData` (0x00
+wall / 0x7F unknown / 0xFF free / other bytes = label hue, as in
+`tools/map2png.py`), `putImageData`, then CSS scaling with
+`image-rendering: pixelated`; the path, its start/end dots and the dock are drawn on
+the same canvas with the mapping map2png.py already validated. No image crate, no
+PNG encoder, no new dependencies.
+
+**Auto-refresh is polling, not push.** The 1.5 s `/summary` poll carries status and
+metadata only; the ~70 KB map and the path are fetched only when their revisions
+change. That is at most 1.5 s behind telemetry that itself arrives at ~1 s cadence,
+and it avoids a broadcast channel, publish hooks and an SSE feature flag. (axum's
+`sse` feature is a clean later upgrade — `futures-util` and `tokio-stream` are
+already in the lockfile — if polling ever feels laggy.)
+
+**Path polling is presence-gated.** The robot pushes maps but not paths: the cloud
+must ask (`21011 {"startPos":N,"mask":0}` — the request the manual collection used).
+An in-memory watcher registry in `AppState` records the last time each device's API
+was touched, and the page's own poll is the heartbeat. A 5 s task enqueues a path
+fetch only when the heartbeat is fresh (someone has the page open and visible), the
+device is online, no `21011` row is already pending or sent, and the last status mode
+is not a charging one. Closing or hiding the tab stops the heartbeat and, within one
+interval, the path polling — no watcher, no extra traffic.
+
+**Command catalog** — argument-less actions only, raw names:
+
+| Name | Frame |
+|---|---|
+| `smartClean` | `21005 {"mode":"smartClean"}` |
+| `pause` / `continue` / `stop` | `21017 {"cmd":"pause"\|"continue"\|"stop"}` |
+| `findCharge` | `21012 {"cmd":"start"}` (return to dock) |
+
+The query commands earn no button: `getStatus` (20001) returns the record the robot
+already pushes every ~1 s, `getVersion` (21018) returns what `sync` already put in the
+`devices` row (live-verified: `{"version":"0.7.1","fullversion":1241,"hasUpdateFile":0,
+"mcu":"h185v60_0"}`), and `getDeviceAttr` (21010) is a stub of five empty arrays.
+Consumables (`21015`, whose replies already land in `events`) gets a dedicated view
+later.
+
+Reused as-is: `map::decode`, the `path` assembly, `queries::{list_devices,
+latest_map_summary, clean_path_summary, insert_command}`, the queue with its poller,
+TTL and ACK correlation, and the console's enqueue semantics. The web paths are
+exempt from the session gate, so browser traffic does not log "no Cookie header"
+warnings.
+
+Not in the MVP: auth, TLS, zoom/pan, room targeting, schedules, clean records,
+consumables, human-friendly labels, i18n, SSE/WebSocket.
