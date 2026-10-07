@@ -26,10 +26,42 @@ pub fn encode(frame: &[u8]) -> Vec<u8> {
     out
 }
 
-/// Serialise a JSON value and frame it. `Value` is always serialisable, so this
-/// cannot fail.
+/// A message in the field order the firmware's own writer uses. `serde_json::Value`
+/// maps are sorted alphabetically (`data, encrypt, infoType`), which is valid JSON
+/// but not the shape the device emits or (possibly) expects; serialising a struct
+/// keeps declaration order.
+#[derive(serde::Serialize)]
+struct Ordered<'a> {
+    #[serde(rename = "infoType")]
+    info_type: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    encrypt: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message: Option<&'a str>,
+    data: &'a Value,
+}
+
+/// Serialise a message and frame it.
+///
+/// Messages are written as `{"infoType":…,"encrypt":…,"data":…}` — firmware order —
+/// and anything that does not look like one (no `infoType`/`data`) falls back to a
+/// plain compact serialisation. `Value` is always serialisable, so this cannot fail.
 pub fn encode_json(value: &Value) -> Vec<u8> {
-    encode(&serde_json::to_vec(value).expect("a JSON value always re-serialises"))
+    let body = match ordered(value) {
+        Some(frame) => serde_json::to_vec(&frame),
+        None => serde_json::to_vec(value),
+    };
+    encode(&body.expect("a JSON value always re-serialises"))
+}
+
+fn ordered(value: &Value) -> Option<Ordered<'_>> {
+    let map = value.as_object()?;
+    Some(Ordered {
+        info_type: map.get("infoType")?.as_i64()?,
+        encrypt: map.get("encrypt").and_then(Value::as_i64),
+        message: map.get("message").and_then(Value::as_str),
+        data: map.get("data")?,
+    })
 }
 
 /// Incremental `#\t#` splitter. Push whatever the socket gave you; get back the
@@ -100,6 +132,17 @@ mod tests {
         assert_eq!(
             encode_json(&json!({"infoType": 21006})),
             b"{\"infoType\":21006}#\t#"
+        );
+    }
+
+    #[test]
+    fn frames_are_written_in_firmware_field_order() {
+        // The device's own writer emits infoType first; serde_json's maps would sort
+        // this alphabetically (data, encrypt, infoType).
+        let frame = encode_json(&json!({"data": {"a": 1}, "encrypt": 0, "infoType": 21006}));
+        assert_eq!(
+            frame,
+            b"{\"infoType\":21006,\"encrypt\":0,\"data\":{\"a\":1}}#\t#".to_vec()
         );
     }
 
