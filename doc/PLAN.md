@@ -749,11 +749,13 @@ over the map via `tools/map2png.py --path`.
 **Status (2026-10-07):** the queue, the one-second poller, TTL expiry, ACK
 correlation and every console/CLI verb are implemented and covered by
 `tests/control.rs` (a fake device receives the queued frame in the documented
-envelope). Live: a `21011` enqueued from the running console was pushed within a
-second and ACKed by the robot; `send-enc` correctly failed the row while
-`gateway.encrypt_commands` is off. A real clean start is the operator's
-`send <sn> 21005 {"mode":"smartClean"}` (FUNC_COMMANDS.md §1.1) — the same
-queue→push→response path; `21012 {"cmd":"start"}` is return-to-dock (§1.3).
+envelope). Live gate, all from the console: `21005 {"mode":"smartClean"}`
+(FUNC_COMMANDS.md §1.1) started a clean — status `cleanTime` ticking, map
+updating — `21017 {"cmd":"stop"}` ended it ~13 s later, and `21012 {"cmd":"start"}`
+(return-to-dock, §1.3) drove it home: `backcharge` → `charge` → `fullcharge`. All
+three replies were `"message":"ok"` and every row was ACKed within a second. A
+`21011` fetch and a `21018` version query round-tripped the same way earlier, and
+`send-enc` correctly failed its row while `gateway.encrypt_commands` is off.
 
 ### Phase 6 — Polish
 - [ ] Binding state machine, driven from what the traces actually show
