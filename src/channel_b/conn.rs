@@ -22,7 +22,7 @@ use crate::proto::info_type;
 use crate::wire::{Direction, Record};
 
 use super::codec::{self, Decoder};
-use super::registry::{self, Registration};
+use super::registry::{self, Outbound, Registration};
 
 /// Outbound frames allowed to queue before we apply backpressure to the device's
 /// reader. Frames are tiny; the queue only exists so a pong is never stuck behind
@@ -66,7 +66,7 @@ pub(crate) async fn handle(state: AppState, stream: TcpStream, conn_id: String, 
 async fn read_task(
     state: AppState,
     mut reader: OwnedReadHalf,
-    tx: mpsc::Sender<Value>,
+    tx: mpsc::Sender<Outbound>,
     conn_id: String,
     peer: String,
 ) -> Result<()> {
@@ -132,11 +132,12 @@ async fn read_task(
 async fn write_task(
     state: AppState,
     mut writer: OwnedWriteHalf,
-    mut rx: mpsc::Receiver<Value>,
+    mut rx: mpsc::Receiver<Outbound>,
     conn_id: String,
     peer: String,
 ) -> Result<()> {
-    while let Some(value) = rx.recv().await {
+    while let Some(outbound) = rx.recv().await {
+        let value = outbound.frame;
         // Frames are enveloped (`{"encrypt":…,"data":{"infoType":…}}`), so the label
         // lives in the inner message; fall back to the flat shape for readability.
         let info_type = value.get("infoType").and_then(Value::as_i64).or_else(|| {
@@ -157,7 +158,15 @@ async fn write_task(
         if let Some(info_type) = info_type {
             record = record.meta("info_type", info_type);
         }
-        state.tap.record(record);
+        let recorded = state.tap.record(record);
+        // A queued command's row keeps the reference to the exact bytes that sent
+        // it (doc/PLAN.md §8); pongs and acks have no row to point at.
+        if let (Some(id), Some(recorded)) = (outbound.command_id, recorded)
+            && let Err(error) =
+                crate::db::queries::set_command_trace(&state.db, id, &recorded.reference).await
+        {
+            tracing::warn!(%error, command_id = id, "could not store the command's trace reference");
+        }
 
         writer.write_all(&bytes).await?;
         writer.flush().await?;
@@ -171,7 +180,7 @@ struct Conn {
     state: AppState,
     conn_id: String,
     peer: String,
-    tx: mpsc::Sender<Value>,
+    tx: mpsc::Sender<Outbound>,
     sn: Option<String>,
     registration: Option<Registration>,
     last_ping: Instant,
@@ -348,7 +357,7 @@ impl Conn {
     }
 
     async fn send(&self, value: Value) {
-        if self.tx.send(value).await.is_err() {
+        if self.tx.send(Outbound::frame(value)).await.is_err() {
             tracing::warn!(conn = %self.conn_id, "channel-B writer is gone; frame dropped");
         }
     }

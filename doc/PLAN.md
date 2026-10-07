@@ -279,7 +279,7 @@ CREATE TABLE commands (
   payload TEXT NOT NULL, encrypt INTEGER NOT NULL DEFAULT 0,
   state TEXT NOT NULL,                -- pending|sent|acked|expired|failed
   created_ms INTEGER NOT NULL, sent_ms INTEGER, ack_ms INTEGER,
-  ack_payload TEXT, error TEXT);
+  ack_payload TEXT, error TEXT, trace_ref TEXT);
 
 CREATE TABLE uploads_raw (            -- uploadLogs / uploadStats / uploadSingle
   id INTEGER PRIMARY KEY, sn TEXT, endpoint TEXT NOT NULL, fields_json TEXT,
@@ -500,6 +500,11 @@ best-effort: match on `(sn, info_type)` against the most recent `sent` command w
 time window, mark it `acked`, store `ack_payload`. Unmatched responses are still
 persisted as `events` — under-reporting an ACK is harmless, inventing one is not.
 
+**Verified live (2026-10-07):** a `21011` queued from the console was pushed by the
+poller within a second and the robot's reply landed as `acked` on that command; the
+outbound frame in the trace carries the integer `encrypt:0` and the string-typed
+`dInfo` the device echoes back.
+
 ---
 
 ## 11. Shared protocol layer
@@ -559,6 +564,11 @@ Line-based, one command per line, no dependencies beyond `tokio::io::stdin`:
 > trace on|off                     toggle the wire tap at runtime
 > quit
 ```
+
+Three experiment toggles sit alongside the queue verbs: `send-enc` (the same send
+with `encrypt:1`; it fails the row unless `gateway.encrypt_commands` is on),
+`send-full` (one raw inner message, sent immediately, bypassing the queue), and the
+`style` / `pongs` toggles left over from the framing and liveness experiments.
 
 Output is plain aligned text; `map` and `events` print summaries rather than dumping
 grids — the database and the traces are there for the full picture.
@@ -730,12 +740,19 @@ trace references. A one-room smart clean then assembled a 1545-point path across
 over the map via `tools/map2png.py --path`.
 
 ### Phase 5 — Control
-- [ ] `commands` table as the queue, polled by the gateway; TTL expiry
-- [ ] `encrypt:0` sender; integer `encrypt` field asserted in tests
-- [ ] Best-effort ACK correlation from `cleanPack/response`
-- [ ] Operator console (§12) and the matching one-shot CLI subcommands
+- [x] `commands` table as the queue, polled by the gateway; TTL expiry
+- [x] `encrypt:0` sender; integer `encrypt` field asserted in tests
+- [x] Best-effort ACK correlation from `cleanPack/response`
+- [x] Operator console (§12) and the matching one-shot CLI subcommands
 
 **Done when:** a clean job can be started from the console and its result observed.
+**Status (2026-10-07):** the queue, the one-second poller, TTL expiry, ACK
+correlation and every console/CLI verb are implemented and covered by
+`tests/control.rs` (a fake device receives the queued frame in the documented
+envelope). Live: a `21011` enqueued from the running console was pushed within a
+second and ACKed by the robot; `send-enc` correctly failed the row while
+`gateway.encrypt_commands` is off. A real clean start is the operator's
+`send <sn> 21012 {"cmd":"start"}`, which is the same path.
 
 ### Phase 6 — Polish
 - [ ] Binding state machine, driven from what the traces actually show

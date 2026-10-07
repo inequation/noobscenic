@@ -20,8 +20,35 @@ pub struct ConnHandle {
     pub conn_id: String,
     pub peer: String,
     pub connected_ms: i64,
-    /// Channel-B frames for this connection, already framed by the writer task.
-    pub tx: mpsc::Sender<Value>,
+    /// Channel-B frames for this connection; the writer task frames and writes them.
+    pub tx: mpsc::Sender<Outbound>,
+}
+
+/// One frame on its way to a device. Queue sends carry the `commands` row they
+/// belong to, so the writer can store the tap reference of the bytes that sent it
+/// (doc/PLAN.md §8); handshake acks, pongs and console experiments carry `None`.
+#[derive(Clone, Debug)]
+pub struct Outbound {
+    pub frame: Value,
+    pub command_id: Option<i64>,
+}
+
+impl Outbound {
+    /// A frame that is not part of the command queue.
+    pub fn frame(frame: Value) -> Outbound {
+        Outbound {
+            frame,
+            command_id: None,
+        }
+    }
+
+    /// A frame pushed for `commands` row `command_id`.
+    pub fn command(command_id: i64, frame: Value) -> Outbound {
+        Outbound {
+            frame,
+            command_id: Some(command_id),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -98,7 +125,7 @@ impl Drop for Registration {
 
 /// Build a handle for a connection; convenience so `conn.rs` does not have to
 /// spell out the timestamp.
-pub fn handle(conn_id: &str, peer: &str, tx: mpsc::Sender<Value>) -> ConnHandle {
+pub fn handle(conn_id: &str, peer: &str, tx: mpsc::Sender<Outbound>) -> ConnHandle {
     ConnHandle {
         conn_id: conn_id.to_string(),
         peer: peer.to_string(),
@@ -111,7 +138,7 @@ pub fn handle(conn_id: &str, peer: &str, tx: mpsc::Sender<Value>) -> ConnHandle 
 mod tests {
     use super::*;
 
-    fn channel() -> mpsc::Sender<Value> {
+    fn channel() -> mpsc::Sender<Outbound> {
         mpsc::channel(1).0
     }
 

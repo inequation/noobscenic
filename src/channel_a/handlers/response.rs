@@ -36,9 +36,25 @@ pub async fn response(State(state): State<AppState>, request: Request) -> Respon
         .and_then(Value::as_i64)
         .or_else(|| form.get_i64("infoType"));
     let payload = message.get("data").cloned().unwrap_or(Value::Null);
-    if let Some(d_info) = message.get("dInfo") {
-        // Phase 5 correlates this with the command it answers.
-        tracing::debug!(sn = %sn, d_info = %d_info, trace, "command response");
+    if let Some(info_type) = info_type {
+        // Best-effort ACK correlation (doc/PLAN.md §10.4): there is no correlation
+        // id, so the newest `sent` command for this `(sn, infoType)` within the
+        // command TTL window takes the credit; a miss invents nothing.
+        let window_ms = state.config.gateway.command_ttl_secs as i64 * 1000;
+        // Keep the whole response message, not just its `data` — the operator wants
+        // the `message: "ok"` line too.
+        let ack_payload = serde_json::to_string(message).unwrap_or_else(|_| "null".to_string());
+        match crate::db::queries::ack_command(&state.db, &sn, info_type, &ack_payload, window_ms)
+            .await
+        {
+            Ok(Some(id)) => {
+                tracing::info!(sn = %sn, info_type, command_id = id, trace, "command acknowledged")
+            }
+            Ok(None) => {
+                tracing::debug!(sn = %sn, info_type, trace, "response matched no sent command")
+            }
+            Err(error) => tracing::error!(%error, sn = %sn, "ACK correlation failed"),
+        }
     }
     proto::dispatch(
         &state,

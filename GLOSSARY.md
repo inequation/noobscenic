@@ -81,6 +81,25 @@ replaces its own older entry.
 It is deliberately not the database: the `devices` table remembers what has been
 seen, while the registry only holds what is live and addressable.
 
+## Command queue
+
+The place outbound commands wait before the robot can receive them. Channel B is
+TCP dialled by the *robot*, so a command can only ever go out while it is
+connected — the queue decouples "an operator wants this sent" from "the device is
+reachable right now". It is not an in-memory object but the `commands` table in
+the database: the console, a one-shot CLI invocation (`noobscenic send …`) and
+plain `sqlite3` all just insert a row, and a poller in the gateway
+(`src/commands.rs`) drains it once a second while the device is online. That is
+what keeps the operator surface and the gateway free of any IPC between them.
+
+A row moves through `pending` → `sent` → `acked`; it can also end up `expired`
+(older than `gateway.command_ttl_secs`, so a command enqueued while the robot was
+away cannot fire hours later) or `failed` (no session key for `encrypt:1`, writer
+closed, malformed payload). `sent` frames carry the queue row's id to the
+connection's writer, which stores the wire-tap reference of the exact bytes back
+on the row; `acked` is best-effort correlation from `cleanPack/response`, since
+the protocol has no correlation id.
+
 ## Session gate
 
 The check every channel-A request passes through except `register`

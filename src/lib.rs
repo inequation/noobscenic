@@ -5,6 +5,7 @@
 
 pub mod channel_a;
 pub mod channel_b;
+pub mod commands;
 pub mod config;
 pub mod console;
 pub mod db;
@@ -79,6 +80,9 @@ pub async fn run(config: Config) -> Result<()> {
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
     console::spawn(state.clone(), shutdown_tx.clone());
+    // The command queue's poller — doc/PLAN.md §10.3. It runs headless, too: enqueue
+    // through the CLI or `sqlite3` and the gateway still picks the row up.
+    commands::spawn(state.clone(), shutdown_tx.subscribe());
     let signal = tokio::spawn(async move {
         shutdown_signal().await;
         let _ = shutdown_tx.send(());

@@ -48,6 +48,38 @@ enum Command {
     Serve,
     /// Create or migrate the database, then exit.
     Migrate,
+    /// Known devices: online state, last seen, version.
+    Devices,
+    /// One device's stored row, latest session and connection state.
+    Device { sn: String },
+    /// The newest semantic messages.
+    Events {
+        /// Device serial number (all devices unless given).
+        sn: Option<String>,
+        /// How many rows, newest first (default 20).
+        n: Option<i64>,
+    },
+    /// The newest stored map: dims, origin, dock, areas.
+    Map { sn: String },
+    /// An assembled clean path (the newest unless a path id is given).
+    Path { sn: String, path_id: Option<i64> },
+    /// Enqueue a command for the gateway to push (encrypt:0 by default).
+    Send {
+        sn: String,
+        info_type: i64,
+        /// Payload object, e.g. '{"cmd":"start"}'. Defaults to {}.
+        json: Option<String>,
+        /// Enqueue with encrypt:1 (needs gateway.encrypt_commands).
+        #[arg(long)]
+        encrypt: bool,
+    },
+    /// Queue state: pending/sent/acked/expired/failed.
+    Commands {
+        /// Device serial number (all devices unless given).
+        sn: Option<String>,
+        /// How many rows, newest first (default 20).
+        n: Option<i64>,
+    },
 }
 
 #[tokio::main]
@@ -87,6 +119,7 @@ async fn main() -> ExitCode {
             }
             Err(error) => Err(error),
         },
+        verb => run_verb(config, verb).await,
     };
 
     match result {
@@ -97,6 +130,52 @@ async fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// A one-shot CLI run has no gateway of its own, so "online" can only mean "the
+/// server process you are talking to"; the console sees the live state.
+const ONE_SHOT_NOTE: &str =
+    "one-shot run: `online` is this process's own gateway; the console shows the live state";
+
+/// One-shot verbs run against the database directly (doc/PLAN.md §12): a `send` from
+/// a second terminal lands in the `commands` table, which a running gateway drains.
+async fn run_verb(config: Config, verb: Command) -> noobscenic::error::Result<()> {
+    use noobscenic::console;
+
+    let state = noobscenic::start(config).await?;
+    match verb {
+        Command::Devices => {
+            console::show_devices(&state).await;
+            println!("({ONE_SHOT_NOTE})");
+        }
+        Command::Device { sn } => {
+            console::show_device(&state, &sn).await;
+            println!("({ONE_SHOT_NOTE})");
+        }
+        Command::Events { sn, n } => {
+            console::show_events(&state, sn.as_deref(), n.unwrap_or(20)).await
+        }
+        Command::Map { sn } => console::show_map(&state, &sn).await,
+        Command::Path { sn, path_id } => console::show_path(&state, &sn, path_id).await,
+        Command::Send {
+            sn,
+            info_type,
+            json,
+            encrypt,
+        } => {
+            let data = match &json {
+                Some(text) => serde_json::from_str(text)?,
+                None => serde_json::json!({}),
+            };
+            console::enqueue(&state, &sn, info_type, data, encrypt).await;
+        }
+        Command::Commands { sn, n } => {
+            console::show_commands(&state, sn.as_deref(), n.unwrap_or(20)).await
+        }
+        Command::Serve | Command::Migrate => unreachable!("handled before run_verb"),
+    }
+    state.db.close().await;
+    Ok(())
 }
 
 /// stderr always; a daily-rolled file too, unless it is switched off.
