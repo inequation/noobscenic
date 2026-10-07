@@ -137,7 +137,14 @@ async fn write_task(
     peer: String,
 ) -> Result<()> {
     while let Some(value) = rx.recv().await {
-        let info_type = value.get("infoType").and_then(Value::as_i64);
+        // Frames are enveloped (`{"encrypt":…,"data":{"infoType":…}}`), so the label
+        // lives in the inner message; fall back to the flat shape for readability.
+        let info_type = value.get("infoType").and_then(Value::as_i64).or_else(|| {
+            value
+                .get("data")
+                .and_then(|inner| inner.get("infoType"))
+                .and_then(Value::as_i64)
+        });
         let bytes = if state.frame_style.load(std::sync::atomic::Ordering::Relaxed) {
             codec::encode_json_styled(&value)
         } else {

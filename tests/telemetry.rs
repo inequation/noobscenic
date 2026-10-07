@@ -74,7 +74,7 @@ async fn call(app: &Router, request: Request<Body>) -> (StatusCode, Value) {
 
 /// 4x4 grid of `0x7F` cells: one literal, then a 15-byte match at offset 1.
 fn tiny_lz4_grid() -> Vec<u8> {
-    vec![0x1B, 0x7F, 0x01, 0x00]
+    vec![0x1B, 0x7F, 0x01, 0x00, 0x00]
 }
 
 fn trace_ref_is_usable(state: &AppState, reference: Option<&str>) -> bool {

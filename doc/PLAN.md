@@ -109,7 +109,7 @@ console, not a third socket.
 | CLI | `clap` (derive) | `serve`, `migrate`, `devices`, `send`, `trace` |
 | crypto (optional) | `aes` + `cipher` | AES-128-ECB, **padding disabled**, manual 16-byte block loop |
 | base64 | `base64` | `Engine` API |
-| map decode | none | local `map::lz4_block` (the plan's `lz4_flex` is not available offline); **block** format (`LZ4_compress_default`), not frame [MAP.md] |
+| map decode | `lz4_flex` | **block** format (`LZ4_compress_default`), not frame [MAP.md] |
 | ids/keys | `rand` | session/cookie minting |
 | time | `chrono` | display only; stored as `INTEGER` epoch millis |
 
