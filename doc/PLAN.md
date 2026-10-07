@@ -752,7 +752,8 @@ correlation and every console/CLI verb are implemented and covered by
 envelope). Live: a `21011` enqueued from the running console was pushed within a
 second and ACKed by the robot; `send-enc` correctly failed the row while
 `gateway.encrypt_commands` is off. A real clean start is the operator's
-`send <sn> 21012 {"cmd":"start"}`, which is the same path.
+`send <sn> 21005 {"mode":"smartClean"}` (FUNC_COMMANDS.md §1.1) — the same
+queue→push→response path; `21012 {"cmd":"start"}` is return-to-dock (§1.3).
 
 ### Phase 6 — Polish
 - [ ] Binding state machine, driven from what the traces actually show
