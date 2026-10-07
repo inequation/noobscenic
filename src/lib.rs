@@ -53,6 +53,14 @@ pub async fn start(config: Config) -> Result<AppState> {
     let db = db::connect(&url, config.database.max_connections).await?;
     tracing::info!(database = %url, "schema is up to date");
 
+    // Robots that bound before the binding handler existed have their preBind stored
+    // as an event; import that id once so `?id=` resolves without a re-bind
+    // (doc/PLAN.md §19). Idempotent: only rows with no recorded id are touched.
+    let recovered = web::recover_bind_ids(&db).await;
+    if recovered > 0 {
+        tracing::info!(recovered, "recovered bind ids for the web UI");
+    }
+
     let tap = Tap::new(&config.logging.wire, config.wire_dir())?;
     if tap.is_enabled() {
         tracing::info!(dir = %config.wire_dir().display(), format = ?config.logging.wire.format,

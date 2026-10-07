@@ -20,6 +20,7 @@ use axum::response::{IntoResponse, Response};
 use base64::Engine as _;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use sqlx::SqlitePool;
 use tokio::sync::watch;
 
 use crate::AppState;
@@ -373,6 +374,92 @@ async fn latest_mode(state: &AppState, sn: &str) -> Option<String> {
     value
         .get("mode")
         .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+/// One import per boot, idempotent: a robot that bound before the phase-6 handler
+/// existed has its preBind stored as an event — the old catch-all kept the raw form
+/// body, the handler stores JSON. Recover the `setID` id from the newest bind-or-unbind
+/// event so the UI can resolve `?id=` without waiting for a re-bind; from then on the
+/// state lives in SQLite and survives restarts like every other row. Public for tests.
+pub async fn recover_bind_ids(pool: &SqlitePool) -> u64 {
+    let devices = match queries::unbound_devices(pool).await {
+        Ok(devices) => devices,
+        Err(error) => {
+            tracing::warn!(%error, "could not list devices for bind recovery");
+            return 0;
+        }
+    };
+    if devices.is_empty() {
+        return 0;
+    }
+    let events = match queries::bind_events(pool).await {
+        Ok(events) => events,
+        Err(error) => {
+            tracing::warn!(%error, "could not read the stored bind events");
+            return 0;
+        }
+    };
+    // The newest bind-or-unbind state per serial. The catch-all stored its rows with
+    // a NULL `sn`, so there the body is the only place the serial survives.
+    let mut latest: HashMap<String, (bool, Option<String>, i64)> = HashMap::new();
+    for (sn, endpoint, payload, received_ms) in events {
+        let (body_sn, user) = bind_fields_from_payload(&payload.unwrap_or_default());
+        let Some(sn) = sn.or(body_sn) else {
+            continue;
+        };
+        let bound = matches!(
+            endpoint.as_str(),
+            "/cleanPack/binding" | "//cleanPack/binding"
+        );
+        latest.insert(sn, (bound, user, received_ms));
+    }
+
+    let mut recovered = 0;
+    for sn in devices {
+        let Some((bound, user, received_ms)) = latest.get(&sn) else {
+            continue;
+        };
+        // Only adopt from a *bind*: if the newest of the pair is an unbind, the robot
+        // is knowingly unbound and we must not resurrect the old id.
+        let Some(user) = user.as_ref().filter(|_| *bound) else {
+            continue;
+        };
+        match queries::adopt_bind(pool, &sn, user, *received_ms).await {
+            Ok(true) => {
+                tracing::info!(
+                    sn = %sn,
+                    user = %user,
+                    "recovered the setID id from a stored preBind"
+                );
+                recovered += 1;
+            }
+            Ok(false) => {}
+            Err(error) => {
+                tracing::warn!(%error, sn = %sn, "could not adopt the recovered bind id")
+            }
+        }
+    }
+    recovered
+}
+
+/// `(sn, userId)` out of either storage shape: the handler's
+/// `{"…","userId":"Foo"}` or the catch-all's raw `sn=…&ts=…&userId=Foo` form body.
+fn bind_fields_from_payload(payload: &str) -> (Option<String>, Option<String>) {
+    if let Ok(value) = serde_json::from_str::<Value>(payload) {
+        return (field(value.get("sn")), field(value.get("userId")));
+    }
+    let form = crate::channel_a::form::Form::parse(payload.as_bytes());
+    (
+        form.get("sn").map(str::to_string),
+        form.get("userId").map(str::to_string),
+    )
+}
+
+fn field(value: Option<&Value>) -> Option<String> {
+    value
+        .and_then(Value::as_str)
+        .filter(|text| !text.is_empty())
         .map(str::to_string)
 }
 

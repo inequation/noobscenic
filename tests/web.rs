@@ -375,3 +375,110 @@ async fn the_path_poller_fetches_only_while_watched_and_never_while_charging() {
 
     cleanup(state).await;
 }
+
+/// The catch-all stored the preBind as the raw form body before the phase-6 handler
+/// existed; the recovery turns it into a real `bind_user`.
+async fn store_bind_event(state: &AppState, endpoint: &str, payload: &str) {
+    noobscenic::db::queries::insert_event(
+        &state.db,
+        SN,
+        "A",
+        Some(endpoint),
+        None,
+        None,
+        None,
+        None,
+        None,
+        payload,
+        None,
+    )
+    .await
+    .expect("event");
+}
+
+/// The pre-phase-6 catch-all stored its rows without an `sn` — the body is the only
+/// place the serial survives (this is the bench unit's actual history).
+async fn store_legacy_bind_event(state: &AppState, endpoint: &str, payload: &str) {
+    sqlx::query(
+        "INSERT INTO events (sn, channel, direction, endpoint, payload, received_ms)
+         VALUES (NULL, 'A', 'in', ?, ?, ?)",
+    )
+    .bind(endpoint)
+    .bind(payload)
+    .bind(noobscenic::db::now_ms())
+    .execute(&state.db)
+    .await
+    .expect("legacy event");
+}
+
+#[tokio::test]
+async fn a_stored_prebind_recovers_the_setid_id_for_the_ui() {
+    let (state, app) = setup("recover").await;
+    noobscenic::db::queries::upsert_device_seen(&state.db, SN, None)
+        .await
+        .expect("device");
+    store_legacy_bind_event(
+        &state,
+        "/cleanPack/binding",
+        &format!("sn={SN}&ts={SN}&userId=Foo"),
+    )
+    .await;
+
+    assert_eq!(noobscenic::web::recover_bind_ids(&state.db).await, 1);
+    let (_, value) = call_json(&app, get("/api/robots")).await;
+    assert_eq!(
+        value["robots"][0]["id"], ID,
+        "the UI can now resolve ?id=Foo"
+    );
+    assert_eq!(value["robots"][0]["bind_state"], "bound");
+    let bound_ms: Option<i64> = sqlx::query_scalar("SELECT bound_ms FROM devices WHERE sn = ?")
+        .bind(SN)
+        .fetch_one(&state.db)
+        .await
+        .expect("bound_ms");
+    assert!(bound_ms.is_some(), "the original bind time is kept");
+
+    assert_eq!(
+        noobscenic::web::recover_bind_ids(&state.db).await,
+        0,
+        "a recovered device is not touched again"
+    );
+    cleanup(state).await;
+}
+
+#[tokio::test]
+async fn a_later_unbind_blocks_recovery_and_a_json_prebind_still_works() {
+    let (state, _app) = setup("recover2").await;
+    noobscenic::db::queries::upsert_device_seen(&state.db, SN, None)
+        .await
+        .expect("device");
+    store_bind_event(
+        &state,
+        "/cleanPack/binding",
+        &format!("sn={SN}&ts={SN}&userId=Foo"),
+    )
+    .await;
+    // The newest of the pair is an unbind: the robot is knowingly unbound.
+    store_bind_event(&state, "//cleanPack/unbinding", &format!("sn={SN}")).await;
+    assert_eq!(
+        noobscenic::web::recover_bind_ids(&state.db).await,
+        0,
+        "an unbind must not resurrect the old id"
+    );
+
+    // A fresh bind arrives in the phase-6 handler's JSON shape.
+    store_bind_event(
+        &state,
+        "/cleanPack/binding",
+        &format!("{{\"sn\":\"{SN}\",\"ts\":\"{SN}\",\"userId\":\"Bar\"}}"),
+    )
+    .await;
+    assert_eq!(noobscenic::web::recover_bind_ids(&state.db).await, 1);
+    let user: Option<String> = sqlx::query_scalar("SELECT bind_user FROM devices WHERE sn = ?")
+        .bind(SN)
+        .fetch_one(&state.db)
+        .await
+        .expect("bind_user");
+    assert_eq!(user.as_deref(), Some("Bar"));
+    cleanup(state).await;
+}

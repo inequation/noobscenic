@@ -493,6 +493,47 @@ pub async fn device_sn_by_id(pool: &SqlitePool, id: &str) -> Result<Option<Strin
     )
 }
 
+/// Devices whose `setID` id was never recorded — the candidates for recovering it
+/// from a stored preBind (doc/PLAN.md §19).
+pub async fn unbound_devices(pool: &SqlitePool) -> Result<Vec<String>> {
+    Ok(
+        sqlx::query_scalar("SELECT sn FROM devices WHERE bind_user IS NULL ORDER BY sn")
+            .fetch_all(pool)
+            .await?,
+    )
+}
+
+/// Every stored bind-or-unbind request, oldest first, as
+/// `(sn, endpoint, payload, received_ms)` — `sn` is NULL on rows the pre-phase-6
+/// catch-all stored, where the body is the only place the serial survives.
+pub async fn bind_events(
+    pool: &SqlitePool,
+) -> Result<Vec<(Option<String>, String, Option<String>, i64)>> {
+    Ok(sqlx::query_as(
+        "SELECT sn, endpoint, payload, received_ms FROM events
+         WHERE endpoint IN ('/cleanPack/binding', '//cleanPack/binding',
+                            '/cleanPack/unbinding', '//cleanPack/unbinding')
+         ORDER BY id",
+    )
+    .fetch_all(pool)
+    .await?)
+}
+
+/// Adopt a recovered `setID` id, but only where nothing has been recorded yet.
+/// Returns whether the row changed.
+pub async fn adopt_bind(pool: &SqlitePool, sn: &str, user_id: &str, bound_ms: i64) -> Result<bool> {
+    let result = sqlx::query(
+        "UPDATE devices SET bind_user = ?, bind_state = 'bound', bound_ms = ?
+         WHERE sn = ? AND bind_user IS NULL",
+    )
+    .bind(user_id)
+    .bind(bound_ms)
+    .bind(sn)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() == 1)
+}
+
 /// The newest stored payload of one `infoType` — the UI's status line.
 pub async fn latest_event_payload(
     pool: &SqlitePool,

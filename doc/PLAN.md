@@ -867,7 +867,9 @@ That is the accepted threat model, and it is stated here so nobody mistakes it f
 oversight.
 
 Surface (all on 8080; `{id}` is `devices.bind_user` — the id `setID` set — with the
-`sn` as fallback):
+`sn` as fallback. A robot that bound before the binding handler existed has its id
+recovered once at startup from the stored preBind, `web::recover_bind_ids`, so the
+DB row is the only place the id has to live):
 
 | Route | Purpose |
 |---|---|

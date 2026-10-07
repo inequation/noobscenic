@@ -14,7 +14,7 @@
                    padding: 8px 10px; background: #1f2229; }
   header { flex-wrap: wrap; }
   #status { flex: 1 1 100%; min-width: 0; font-size: 13px; color: #9aa0aa;
-            white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+            white-space: nowrap; overflow-x: auto; }
   main { flex: 1; display: grid; place-items: center; overflow: hidden; padding: 4px; }
   canvas { max-width: 100%; max-height: 100%; image-rendering: pixelated;
            background: #55585f; }
@@ -126,12 +126,13 @@ async function tick() {
 }
 
 function describe(summary) {
-  const bits = [summary.sn, summary.online ? "online" : "offline"];
+  const bits = [summary.online ? "online" : "offline"];
   const status = summary.status || {};
   if (status.mode) bits.push(status.mode);
   if (status.elec != null) bits.push("battery " + status.elec + "%");
   if (status.cleanTime != null) bits.push("clean " + status.cleanTime + "s");
   if (status.cleanArea != null) bits.push("area " + status.cleanArea + "m²");
+  bits.push(summary.sn);
   return bits.join("  ·  ");
 }
 
