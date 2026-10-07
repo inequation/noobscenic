@@ -20,6 +20,8 @@ Status:
 - ☑️ a web UI to watch the map and path and send the basic commands,
 - ⬜ the trace viewer, replay mode and TLS are deliberately postponed (see "Not yet implemented").
 
+![Screenshot of the WIP web UI](doc/screenshot.png)
+
 ## Operator guide
 
 ### What you need
