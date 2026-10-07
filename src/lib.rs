@@ -6,6 +6,7 @@
 pub mod channel_a;
 pub mod channel_b;
 pub mod config;
+pub mod console;
 pub mod db;
 pub mod error;
 pub mod session;
@@ -65,6 +66,7 @@ pub async fn run(config: Config) -> Result<()> {
     let gateway = tokio::net::TcpListener::bind(gateway_bind).await?;
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
+    console::spawn(state.clone(), shutdown_tx.clone());
     let signal = tokio::spawn(async move {
         shutdown_signal().await;
         let _ = shutdown_tx.send(());
