@@ -25,6 +25,22 @@ from the docs. A vendor-side channel-B capture (or one device-side log) would se
   on its `//cleanPack/unbinding` and `cleanPack/binding` POSTs, and `binding` → `code:0`
   → EID `0x460` (pairing indication ended). So the robot accepts and uses our HTTP
   responses, and it holds a live session from us.
+* `sync` also works: at **11:46:12** the robot re-registered on its own (fresh
+  `session=351ef895e8ae2181b64a4b96589664a5`, `cookies=4679ba58335bdad95721165bfc89ecc8`)
+  and then POSTed
+  `sn=…&companyId=48&mcuVer=S6&version=0.7.1&versionCode=1241&gitSha=NULL&cloud=psnk`
+  **with that fresh cookie**, answered `{"code":0,"hasUpdateFile":0,…}`.
+
+### Side observation — the "boot caveat" looks wrong on this unit
+
+That 11:46 register came with **no channel-C activity at all** (no `setUrl`, no re-home):
+the operator confirms the unit was **power-cycled** right before, it opened a new
+channel-B connection while the previous one went silent (half-open; our watchdog closed
+it 120 s later), and then it registered + synced by itself. So on this unit the
+channel-A endpoints are **live on a cold boot without any `setUrl` in that process
+lifetime**, contrary to `PROTOCOL.md`'s boot caveat and `FIELD_NOTES.md`'s note about
+silent polls. Worth reconciling — it is the difference between "a power cycle costs a
+re-home" and "it does not".
 
 ## Liveness measurement (proof the device reads our frames)
 
