@@ -798,8 +798,18 @@ page serves at `/`, the robot's `?version=` check still gets its JSON, the map a
 path endpoints returned the real 314×170 grid and the 225-point return path (the
 served data renders to the same picture `tools/map2png.py` produces), and a `pause`
 sent through the API was ACKed by the robot within a second. The bench unit still
-resolves by its `sn` fallback because it paired before the binding handler existed;
-presence gating and the charging skip are covered by `tests/web.rs`.
+has its id (`Foo`) recovered from the stored preBind, so `?id=Foo` resolves; presence
+gating and the charging skip are covered by `tests/web.rs`.
+
+### Phase 8 — Web UI, control depth (design: §20)
+- [ ] pan and zoom for the map canvas, paths and zones included (§20.1)
+- [ ] spot clean button (§20.2)
+- [ ] "more" menu: specialised modes plus the consumables view (§20.3)
+- [ ] manual steering pad with the ≤300 ms repeat, the 4001 release and the 4000 watchdog (§20.4)
+- [ ] zone editor: 21004 → edit → 21003 round-trip for no-go, no-mop and clean zones (§20.5)
+
+**Done when:** a phone can steer the robot, spot-clean it, pick a specialised mode
+and draw a no-go zone, all on the same page.
 
 ---
 
@@ -930,3 +940,110 @@ warnings.
 
 Not in the MVP: auth, TLS, zoom/pan, room targeting, schedules, clean records,
 consumables, human-friendly labels, i18n, SSE/WebSocket.
+
+---
+
+## 20. Web UI roadmap (after phase 7)
+
+The phase-7 MVP deliberately stops at "watch, plus five argument-less commands". This
+is what comes next, roughly in the order it makes sense to build. Almost all of it is
+client work on top of the existing API; two items need new cloud→device frames that
+the RE docs already pin down.
+
+### 20.1 Pan and zoom (do this first)
+
+Pure client-side: give the canvas a view `{scale, x, y}`, draw the grid into an
+offscreen canvas once per map revision, and `drawImage` it under the transform with
+`imageSmoothingEnabled = false` so cells stay crisp; draw the path and zones as
+vectors with constant on-screen widths (`lineWidth = px / scale`). Wheel and pinch
+(two pointers) zoom, drag pans, double-tap fits. The zone editor's hit-testing needs
+the inverse transform, so this lands before it. Optional: keep the view in the URL
+fragment so a bookmark remembers it.
+
+### 20.2 Spot clean
+
+`21020 {"ctrlCode":3001}` spot-cleans a 1.5 m square around the robot (FUNC_MAP
+§6.3). The robot sends no reply to 21020, so the queue row simply stays `sent`; the
+UI watches `mode` instead. One button, and it can go through the normal queue — a
+second of latency is fine for a one-shot action.
+
+### 20.3 The "more" menu (specialised modes)
+
+A sheet behind a three-dots button; every entry is backed by a documented frame:
+
+| Entry | Frame | Notes |
+|---|---|---|
+| Zone / room clean | `21023` with `cleanId` (−1 whole map, −2 all stored, −3 forbid only, −4 non-forbid, N = stored region) and/or `extraAreas` (`mode:"area"` zone, `mode:"point"` spot) | whether 21023 alone *starts* the job is unestablished (FUNC_MAP §6.2): test on hardware, possibly follow with 21005 |
+| Smart room clean | `21005 {"mode":"smartAreaClean"}` | auto-segmentation, then room by room |
+| Deep clean | `21005 {"mode":"depthTotalClean"}` | cover_mode 1 |
+| Y-shaped mopping | `21005 {"mode":"smartClean","pathType":"y_word"}` (or `21020` 3024) | |
+| Suction | `21022 {"cmd":"quiet"\|"auto"\|"strong"\|"max"}` | |
+| Water level | `21024 {"cmd":"setWaterPump","value":1..4}` | |
+| Locate robot | `21020 {"ctrlCode":3010}`, 3011 to stop | plays a sound |
+| Mute toggle | `21020 {"ctrlCode":3022}` | |
+| Obstacle avoidance | `21024 {"cmd":"setLidarCollision","value":0\|1}` | |
+| Clean components | `21020` 3025 / 3026 | brushes/fan on-off |
+| Do-not-disturb, schedules | `21001` (whole list) / `21002` (read) | needs its own view; entries carry weekly, one-shot and quiet-window kinds |
+| Consumables | `21015` read, `21016` reset | a dedicated view, not a menu entry: the five counters as runtime hours; reset always answers "ok", so re-read to confirm |
+
+The catalog grows from `(name, infoType, fixed payload)` to entries with an optional
+parameter form. Before any free-text field ships, mind the firmware string hazards:
+`name`/`tag` ≤ 31 UTF-8 bytes and `mode` ≤ 30, or the robot's parser is overrun
+(FUNC_MAP §4).
+
+### 20.4 Manual steering (remote control)
+
+`21020 data.ctrlCode`: 3005 forward (+0.3 m/s), 3006 backward (−0.1 m/s), 3007 rotate
+left (+1.0 rad/s), 3008 rotate right (−1.0), 3013 free speed
+(`params.speed_v`/`speed_w`), 4001 zero speed, 4000 leave manual mode. No reply to
+21020 — the UI watches `mode: rfctrl` in the status instead, and steering frames are
+fire-and-forget.
+
+Three facts shape the design:
+
+* The robot zeroes the commanded speed after **400 ms** without a new command and
+  leaves manual mode after 30 s (FUNC_COMMANDS §2.3). The UI must re-send the held
+  direction every **≤ 300 ms**, send 4001 on release and 4000 when leaving the pad;
+  the vendor app's 2 s repeat is far too slow and a replacement must not copy it.
+* **The commands queue is too slow**: its poller runs once a second. Steering needs a
+  realtime path — write straight to the device's writer the way pongs do, not into
+  `commands`.
+* The first steering command **interrupts a running clean** and enters manual mode;
+  4001 also starts manual mode, so it is only ever sent after a steering command.
+
+Safety: a server-side watchdog (no steering frame from a watched client for ~2 s →
+send 4000) so a closed tab or dead Wi-Fi cannot leave the robot in manual mode. The
+UI is a four-button pad (`pointerdown`/`pointerup`/`pointercancel`, arrow keys on
+desktop) that shows when the robot is in `rfctrl`.
+
+### 20.5 Editing designated zones (the big one)
+
+No-go, no-mop and deep-clean zones live in the robot's `AreaSetting` list, and the
+protocol is a read–modify–write of the **whole list**:
+
+* read: `21004 {}` → the stored JSON, verbatim;
+* write: `21003 {"mapId":N,"value":[region,…]}` → replaces everything and replies
+  "ok" through `cleanPack/response` (so ACK correlation works).
+
+Never rebuild the list from the 20002 `area[]`: it omits `cleanType` and `workNoisy`
+and carries snapped vertices, so writing it back silently resets every region to
+sweep-only/auto (FUNC_MAP §5.1). Always 21004 → edit → 21003, and keep unknown keys
+verbatim.
+
+A region is `{"vertexs":[[x,y]…], "active":"normal|depth|forbid",
+"forbidType":"all|sweep|mop", "cleanType":…, "workNoisy":…, "name":…, "tag":…,
+"id":…, "mode":…}` in the **mm world frame** — the frame the path already uses.
+Vertices are snapped by the firmware to 50 mm cell centres (`(v/50)*50 + 25`); fewer
+than three vertices are rejected, and a polygon thinner than one cell can collapse,
+so a virtual wall must be a thin non-degenerate polygon — there is no line primitive.
+
+The editor is the real work: a mode on the map where you tap out a polygon with a
+live preview, select/move/delete existing zones, choose the type (no-go / no-mop /
+deep clean / clean zone), snap to the grid, and are prevented by the UI from sending
+fewer than three vertices, degenerate polygons or over-long strings. It needs §20.1
+and the inverse of the `toPixel` transform for hit-testing.
+
+Operational hygiene: keep the last-read list in the database so edits always start
+from something real, write only after a successful 21004, re-read to confirm, and
+offer "restore the previous list". Whether an edit takes effect mid-clean is unknown;
+assume it applies to the next job.
