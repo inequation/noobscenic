@@ -767,11 +767,17 @@ three replies were `"message":"ok"` and every row was ACKed within a second. A
 ### Phase 6 — Polish
 - [x] Binding state machine, driven from what the traces actually show
 - [x] `encrypt:1` (AES-128-ECB, space padding) behind the config flag
-- [ ] `noobscenic trace` renderer and `--replay` regression mode
-- [ ] Optional TLS for a DNS-override deployment
-- [ ] Operator README: re-home, run, back out
+- [ ] `noobscenic trace` renderer and `--replay` regression mode — planned, not a
+  priority (README "Not yet implemented")
+- [ ] Optional TLS for a DNS-override deployment — planned, not a priority
+  (README "Not yet implemented")
+- [x] Operator README: re-home, run, back out
 
 **Done when:** someone who is not us can re-home a vacuum and keep it running.
+**Status (2026-10-07):** the operator guide is in (re-home → run → check → back
+out), and the binding state machine plus `encrypt:1` are implemented and
+live-verified. The trace renderer, replay mode and TLS are deliberately postponed;
+nothing else in this phase is needed for the phase's goal.
 
 ---
 
