@@ -10,6 +10,9 @@ Reads the newest `map_uploads` row from noobscenic's SQLite database — or a sa
     other bytes       room labels, one colour each (FUNC_MAP.md section 2.3)
 
 The charging dock is marked with a red diamond when the upload carried one.
+`--path` overlays an assembled `clean_paths` trajectory (in blue, green start dot,
+orange end dot) using the same map frame; the coordinates' low 2 bits are a
+point-type tag (FUNC_MAP.md section 3), stripped before drawing.
 `--origin bottom` (the default) puts the robot's +y axis up; the wire's row 0 is
 the smallest y, so the image is flipped to read like a floor plan.
 
@@ -104,6 +107,52 @@ def cells(upload: dict) -> bytes:
     return grid
 
 
+def load_path(db_path: Path, sn: str | None, path_id: int | None) -> list[tuple[int, int]] | None:
+    db = sqlite3.connect("file:%s?mode=ro" % db_path.as_posix(), uri=True)
+    try:
+        query = "SELECT path_id, points_json FROM clean_paths"
+        clauses, params = [], []
+        if sn:
+            clauses.append("sn = ?")
+            params.append(sn)
+        if path_id is not None:
+            clauses.append("path_id = ?")
+            params.append(path_id)
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        row = db.execute(query + " ORDER BY updated_ms DESC LIMIT 1", params).fetchone()
+    except sqlite3.OperationalError:
+        return None
+    finally:
+        db.close()
+    if row is None:
+        return None
+    # Low 2 bits of each coordinate are a point-type tag; strip them (v & ~3).
+    points = [(int(point[0]) & ~3, int(point[1]) & ~3) for point in json.loads(row[1]) if point]
+    print("overlay path %s: %d points" % (row[0], len(points)))
+    return points
+
+
+def overlay_path(image: Image.Image, upload: dict, points: list[tuple[int, int]], scale: int, origin: str) -> None:
+    resolution = float(upload["resolution"] or 0) or 0.05
+    height = int(upload["height"])
+
+    def to_pixel(point: tuple[int, int]) -> tuple[float, float]:
+        col = (point[0] / 1000.0 - float(upload["x_min"] or 0) - 0.05) / resolution
+        row = (point[1] / 1000.0 - float(upload["y_min"] or 0) - 0.05) / resolution
+        if origin == "bottom":
+            row = height - 1 - row
+        return (col + 0.5) * scale, (row + 0.5) * scale
+
+    pixels = [to_pixel(point) for point in points]
+    draw = ImageDraw.Draw(image)
+    if len(pixels) > 1:
+        draw.line(pixels, fill=(30, 90, 220), width=max(1, scale // 2), joint="curve")
+    radius = max(2.0, scale * 1.4)
+    for (x, y), colour in ((pixels[0], (40, 200, 60)), (pixels[-1], (250, 140, 20))):
+        draw.ellipse([x - radius, y - radius, x + radius, y + radius], fill=colour)
+
+
 def label_colour(label: int) -> tuple[int, int, int]:
     # Labels are room ids; a stable hue per id keeps renders comparable.
     hue = (label * 0.61803398875) % 1.0
@@ -185,6 +234,8 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--json", help="read a saved 20002 payload instead of the database")
     parser.add_argument("--out", default="map.png", help="PNG to write (default %(default)s)")
     parser.add_argument("--scale", type=int, default=4, help="pixels per cell (default %(default)s)")
+    parser.add_argument("--path", action="store_true", help="overlay the newest stored clean path")
+    parser.add_argument("--path-id", type=int, help="overlay this clean_paths row instead")
     parser.add_argument(
         "--origin",
         choices=("bottom", "top"),
@@ -197,6 +248,12 @@ def main(argv: list[str]) -> int:
         upload = from_json(Path(args.json)) if args.json else from_database(Path(args.db), args.sn)
         grid = cells(upload)
         image, counts = render(upload, grid, args.scale, args.origin)
+        if args.path or args.path_id is not None:
+            if args.json:
+                raise MapError("--path needs the database, not --json")
+            points = load_path(Path(args.db), args.sn, args.path_id)
+            if points:
+                overlay_path(image, upload, points, args.scale, args.origin)
     except MapError as exc:
         print("error: %s" % exc, file=sys.stderr)
         return 1

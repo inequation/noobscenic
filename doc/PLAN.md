@@ -168,7 +168,8 @@ tools/
   rehome.py             channel C client (§13)
   catchall.py           logs whatever connects, with TLS SNI extraction (diagnosis)
   fakerobot.py          channel C stand-in, for testing rehome.py without hardware
-  map2png.py            renders a stored 20002 grid as a PNG (needs pillow + lz4)
+  map2png.py            renders a stored 20002 grid as a PNG, optionally with a
+                        clean-path overlay (needs pillow + lz4)
 tests/
   channel_b.rs  framing.rs  form.rs  register_flow.rs  e2e_simdev.rs
 ```
@@ -724,7 +725,9 @@ the gateway within seconds and its `register`/`binding` posts were answered `cod
 **Status (2026-10-07):** verified against the live robot — a forced map upload decoded
 as 172×107 (419 wall / 12634 unknown / 5351 free), a 21011 request produced a complete
 (single-chunk) path row, and status pushes plus command replies landed in `events` with
-trace references. Multi-chunk paths will exercise themselves on the next long clean.
+trace references. A one-room smart clean then assembled a 1545-point path across seven
+21011 fetches and left a separate 225-point return-to-dock row; both draw correctly
+over the map via `tools/map2png.py --path`.
 
 ### Phase 5 — Control
 - [ ] `commands` table as the queue, polled by the gateway; TTL expiry
