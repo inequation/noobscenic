@@ -1,5 +1,6 @@
 //! The channel-A endpoints, phase by phase (doc/PLAN.md §9).
 
+pub mod binding;
 pub mod register;
 pub mod response;
 pub mod sock_addr;

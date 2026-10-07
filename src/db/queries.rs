@@ -73,6 +73,53 @@ pub async fn upsert_device_sync(
     Ok(())
 }
 
+/// The device's recorded bind state, for the binding handler's log line.
+pub async fn bind_state(pool: &SqlitePool, sn: &str) -> Result<Option<String>> {
+    Ok(
+        sqlx::query_scalar("SELECT bind_state FROM devices WHERE sn = ?")
+            .bind(sn)
+            .fetch_optional(pool)
+            .await?,
+    )
+}
+
+/// Record a successful bind (`bind: true`) or unbind. The device's preBind retries
+/// until it sees `code:0`, so an already-bound row is simply re-stamped; unbinding
+/// clears the user and leaves the bind timestamp as history.
+pub async fn record_bind(
+    pool: &SqlitePool,
+    sn: &str,
+    bind: bool,
+    user_id: Option<&str>,
+) -> Result<()> {
+    let now = now_ms();
+    if bind {
+        sqlx::query(
+            "UPDATE devices SET bind_state = 'bound', bind_user = ?, bound_ms = ?,
+                                 last_seen_ms = ?
+             WHERE sn = ?",
+        )
+        .bind(user_id)
+        .bind(now)
+        .bind(now)
+        .bind(sn)
+        .execute(pool)
+        .await?;
+    } else {
+        sqlx::query(
+            "UPDATE devices SET bind_state = 'unbound', bind_user = NULL, unbound_ms = ?,
+                                 last_seen_ms = ?
+             WHERE sn = ?",
+        )
+        .bind(now)
+        .bind(now)
+        .bind(sn)
+        .execute(pool)
+        .await?;
+    }
+    Ok(())
+}
+
 /// Insert a session; `false` means the cookie collided with a live one, so the
 /// caller should mint another.
 pub async fn insert_session(
@@ -371,8 +418,12 @@ pub async fn set_command_trace(pool: &SqlitePool, id: i64, trace_ref: &str) -> R
 
 /// A command that will never be sent (no session key, writer closed, bad payload).
 pub async fn fail_command(pool: &SqlitePool, id: i64, error: &str) -> Result<()> {
+    // Clear `sent_ms`: the row was claimed, but the frame never crossed the socket,
+    // and a `sent` timestamp on a `failed` row is exactly the kind of lie the
+    // operator would act on (doc/PLAN.md §10.3).
     sqlx::query(
-        "UPDATE commands SET state = 'failed', error = ? WHERE id = ? AND state != 'acked'",
+        "UPDATE commands SET state = 'failed', error = ?, sent_ms = NULL
+         WHERE id = ? AND state != 'acked'",
     )
     .bind(error)
     .bind(id)

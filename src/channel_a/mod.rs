@@ -48,6 +48,8 @@ pub fn router(state: AppState) -> Router {
             "/cleanPack/getSockAddr",
             get(handlers::sock_addr::sock_addr).post(handlers::sock_addr::sock_addr),
         )
+        .route("/cleanPack/binding", post(handlers::binding::binding))
+        .route("/cleanPack/unbinding", post(handlers::binding::unbinding))
         .route("/cleanPack/sync", post(handlers::sync::sync))
         .route(
             "/cleanPack/uploadEvents",

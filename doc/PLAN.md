@@ -758,7 +758,7 @@ three replies were `"message":"ok"` and every row was ACKed within a second. A
 `send-enc` correctly failed its row while `gateway.encrypt_commands` is off.
 
 ### Phase 6 — Polish
-- [ ] Binding state machine, driven from what the traces actually show
+- [x] Binding state machine, driven from what the traces actually show
 - [ ] `encrypt:1` (AES-128-ECB, space padding) behind the config flag
 - [ ] `noobscenic trace` renderer and `--replay` regression mode
 - [ ] Optional TLS for a DNS-override deployment
@@ -776,7 +776,7 @@ has a designed-in tolerance; all are settled by reading one real trace.
 | Unknown | Source | How the design tolerates it |
 |---|---|---|
 | `getSockAddr` request body fields | PROTOCOL §A "Gap 1" | The handler requires **no** fields; it answers on the cookie alone. |
-| Binding state machine; whether maps/commands are gated on bind | PROTOCOL §A "Gap 2" | `binding`/`unbinding` succeed and are recorded; `bind_state` is tracked; if a `preBind` retry loop shows up in the traces, phase 6 drives it to `SetBindSuccess`. |
+| Binding state machine; whether maps/commands are gated on bind | PROTOCOL §A "Gap 2" | **Settled:** `binding`/`unbinding` are recorded (`devices.bind_state`, `bind_user`, timestamps) and answered `code:0` idempotently, so a preBind retry cannot fail the bind; nothing is gated on the state (`tests/binding.rs`). |
 | Whether the device expects a reply to `10001` | PROTOCOL §B | `gateway.ack_handshake` toggle, default on; an unexpected `infoType` only costs a device-side log line. |
 | The pong's exact `infoType` demux (21006 near-certain) | PROTOCOL §B | Pong `21006` by default; the value is a constant in `info_type.rs`, and the ping/pong pairing is visible in the trace timeline. |
 | Ping interval and drop timeout (runtime variables) | PROTOCOL §B | Pong immediately, never on a timer; `ping_timeout_secs` is generous (120) and gets tuned from a measured session. |
