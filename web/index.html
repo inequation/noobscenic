@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>noobscenic</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; height: 100%; }
+  body { display: flex; flex-direction: column; height: 100dvh;
+         background: #16181d; color: #e8e8ea;
+         font: 15px/1.35 system-ui, sans-serif; }
+  header, footer { display: flex; align-items: center; gap: 8px;
+                   padding: 8px 10px; background: #1f2229; }
+  header { flex-wrap: wrap; }
+  #status { flex: 1 1 100%; min-width: 0; font-size: 13px; color: #9aa0aa;
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  main { flex: 1; display: grid; place-items: center; overflow: hidden; padding: 4px; }
+  canvas { max-width: 100%; max-height: 100%; image-rendering: pixelated;
+           background: #55585f; }
+  select, button { font: inherit; padding: 8px 10px; border-radius: 6px;
+                   border: 1px solid #3a3f48; background: #262a32; color: inherit; }
+  select { max-width: 65vw; }
+  button { min-width: 88px; }
+  #sent { min-width: 0; font-size: 13px; color: #9aa0aa;
+          white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+</style>
+</head>
+<body>
+<header>
+  <label for="robot">Robot</label>
+  <select id="robot"></select>
+  <span id="status">loading…</span>
+</header>
+<main><canvas id="map" width="1" height="1"></canvas></main>
+<footer>
+  <select id="command"></select>
+  <button id="send">Send</button>
+  <span id="sent"></span>
+</footer>
+<script>
+"use strict";
+const canvas = document.getElementById("map");
+const ctx = canvas.getContext("2d");
+const robotSelect = document.getElementById("robot");
+const commandSelect = document.getElementById("command");
+const statusLine = document.getElementById("status");
+const sentLine = document.getElementById("sent");
+
+let robot = null;   // the {id} the API is addressed by
+let mapRev = null;  // "id:received_ms" of the drawn map
+let pathRev = null; // "id:span" of the drawn path
+let base = null;    // the fetched map frame
+let points = [];    // the fetched path, tags already stripped
+
+async function json(url, options) {
+  const response = await fetch(url, options);
+  if (!response.ok) throw new Error(url + ": " + response.status);
+  return response.json();
+}
+
+function api(suffix, options) {
+  return json("/api/robot/" + encodeURIComponent(robot) + suffix, options);
+}
+
+async function init() {
+  const robots = await json("/api/robots");
+  robotSelect.innerHTML = "";
+  for (const entry of robots.robots) {
+    const option = document.createElement("option");
+    option.value = entry.id;
+    option.textContent = entry.id === entry.sn ? entry.sn : entry.id + " (" + entry.sn + ")";
+    robotSelect.append(option);
+  }
+  const wanted = new URLSearchParams(location.search).get("id");
+  if (wanted && robots.robots.some((entry) => entry.id === wanted)) {
+    robotSelect.value = wanted;
+  }
+  robotSelect.onchange = () => {
+    location.search = "?id=" + encodeURIComponent(robotSelect.value);
+  };
+
+  const catalog = await json("/api/commands");
+  commandSelect.innerHTML = "";
+  for (const name of catalog.commands) {
+    const option = document.createElement("option");
+    option.value = option.textContent = name;
+    commandSelect.append(option);
+  }
+  document.getElementById("send").onclick = send;
+
+  if (!robotSelect.value) {
+    statusLine.textContent = "no robots seen yet";
+    return;
+  }
+  robot = robotSelect.value;
+  tick();
+  setInterval(tick, 1500);
+}
+
+async function tick() {
+  // Hiding the tab pauses the heartbeat, and with it the path poller.
+  if (!robot || document.hidden) return;
+  try {
+    const summary = await api("/summary");
+    statusLine.textContent = describe(summary);
+    const map = summary.map;
+    if (map && map.map_id != null) {
+      const rev = map.map_id + ":" + map.received_ms;
+      if (rev !== mapRev) {
+        base = await api("/map");
+        mapRev = rev;
+        draw();
+      }
+    }
+    const path = summary.path;
+    const rev = path ? path.path_id + ":" + path.span : "none";
+    if (rev !== pathRev) {
+      points = path ? (await api("/path")).points : [];
+      pathRev = rev;
+      draw();
+    }
+  } catch (error) {
+    statusLine.textContent = "error: " + error.message;
+  }
+}
+
+function describe(summary) {
+  const bits = [summary.sn, summary.online ? "online" : "offline"];
+  const status = summary.status || {};
+  if (status.mode) bits.push(status.mode);
+  if (status.elec != null) bits.push("battery " + status.elec + "%");
+  if (status.cleanTime != null) bits.push("clean " + status.cleanTime + "s");
+  if (status.cleanArea != null) bits.push("area " + status.cleanArea + "m²");
+  return bits.join("  ·  ");
+}
+
+async function send() {
+  try {
+    const body = new URLSearchParams({ name: commandSelect.value });
+    const reply = await api("/command", { method: "POST", body });
+    sentLine.textContent = "queued #" + reply.queued + " " + reply.name;
+  } catch (error) {
+    sentLine.textContent = "send failed: " + error.message;
+  }
+}
+
+function draw() {
+  if (!base) return;
+  const width = base.width;
+  const height = base.height;
+  canvas.width = width;
+  canvas.height = height;
+  const cells = base64Bytes(base.grid_b64);
+  const image = ctx.createImageData(width, height);
+  for (let row = 0; row < height; row++) {
+    // Wire row 0 is the smallest y; the page reads like a floor plan (+y up).
+    const src = (height - 1 - row) * width;
+    const dst = row * width * 4;
+    for (let col = 0; col < width; col++) {
+      const [r, g, b] = cellColour(cells[src + col]);
+      const at = dst + col * 4;
+      image.data[at] = r;
+      image.data[at + 1] = g;
+      image.data[at + 2] = b;
+      image.data[at + 3] = 255;
+    }
+  }
+  ctx.putImageData(image, 0, 0);
+
+  if (points.length > 1) {
+    ctx.strokeStyle = "rgb(30,90,220)";
+    ctx.lineWidth = 0.7;
+    ctx.lineJoin = "round";
+    ctx.beginPath();
+    points.forEach(([x, y], index) => {
+      const [px, py] = toPixel(x / 1000, y / 1000);
+      if (index) ctx.lineTo(px, py);
+      else ctx.moveTo(px, py);
+    });
+    ctx.stroke();
+  }
+  dot(points[0], "rgb(40,200,60)");
+  dot(points[points.length - 1], "rgb(250,140,20)");
+  if (base.dock_x != null && base.dock_y != null) {
+    diamond(toPixel(base.dock_x / 1000, base.dock_y / 1000));
+  }
+}
+
+// The same frame mapping tools/map2png.py validated: cell centres sit half a
+// cell inside the wire origin, and the rows are flipped for +y up.
+function toPixel(x, y) {
+  const resolution = base.resolution || 0.05;
+  const col = (x - (base.x_min || 0) - 0.05) / resolution;
+  let row = (y - (base.y_min || 0) - 0.05) / resolution;
+  row = base.height - 1 - row;
+  return [col + 0.5, row + 0.5];
+}
+
+function dot([x, y], colour) {
+  if (x == null) return;
+  ctx.fillStyle = colour;
+  ctx.beginPath();
+  ctx.arc(x, y, 1.6, 0, 7);
+  ctx.fill();
+}
+
+function diamond([x, y]) {
+  ctx.fillStyle = "rgb(230,40,40)";
+  ctx.beginPath();
+  ctx.moveTo(x, y - 2);
+  ctx.lineTo(x + 2, y);
+  ctx.lineTo(x, y + 2);
+  ctx.lineTo(x - 2, y);
+  ctx.fill();
+}
+
+function cellColour(cell) {
+  if (cell === 0x00) return [28, 28, 36];
+  if (cell === 0x7f) return [158, 162, 172];
+  if (cell === 0xff) return [250, 250, 246];
+  return hsv((cell * 0.61803398875) % 1, 0.42, 0.96);
+}
+
+function hsv(h, s, v) {
+  const i = Math.floor(h * 6);
+  const f = h * 6 - i;
+  const p = v * (1 - s);
+  const q = v * (1 - f * s);
+  const t = v * (1 - (1 - f) * s);
+  const [r, g, b] = [[v, t, p], [q, v, p], [p, v, t], [p, q, v], [t, p, v], [v, p, q]][i % 6];
+  return [(r * 255) | 0, (g * 255) | 0, (b * 255) | 0];
+}
+
+function base64Bytes(text) {
+  const binary = atob(text);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+init().catch((error) => { statusLine.textContent = "error: " + error.message; });
+</script>
+</body>
+</html>

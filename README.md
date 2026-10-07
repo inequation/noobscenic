@@ -17,7 +17,7 @@ Status:
 - ☑️ ACK-correlated command queue (console and one-shot CLI),
 - ☑️ SQLite persistent storage with trace references,
 - ☑️ AES command encryption is configurable;
-- ⬜ no GUI for controlling the robot yet,
+- ☑️ a web UI to watch the map and path and send the basic commands,
 - ⬜ the trace viewer, replay mode and TLS are deliberately postponed (see "Not yet implemented").
 
 ## Operator guide
@@ -45,6 +45,13 @@ console when it is a terminal — `help` lists the verbs, and `devices`, `events
 `var/logs/noobscenic.log`. The same verbs exist as one-shot CLI commands
 (`noobscenic devices`, `noobscenic send …`), which work from a second terminal and
 share the database with the running server.
+
+The same port also serves a small web UI: open `http://<server-address>:8080/` on
+your phone or desktop and pick the robot in the top bar — the choice lands in the
+URL (`?id=…`), so a robot is a bookmarkable page. The map redraws as the robot sends
+telemetry, the last clean path is drawn over it, and the bottom bar sends the
+argument-less commands (`smartClean`, `pause`, `continue`, `stop`, `findCharge`).
+There is **no authentication**: anyone who can reach port 8080 can drive the robot.
 
 To change settings, copy `config.example.json` to `config.json` (it is read from the
 working directory; unknown keys are rejected). The interesting ones:

@@ -783,16 +783,23 @@ live-verified. The trace renderer, replay mode and TLS are deliberately postpone
 nothing else in this phase is needed for the phase's goal.
 
 ### Phase 7 — Web UI
-- [ ] `GET /` serves the page and still answers the robot's version-check query
-- [ ] `GET /api/robots` list, `?id=` selection (`bind_user` first, `sn` fallback)
-- [ ] map + path endpoints, canvas rendering, ~1.5 s summary poll
-- [ ] presence-gated `21011` path poller (only while a UI session is live)
-- [ ] command dropdown (`smartClean` / `pause` / `continue` / `stop` / `findCharge`) → the queue
-- [ ] integration tests for the API, the `GET /` split and the catalog
-- [ ] README: a short "web UI" note in the operator guide
+- [x] `GET /` serves the page and still answers the robot's version-check query
+- [x] `GET /api/robots` list, `?id=` selection (`bind_user` first, `sn` fallback)
+- [x] map + path endpoints, canvas rendering, ~1.5 s summary poll
+- [x] presence-gated `21011` path poller (only while a UI session is live)
+- [x] command dropdown (`smartClean` / `pause` / `continue` / `stop` / `findCharge`) → the queue
+- [x] integration tests for the API, the `GET /` split and the catalog
+- [x] README: a short "web UI" note in the operator guide
 
 **Done when:** a phone on the home LAN can watch a clean on the map, start one and
 stop it, from a bookmarked `?id=` URL. Design and non-goals: §19.
+**Status (2026-10-07):** implemented and verified live against the bench unit — the
+page serves at `/`, the robot's `?version=` check still gets its JSON, the map and
+path endpoints returned the real 314×170 grid and the 225-point return path (the
+served data renders to the same picture `tools/map2png.py` produces), and a `pause`
+sent through the API was ACKed by the robot within a second. The bench unit still
+resolves by its `sn` fallback because it paired before the binding handler existed;
+presence gating and the charging skip are covered by `tests/web.rs`.
 
 ---
 

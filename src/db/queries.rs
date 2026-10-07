@@ -461,6 +461,115 @@ pub async fn ack_command(
 
 // ── Phase 5: what the console and the one-shot CLI print (doc/PLAN.md §12) ─────
 
+// ── Phase 7: the web UI's API (doc/PLAN.md §19) ────────────────────────────────
+
+/// `(sn, bind_user, bind_state, last_seen_ms)` for the robot dropdown.
+pub async fn list_robots(pool: &SqlitePool) -> Result<Vec<(String, Option<String>, String, i64)>> {
+    Ok(sqlx::query_as(
+        "SELECT sn, bind_user, bind_state, last_seen_ms
+         FROM devices ORDER BY last_seen_ms DESC",
+    )
+    .fetch_all(pool)
+    .await?)
+}
+
+/// Resolve the UI's `{id}` — the `setID` id (recorded as `bind_user`) first, the
+/// serial number second.
+pub async fn device_sn_by_id(pool: &SqlitePool, id: &str) -> Result<Option<String>> {
+    let by_user: Option<String> = sqlx::query_scalar(
+        "SELECT sn FROM devices WHERE bind_user = ? ORDER BY last_seen_ms DESC LIMIT 1",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await?;
+    if by_user.is_some() {
+        return Ok(by_user);
+    }
+    Ok(
+        sqlx::query_scalar("SELECT sn FROM devices WHERE sn = ? LIMIT 1")
+            .bind(id)
+            .fetch_optional(pool)
+            .await?,
+    )
+}
+
+/// The newest stored payload of one `infoType` — the UI's status line.
+pub async fn latest_event_payload(
+    pool: &SqlitePool,
+    sn: &str,
+    info_type: i64,
+) -> Result<Option<String>> {
+    Ok(sqlx::query_scalar(
+        "SELECT payload FROM events
+         WHERE sn = ? AND info_type = ?
+         ORDER BY received_ms DESC, id DESC LIMIT 1",
+    )
+    .bind(sn)
+    .bind(info_type)
+    .fetch_optional(pool)
+    .await?)
+}
+
+/// Lean `(map_id, width, height, received_ms)` for the polled summary — the grid
+/// blob stays in the database until the client actually needs it.
+pub async fn latest_map_meta(
+    pool: &SqlitePool,
+    sn: &str,
+) -> Result<Option<(Option<i64>, Option<i64>, Option<i64>, i64)>> {
+    Ok(sqlx::query_as(
+        "SELECT map_id, width, height, received_ms
+         FROM map_uploads WHERE sn = ? ORDER BY received_ms DESC LIMIT 1",
+    )
+    .bind(sn)
+    .fetch_optional(pool)
+    .await?)
+}
+
+/// The newest map with its compressed grid, for `GET /api/robot/{id}/map`.
+#[allow(clippy::type_complexity)]
+pub async fn latest_map_row(
+    pool: &SqlitePool,
+    sn: &str,
+) -> Result<
+    Option<(
+        Option<i64>,
+        Option<i64>,
+        Option<i64>,
+        Option<f64>,
+        Option<f64>,
+        Option<f64>,
+        Vec<u8>,
+        Option<i64>,
+        Option<i64>,
+        Option<i64>,
+        Option<String>,
+        i64,
+    )>,
+> {
+    Ok(sqlx::query_as(
+        "SELECT map_id, width, height, resolution, x_min, y_min, cells_lz4,
+                dock_x, dock_y, dock_phi, dock_state, received_ms
+         FROM map_uploads WHERE sn = ? ORDER BY received_ms DESC LIMIT 1",
+    )
+    .bind(sn)
+    .fetch_optional(pool)
+    .await?)
+}
+
+/// Is a command of this type already waiting or on its way? The path poller uses
+/// this to keep at most one `21011` request in flight.
+pub async fn has_active_command(pool: &SqlitePool, sn: &str, info_type: i64) -> Result<bool> {
+    let count: i64 = sqlx::query_scalar(
+        "SELECT count(1) FROM commands
+         WHERE sn = ? AND info_type = ? AND state IN ('pending', 'sent')",
+    )
+    .bind(sn)
+    .bind(info_type)
+    .fetch_one(pool)
+    .await?;
+    Ok(count > 0)
+}
+
 /// Every device ever seen, for `devices`.
 pub async fn list_devices(
     pool: &SqlitePool,

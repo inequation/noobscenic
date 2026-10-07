@@ -34,7 +34,7 @@ use crate::session::{self, Credential};
 use crate::wire::{Direction, Record, Recorded};
 
 pub mod form;
-mod handlers;
+pub(crate) mod handlers;
 
 /// The device uploads LZ4 maps through `uploadEvents`, so bodies are not small; this
 /// is a sanity bound, not a policy.
@@ -42,7 +42,15 @@ const MAX_BODY_BYTES: usize = 16 * 1024 * 1024;
 
 pub fn router(state: AppState) -> Router {
     Router::new()
-        .route("/", get(handlers::sync::version_check))
+        // `/` is the web UI, except when the query is the device's OTA version
+        // check — `web::index` splits on that (doc/PLAN.md §19).
+        .route("/", get(crate::web::index))
+        .route("/api/robots", get(crate::web::robots))
+        .route("/api/commands", get(crate::web::commands))
+        .route("/api/robot/{id}/summary", get(crate::web::summary))
+        .route("/api/robot/{id}/map", get(crate::web::map))
+        .route("/api/robot/{id}/path", get(crate::web::path))
+        .route("/api/robot/{id}/command", post(crate::web::command))
         .route("/cleanPack/register", post(handlers::register::register))
         .route(
             "/cleanPack/getSockAddr",
@@ -159,7 +167,9 @@ async fn tap_traffic(State(state): State<AppState>, request: Request, next: Next
 /// session in the first place.
 async fn cookie_gate(State(state): State<AppState>, request: Request, next: Next) -> Response {
     let path = request.uri().path();
-    if path == "/cleanPack/register" {
+    // The web UI is browser traffic, not a device: it has no cookie to offer, and
+    // its own API is not part of the device contract.
+    if path == "/cleanPack/register" || path == "/" || path.starts_with("/api/") {
         return next.run(request).await;
     }
 

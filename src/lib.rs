@@ -14,6 +14,7 @@ pub mod map;
 pub mod path;
 pub mod proto;
 pub mod session;
+pub mod web;
 pub mod wire;
 
 use std::sync::Arc;
@@ -38,6 +39,9 @@ pub struct AppState {
     /// silences the server without closing the socket, which is the only way to
     /// measure the device's own liveness timeout.
     pub pongs: Arc<std::sync::atomic::AtomicBool>,
+    /// Which robots have the web UI open right now (doc/PLAN.md §19): the page's
+    /// poll is the heartbeat that gates the path poller.
+    pub watchers: Arc<web::Watchers>,
 }
 
 /// Open everything the server needs. Fails loudly here, so that once we are serving,
@@ -64,6 +68,7 @@ pub async fn start(config: Config) -> Result<AppState> {
         registry: Arc::new(channel_b::Registry::new()),
         frame_style: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         pongs: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        watchers: Arc::new(web::Watchers::new()),
     })
 }
 
@@ -83,6 +88,9 @@ pub async fn run(config: Config) -> Result<()> {
     // The command queue's poller — doc/PLAN.md §10.3. It runs headless, too: enqueue
     // through the CLI or `sqlite3` and the gateway still picks the row up.
     commands::spawn(state.clone(), shutdown_tx.subscribe());
+    // The presence-gated path poller — doc/PLAN.md §19. It only fetches `21011`
+    // chunks while somebody has the web UI open.
+    web::spawn_path_tracker(state.clone(), shutdown_tx.subscribe());
     let signal = tokio::spawn(async move {
         shutdown_signal().await;
         let _ = shutdown_tx.send(());

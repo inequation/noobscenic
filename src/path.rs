@@ -8,7 +8,7 @@
 
 use serde_json::Value;
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 
 /// One 21011 reply's payload.
 #[derive(Debug, Clone)]
@@ -55,9 +55,9 @@ pub fn parse(data: &Value) -> Result<Chunk> {
             points.push([x, y]);
         }
     }
-    if points.is_empty() && total_points > 0 {
-        return Err(Error::Payload("21011 reply has no usable posArray".into()));
-    }
+    // An empty `posArray` with a header is legal: a request whose `startPos` is at
+    // or past the path's end gets "nothing new" back, which is exactly what the
+    // live path poller sees between the robot's moves (FUNC_MAP.md §3).
     Ok(Chunk {
         path_id,
         start_pos,
@@ -119,6 +119,17 @@ impl Assembly {
 
     pub fn filled(&self) -> usize {
         self.points.iter().filter(|point| point.is_some()).count()
+    }
+
+    /// The next `startPos` to ask the robot from: the first point we do not have,
+    /// or the end of the path when it is contiguous. This is what recovers a new
+    /// `pathID` (whose first reply is a header-only chunk with every slot `None`)
+    /// and backfills any hole a merge left behind.
+    pub fn next_index(&self) -> usize {
+        self.points
+            .iter()
+            .position(Option::is_none)
+            .unwrap_or(self.points.len())
     }
 
     pub fn is_complete(&self) -> bool {
@@ -194,5 +205,23 @@ mod tests {
         assert_eq!(reloaded.len(), 3);
         assert_eq!(reloaded.filled(), 1);
         assert!(!reloaded.is_complete());
+    }
+
+    #[test]
+    fn next_index_points_at_the_first_hole() {
+        let mut assembly = Assembly::new();
+        assert_eq!(
+            assembly.next_index(),
+            0,
+            "nothing stored: ask from the start"
+        );
+        assembly.merge(&chunk(0, 4, &[[1.0, 1.0], [2.0, 2.0]]));
+        assert_eq!(
+            assembly.next_index(),
+            2,
+            "a contiguous prefix asks from its end"
+        );
+        assembly.merge(&chunk(3, 4, &[[4.0, 4.0]]));
+        assert_eq!(assembly.next_index(), 2, "a hole is asked for first");
     }
 }

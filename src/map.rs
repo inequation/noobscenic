@@ -78,18 +78,31 @@ pub fn decode(upload: &MapUpload) -> Result<DecodedMap> {
     }
     let encoded = upload.map.as_deref().unwrap_or_default();
     let compressed = base64::engine::general_purpose::STANDARD.decode(encoded)?;
-    let cells = decompress_block(&compressed, expected)?;
+    let cells = decompress_stored(&compressed, width, height)?;
+    let mut histogram = [0u32; 256];
+    for cell in &cells {
+        histogram[*cell as usize] += 1;
+    }
+    Ok(DecodedMap { cells, histogram })
+}
+
+/// Decode an LZ4 block that is already out of base64 — the `map_uploads.cells_lz4`
+/// column — into exactly `width * height` cell bytes.
+pub fn decompress_stored(compressed: &[u8], width: usize, height: usize) -> Result<Vec<u8>> {
+    let expected = width
+        .checked_mul(height)
+        .ok_or_else(|| Error::Lz4("map too large".into()))?;
+    if expected == 0 {
+        return Err(Error::Lz4("map has no dimensions".into()));
+    }
+    let cells = decompress_block(compressed, expected)?;
     if cells.len() != expected {
         return Err(Error::Lz4(format!(
             "decoded {} bytes, expected {expected} ({width}x{height})",
             cells.len()
         )));
     }
-    let mut histogram = [0u32; 256];
-    for cell in &cells {
-        histogram[*cell as usize] += 1;
-    }
-    Ok(DecodedMap { cells, histogram })
+    Ok(cells)
 }
 
 /// LZ4 **block** decompression (`LZ4_decompress_safe` equivalent) with the output
