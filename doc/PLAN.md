@@ -168,6 +168,7 @@ tools/
   rehome.py             channel C client (§13)
   catchall.py           logs whatever connects, with TLS SNI extraction (diagnosis)
   fakerobot.py          channel C stand-in, for testing rehome.py without hardware
+  map2png.py            renders a stored 20002 grid as a PNG (needs pillow + lz4)
 tests/
   channel_b.rs  framing.rs  form.rs  register_flow.rs  e2e_simdev.rs
 ```
