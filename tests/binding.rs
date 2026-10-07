@@ -163,3 +163,23 @@ async fn a_bind_without_an_sn_is_answered_but_not_recorded() {
     assert_eq!(devices, 0);
     cleanup(state).await;
 }
+
+#[tokio::test]
+async fn the_double_slash_unbind_path_the_robot_actually_posts_is_recorded() {
+    let (state, app) = setup("dslash").await;
+    let body = format!("sn={SN}&ts={SN}&userId=Foo");
+    let _ = call(&app, post("/cleanPack/binding", &body)).await;
+    assert_eq!(device_row(&state).await.0, "bound");
+
+    // The bench unit's own URL: `//cleanPack/unbinding` (wire traces).
+    let (status, response) = call(&app, post("//cleanPack/unbinding", &body)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(response["code"], 0);
+    assert_eq!(
+        device_row(&state).await.0,
+        "unbound",
+        "the double-slash path must flip the state like the canonical one"
+    );
+
+    cleanup(state).await;
+}

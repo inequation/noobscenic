@@ -45,6 +45,12 @@ pub fn router(state: AppState) -> Router {
         // `/` is the web UI, except when the query is the device's OTA version
         // check — `web::index` splits on that (doc/PLAN.md §19).
         .route("/", get(crate::web::index))
+        // Browsers ask for this automatically; answering 204 keeps the catch-all's
+        // warning log free of noise that is not device traffic.
+        .route(
+            "/favicon.ico",
+            get(|| async { axum::http::StatusCode::NO_CONTENT }),
+        )
         .route("/api/robots", get(crate::web::robots))
         .route("/api/commands", get(crate::web::commands))
         .route("/api/robot/{id}/summary", get(crate::web::summary))
@@ -58,6 +64,10 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/cleanPack/binding", post(handlers::binding::binding))
         .route("/cleanPack/unbinding", post(handlers::binding::unbinding))
+        // This unit posts its unbind to `//cleanPack/unbinding`, double slash and
+        // all (wire traces 2026-10-06/07); route it to the same handler rather than
+        // letting the catch-all answer without recording the transition.
+        .route("//cleanPack/unbinding", post(handlers::binding::unbinding))
         .route("/cleanPack/sync", post(handlers::sync::sync))
         .route(
             "/cleanPack/uploadEvents",
@@ -169,7 +179,11 @@ async fn cookie_gate(State(state): State<AppState>, request: Request, next: Next
     let path = request.uri().path();
     // The web UI is browser traffic, not a device: it has no cookie to offer, and
     // its own API is not part of the device contract.
-    if path == "/cleanPack/register" || path == "/" || path.starts_with("/api/") {
+    if path == "/cleanPack/register"
+        || path == "/"
+        || path == "/favicon.ico"
+        || path.starts_with("/api/")
+    {
         return next.run(request).await;
     }
 
