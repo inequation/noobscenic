@@ -27,6 +27,13 @@ pub struct AppState {
     pub config: Arc<Config>,
     /// Who is connected on channel B right now (doc/PLAN.md §10.2).
     pub registry: Arc<channel_b::Registry>,
+    /// Write channel-B frames in the device's own jsoncpp-ish style instead of
+    /// compact JSON (console toggle `style`, for protocol experiments).
+    pub frame_style: Arc<std::sync::atomic::AtomicBool>,
+    /// Whether `21006` pings are ponged (console toggle `pongs`). Turning this off
+    /// silences the server without closing the socket, which is the only way to
+    /// measure the device's own liveness timeout.
+    pub pongs: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// Open everything the server needs. Fails loudly here, so that once we are serving,
@@ -51,6 +58,8 @@ pub async fn start(config: Config) -> Result<AppState> {
         tap: Arc::new(tap),
         config: Arc::new(config),
         registry: Arc::new(channel_b::Registry::new()),
+        frame_style: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        pongs: Arc::new(std::sync::atomic::AtomicBool::new(true)),
     })
 }
 

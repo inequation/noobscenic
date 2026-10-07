@@ -143,7 +143,11 @@ async fn write_task(
 ) -> Result<()> {
     while let Some(value) = rx.recv().await {
         let info_type = value.get("infoType").and_then(Value::as_i64);
-        let bytes = codec::encode_json(&value);
+        let bytes = if state.frame_style.load(std::sync::atomic::Ordering::Relaxed) {
+            codec::encode_json_styled(&value)
+        } else {
+            codec::encode_json(&value)
+        };
 
         let mut record = Record::new("B", Direction::Out, "frame", &bytes)
             .conn_id(conn_id.clone())
@@ -251,7 +255,10 @@ impl Conn {
         }
 
         if self.state.config.gateway.ack_handshake {
-            self.send(json!({"infoType": HANDSHAKE, "message": "ok", "data": {}}))
+            // `encrypt` is present on purpose: without it the frame is dropped at the
+            // device's inbound gate before anything can look at it, so the "optional"
+            // ack would never be delivered at all.
+            self.send(json!({"infoType": HANDSHAKE, "encrypt": 0, "message": "ok", "data": {}}))
                 .await;
         }
     }
@@ -295,6 +302,10 @@ impl Conn {
     /// app/cloud is online, enabling its status and map pushes (FUNC_STATUS.md §2.3).
     async fn pong(&mut self) {
         self.last_ping = Instant::now();
+        if !self.state.pongs.load(std::sync::atomic::Ordering::Relaxed) {
+            tracing::debug!(conn = %self.conn_id, "pongs are off; leaving the ping unanswered");
+            return;
+        }
         let data = if self.state.config.gateway.announce_app_online {
             json!({"isExistConnect": true})
         } else {

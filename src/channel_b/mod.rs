@@ -15,6 +15,7 @@
 
 pub mod codec;
 mod conn;
+pub mod crypto;
 pub mod registry;
 
 pub use registry::{ConnHandle, Registry};

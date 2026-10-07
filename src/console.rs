@@ -16,6 +16,10 @@ const HELP: &str = "\
 commands:
   devices                          who is connected on channel B
   send <sn> <infoType> <json>      queue one cloud->device frame (encrypt:0)
+  send-enc <sn> <infoType> <json>  same, but encrypt:1 with the device's session key
+  send-full <sn> <json>            send the given JSON object as the whole frame
+  style compact|styled             how channel-B frames are written
+  pongs on|off                     answer 21006 pings (liveness experiment)
   quit                             shut the server down";
 
 pub fn spawn(state: AppState, shutdown: watch::Sender<()>) {
@@ -51,16 +55,55 @@ pub fn spawn(state: AppState, shutdown: watch::Sender<()>) {
                     sn,
                     info_type,
                     data,
-                } => match state.registry.get(&sn) {
-                    Some(handle) => {
-                        let frame = json!({"infoType": info_type, "encrypt": 0, "data": data});
-                        match handle.tx.send(frame).await {
-                            Ok(()) => println!("queued infoType {info_type} for {sn}"),
-                            Err(_) => println!("{sn} is gone (writer closed)"),
+                } => {
+                    let frame = json!({"infoType": info_type, "encrypt": 0, "data": data});
+                    send(&state, &sn, frame, &format!("infoType {info_type}")).await;
+                }
+                Command::SendEncrypted {
+                    sn,
+                    info_type,
+                    data,
+                } => match crate::db::queries::latest_session_key(&state.db, &sn).await {
+                    Ok(Some(key)) => {
+                        match crate::channel_b::crypto::encrypt_command(info_type, &data, &key) {
+                            Some(frame) => {
+                                send(
+                                    &state,
+                                    &sn,
+                                    frame,
+                                    &format!("infoType {info_type} (encrypt:1)"),
+                                )
+                                .await;
+                            }
+                            None => println!("{sn}: the session key is too short for AES-128"),
                         }
                     }
-                    None => println!("{sn} is not online"),
+                    Ok(None) => println!("{sn}: no live session to encrypt with"),
+                    Err(error) => println!("{sn}: session lookup failed: {error}"),
                 },
+                Command::Style { styled } => {
+                    state
+                        .frame_style
+                        .store(styled, std::sync::atomic::Ordering::Relaxed);
+                    println!(
+                        "channel-B frame style: {}",
+                        if styled { "styled" } else { "compact" }
+                    );
+                }
+                Command::SendFull { sn, frame } => {
+                    send(&state, &sn, frame, "frame").await;
+                }
+                Command::Pongs { on } => {
+                    state.pongs.store(on, std::sync::atomic::Ordering::Relaxed);
+                    println!(
+                        "pongs: {}",
+                        if on {
+                            "on"
+                        } else {
+                            "off (the robot should drop us if it cares)"
+                        }
+                    );
+                }
                 Command::Quit => {
                     println!("shutting down");
                     let _ = shutdown.send(());
@@ -72,6 +115,16 @@ pub fn spawn(state: AppState, shutdown: watch::Sender<()>) {
     });
 }
 
+async fn send(state: &AppState, sn: &str, frame: Value, label: &str) {
+    match state.registry.get(sn) {
+        Some(handle) => match handle.tx.send(frame).await {
+            Ok(()) => println!("queued {label} for {sn}"),
+            Err(_) => println!("{sn} is gone (writer closed)"),
+        },
+        None => println!("{sn} is not online"),
+    }
+}
+
 #[derive(Debug, PartialEq)]
 enum Command {
     Empty,
@@ -81,6 +134,21 @@ enum Command {
         sn: String,
         info_type: i64,
         data: Value,
+    },
+    SendEncrypted {
+        sn: String,
+        info_type: i64,
+        data: Value,
+    },
+    SendFull {
+        sn: String,
+        frame: Value,
+    },
+    Style {
+        styled: bool,
+    },
+    Pongs {
+        on: bool,
     },
     Quit,
     Unknown(String),
@@ -94,27 +162,59 @@ fn parse(line: &str) -> Command {
         "help" => Command::Help,
         "devices" => Command::Devices,
         "quit" => Command::Quit,
-        "send" => {
-            let (Some(sn), Some(info_type)) =
-                (parts.next(), parts.next().and_then(|t| t.parse().ok()))
-            else {
-                return Command::Unknown(line.to_string());
-            };
-            let data = match parts.next() {
-                None => json!({}),
-                Some(text) => match serde_json::from_str(text) {
-                    Ok(value) => value,
-                    Err(_) => return Command::Unknown(line.to_string()),
-                },
-            };
-            Command::Send {
-                sn: sn.to_string(),
+        "send" => match send_fields(parts) {
+            Some((sn, info_type, data)) => Command::Send {
+                sn,
                 info_type,
                 data,
+            },
+            None => Command::Unknown(line.to_string()),
+        },
+        "send-enc" => match send_fields(parts) {
+            Some((sn, info_type, data)) => Command::SendEncrypted {
+                sn,
+                info_type,
+                data,
+            },
+            None => Command::Unknown(line.to_string()),
+        },
+        "send-full" => {
+            // Re-split with a limit of three: the frame is the whole rest of the line.
+            let mut whole = line.splitn(3, char::is_whitespace);
+            whole.next();
+            match (whole.next(), whole.next()) {
+                (Some(sn), Some(text)) => match serde_json::from_str(text) {
+                    Ok(frame) => Command::SendFull {
+                        sn: sn.to_string(),
+                        frame,
+                    },
+                    Err(_) => Command::Unknown(line.to_string()),
+                },
+                _ => Command::Unknown(line.to_string()),
             }
         }
+        "style" => match parts.next() {
+            Some("styled") => Command::Style { styled: true },
+            Some("compact") => Command::Style { styled: false },
+            _ => Command::Unknown(line.to_string()),
+        },
+        "pongs" => match parts.next() {
+            Some("on") => Command::Pongs { on: true },
+            Some("off") => Command::Pongs { on: false },
+            _ => Command::Unknown(line.to_string()),
+        },
         _ => Command::Unknown(line.to_string()),
     }
+}
+
+fn send_fields<'a>(mut parts: impl Iterator<Item = &'a str>) -> Option<(String, i64, Value)> {
+    let sn = parts.next()?;
+    let info_type = parts.next()?.parse().ok()?;
+    let data = match parts.next() {
+        None => json!({}),
+        Some(text) => serde_json::from_str(text).ok()?,
+    };
+    Some((sn.to_string(), info_type, data))
 }
 
 #[cfg(test)]
@@ -156,6 +256,40 @@ mod tests {
             Command::Unknown("send SN 20001 {oops".into())
         );
         assert_eq!(parse("send SN"), Command::Unknown("send SN".into()));
+        assert_eq!(
+            parse("send-enc SN nope {}"),
+            Command::Unknown("send-enc SN nope {}".into())
+        );
+    }
+
+    #[test]
+    fn parses_an_encrypted_send_and_the_style_toggle() {
+        assert_eq!(
+            parse("send-enc SN 21024 {\"cmd\": \"setledswitch\", \"value\": 0}"),
+            Command::SendEncrypted {
+                sn: "SN".into(),
+                info_type: 21024,
+                data: json!({"cmd": "setledswitch", "value": 0}),
+            }
+        );
+        assert_eq!(parse("style styled"), Command::Style { styled: true });
+        assert_eq!(parse("style compact"), Command::Style { styled: false });
+        assert_eq!(
+            parse("style sideways"),
+            Command::Unknown("style sideways".into())
+        );
+        assert_eq!(parse("pongs on"), Command::Pongs { on: true });
+        assert_eq!(parse("pongs off"), Command::Pongs { on: false });
+        assert_eq!(parse("pongs maybe"), Command::Unknown("pongs maybe".into()));
+        assert_eq!(
+            parse(
+                "send-full SN {\"infoType\": 20001, \"connectionType\": 1, \"encrypt\": 0, \"data\": {}}"
+            ),
+            Command::SendFull {
+                sn: "SN".into(),
+                frame: json!({"infoType": 20001, "connectionType": 1, "encrypt": 0, "data": {}}),
+            }
+        );
     }
 
     #[test]

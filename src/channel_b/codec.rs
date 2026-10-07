@@ -39,6 +39,10 @@ struct Ordered<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     message: Option<&'a str>,
     data: &'a Value,
+    /// Anything else the message carried (`connectionType`, `packId`, …) — dropping
+    /// fields we do not know about would silently change the frame.
+    #[serde(flatten)]
+    extra: std::collections::BTreeMap<&'a str, &'a Value>,
 }
 
 /// Serialise a message and frame it.
@@ -56,12 +60,73 @@ pub fn encode_json(value: &Value) -> Vec<u8> {
 
 fn ordered(value: &Value) -> Option<Ordered<'_>> {
     let map = value.as_object()?;
+    const KNOWN: [&str; 4] = ["infoType", "encrypt", "message", "data"];
+    let extra = map
+        .iter()
+        .filter(|(key, _)| !KNOWN.contains(&key.as_str()))
+        .map(|(key, value)| (key.as_str(), value))
+        .collect();
     Some(Ordered {
         info_type: map.get("infoType")?.as_i64()?,
         encrypt: map.get("encrypt").and_then(Value::as_i64),
         message: map.get("message").and_then(Value::as_str),
         data: map.get("data")?,
+        extra,
     })
+}
+
+/// A jsoncpp-ish rendering of a message: `"key" : value` members, `, ` separators,
+/// one line — the style the device's own writer uses. Normal traffic uses
+/// [`encode_json`]; this exists for the experiment where the device's inbound path
+/// turns out to be text-sensitive (console `style`).
+pub fn encode_json_styled(value: &Value) -> Vec<u8> {
+    let mut out = Vec::new();
+    write_styled(value, &mut out);
+    encode(&out)
+}
+
+fn write_styled(value: &Value, out: &mut Vec<u8>) {
+    match value {
+        Value::Object(map) => {
+            out.push(b'{');
+            for (index, key) in ordered_keys(map).into_iter().enumerate() {
+                if index > 0 {
+                    out.extend_from_slice(b", ");
+                }
+                serde_json::to_writer(&mut *out, key).expect("keys serialise");
+                out.extend_from_slice(b" : ");
+                write_styled(map.get(key).expect("key came from the map"), out);
+            }
+            out.push(b'}');
+        }
+        Value::Array(items) => {
+            out.push(b'[');
+            for (index, item) in items.iter().enumerate() {
+                if index > 0 {
+                    out.extend_from_slice(b", ");
+                }
+                write_styled(item, out);
+            }
+            out.push(b']');
+        }
+        other => serde_json::to_writer(&mut *out, other).expect("values serialise"),
+    }
+}
+
+/// Firmware order first (`infoType`, `encrypt`, `message`, `data`), then the rest.
+fn ordered_keys(map: &serde_json::Map<String, Value>) -> Vec<&str> {
+    const FIRST: [&str; 4] = ["infoType", "encrypt", "message", "data"];
+    let mut keys: Vec<&str> = FIRST
+        .iter()
+        .copied()
+        .filter(|key| map.contains_key(*key))
+        .collect();
+    keys.extend(
+        map.keys()
+            .filter(|key| !FIRST.contains(&key.as_str()))
+            .map(String::as_str),
+    );
+    keys
 }
 
 /// Incremental `#\t#` splitter. Push whatever the socket gave you; get back the
@@ -143,6 +208,34 @@ mod tests {
         assert_eq!(
             frame,
             b"{\"infoType\":21006,\"encrypt\":0,\"data\":{\"a\":1}}#\t#".to_vec()
+        );
+    }
+
+    #[test]
+    fn extra_fields_survive_serialisation() {
+        let frame = encode_json(&json!({
+            "data": {},
+            "connectionType": 1,
+            "encrypt": 0,
+            "infoType": 20001,
+        }));
+        assert_eq!(
+            frame,
+            b"{\"infoType\":20001,\"encrypt\":0,\"data\":{},\"connectionType\":1}#\t#".to_vec()
+        );
+    }
+
+    #[test]
+    fn styled_frames_mirror_the_device_writer() {
+        let frame = encode_json_styled(&json!({
+            "data": {"cmd": "setledswitch", "value": 0},
+            "encrypt": 0,
+            "infoType": 21024,
+        }));
+        assert_eq!(
+            frame,
+            b"{\"infoType\" : 21024, \"encrypt\" : 0, \"data\" : {\"cmd\" : \"setledswitch\", \"value\" : 0}}#\t#"
+                .to_vec()
         );
     }
 

@@ -116,6 +116,18 @@ pub async fn touch_session(pool: &SqlitePool, cookie: &str) -> Result<()> {
     Ok(())
 }
 
+/// The newest live session key for a device — the key `encrypt:1` commands use.
+pub async fn latest_session_key(pool: &SqlitePool, sn: &str) -> Result<Option<String>> {
+    Ok(sqlx::query_scalar(
+        "SELECT session_key FROM sessions
+         WHERE sn = ? AND revoked_ms IS NULL
+         ORDER BY created_ms DESC, id DESC LIMIT 1",
+    )
+    .bind(sn)
+    .fetch_optional(pool)
+    .await?)
+}
+
 pub async fn revoke_session(pool: &SqlitePool, cookie: &str) -> Result<()> {
     sqlx::query("UPDATE sessions SET revoked_ms = ? WHERE cookie = ? AND revoked_ms IS NULL")
         .bind(now_ms())
