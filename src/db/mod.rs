@@ -12,6 +12,8 @@ use crate::error::Result;
 
 static MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 
+pub mod queries;
+
 /// Open the pool, create the file and its directory if needed, and migrate.
 pub async fn connect(url: &str, max_connections: u32) -> Result<SqlitePool> {
     if let Some(parent) = database_parent_dir(url) {

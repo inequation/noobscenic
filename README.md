@@ -9,10 +9,11 @@ keeps working without ever talking to Proscenic.
 
 Protocol analysis and reverse-engineering artifacts live in [`doc/`](doc/).
 
-Status: phases 0–1 are done and phase 3 is implemented and verified on the bench unit
-— the robot has been re-homed, stays connected on channel B with every `21006` ping
-answered, and its `register`/`binding` posts get `code:0`; channel A's real endpoint
-handlers (phase 2) are the next implementation step.
+Status: phases 0–3 are implemented — the robot is re-homed and stays connected on
+channel B, and channel A now mints session cookies and answers `register`,
+`getSockAddr` and `sync` (a stale cookie gets `code:102`, so the robot upgrades itself
+to a real session on its next request without being re-homed); phase 4's telemetry is
+next.
 
 ## Re-homing a robot
 

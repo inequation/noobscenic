@@ -337,7 +337,7 @@ and rebuilds the request; the response body is tapped on the way out.
 | Route | Handler | Response |
 |---|---|---|
 | `POST /cleanPack/register` | mint session | `{"code":0,"message":"ok","data":{"session":…,"cookies":…}}` |
-| `POST /cleanPack/getSockAddr` | gateway address | `data.addr_list:[{ip,port}]` |
+| `GET`/`POST /cleanPack/getSockAddr` | gateway address | `data.addr_list:[{ip,port}]` |
 | `POST /cleanPack/sync` | device attrs + OTA check | `{"code":0,…,"hasUpdateFile":0}` |
 | `POST /cleanPack/response` | command ACK | `{"code":0}` |
 | `POST /cleanPack/uploadEvents` | telemetry → `proto::dispatch` | `{"code":0}` |
@@ -394,6 +394,10 @@ Every subsequent channel-A request carries `Cookie: cookies=<value>`. Lookup rul
   is exactly the documented signal that makes the device re-register [PROTOCOL §B];
 * absent cookie on an endpoint that should have one → serve it anyway, log a `WARN`.
   Being strict here would be the fastest way to build a re-register loop.
+* a `Cookie:` header that is present but **empty** — exactly what a robot sends while
+  it still holds the empty session the phase-1 catch-all gave it — counts as unknown
+  and gets `code:102`, so the robot re-registers and picks up a real session on its
+  next request. No re-home, no power cycle.
 
 Sessions are persisted, so a server restart does **not** disturb a connected robot.
 
@@ -671,13 +675,17 @@ took both writes, joined the LAN and dialed the gateway.
 to do — valuable before a single endpoint is implemented.
 
 ### Phase 2 — Channel A core
-- [ ] Lenient form parser + unit tests over every documented body template (§9.1)
-- [ ] `register`: session/cookie minting within the device's buffer limits, persisted
-- [ ] Cookie lookup middleware; unknown/expired cookie → `code:102`
-- [ ] `getSockAddr` with configured address, and peer-based auto-detect
-- [ ] `sync` records device attributes; version check answers "no update", both shapes
+- [x] Lenient form parser + unit tests over every documented body template (§9.1)
+- [x] `register`: session/cookie minting within the device's buffer limits, persisted
+- [x] Cookie lookup middleware; unknown/expired cookie → `code:102`
+- [x] `getSockAddr` with configured address, and peer-based auto-detect
+- [x] `sync` records device attributes; version check answers "no update", both shapes
 
 **Done when:** the robot stops re-registering and opens a TCP connection to the gateway.
+**Status (2026-10-07):** implemented and covered by unit + in-process HTTP tests. The
+robot has not made a channel-A request since, so nothing is live-verified yet; the
+next request it makes (a bind, a sync, an upload, or an empty-cookie nudge) exercises
+the whole flow, and the session it gets is then visible in the `sessions` table.
 
 ### Phase 3 — Channel B alive
 - [x] `#\t#` frame codec with unit tests: partial, back-to-back, split delimiter, oversize

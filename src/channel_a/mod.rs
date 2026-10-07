@@ -1,6 +1,14 @@
 //! Channel A — the `cleanPack/*` HTTP surface (doc/PLAN.md §9).
 //!
-//! Phase 1 implements only the catch-all: every request is tapped in full, persisted,
+//! Phase 2 implements the endpoints the robot needs to hold a session: `register`
+//! (mint a session + cookie), `getSockAddr` (the gateway's address — the robot's
+//! fallback when its `ip_port.json` is missing), `sync` and the version check. Every
+//! request also passes the session gate (§9.2): a known cookie proceeds, a missing
+//! one is served with a warning, and a present-but-stale one gets `code:102`, which
+//! is the documented way to make the robot re-register — including a robot that
+//! paired against the phase-1 catch-all and still has an empty session.
+//!
+//! Everything else still falls through to the catch-all: tapped in full, persisted,
 //! warned about, and answered with the benign `{"code":0}` envelope. That is
 //! deliberately load-bearing — the documented endpoint list is not claimed to be
 //! exhaustive, and a 404 where the device expected an answer can stall it, while an
@@ -15,13 +23,18 @@ use axum::extract::{ConnectInfo, Request, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
+use axum::routing::{get, post};
 use serde_json::{Map, Value, json};
 use tokio::net::TcpListener;
 
 use crate::AppState;
 use crate::db::now_ms;
 use crate::error::Result;
+use crate::session::{self, Credential};
 use crate::wire::{Direction, Record, Recorded};
+
+pub mod form;
+mod handlers;
 
 /// The device uploads LZ4 maps through `uploadEvents`, so bodies are not small; this
 /// is a sanity bound, not a policy.
@@ -29,7 +42,17 @@ const MAX_BODY_BYTES: usize = 16 * 1024 * 1024;
 
 pub fn router(state: AppState) -> Router {
     Router::new()
+        .route("/", get(handlers::sync::version_check))
+        .route("/cleanPack/register", post(handlers::register::register))
+        .route(
+            "/cleanPack/getSockAddr",
+            get(handlers::sock_addr::sock_addr).post(handlers::sock_addr::sock_addr),
+        )
+        .route("/cleanPack/sync", post(handlers::sync::sync))
         .fallback(catch_all)
+        // The gate sits inside the tap (the last layer added runs first), so the
+        // `code:102` answers it produces are traced like every other response.
+        .layer(middleware::from_fn_with_state(state.clone(), cookie_gate))
         .layer(middleware::from_fn_with_state(state.clone(), tap_traffic))
         .with_state(state)
 }
@@ -114,6 +137,42 @@ async fn tap_traffic(State(state): State<AppState>, request: Request, next: Next
     state.tap.record(record);
 
     Response::from_parts(parts, Body::from(bytes))
+}
+
+/// The session gate — doc/PLAN.md §9.2. `register` is exempt: it is what mints the
+/// session in the first place.
+async fn cookie_gate(State(state): State<AppState>, request: Request, next: Next) -> Response {
+    let path = request.uri().path();
+    if path == "/cleanPack/register" {
+        return next.run(request).await;
+    }
+
+    let check = session::check(
+        &state.db,
+        request.headers(),
+        state.config.registration.session_ttl_secs,
+    )
+    .await;
+    match check {
+        Ok(Credential::Valid(_sn)) => next.run(request).await,
+        Ok(Credential::Absent) => {
+            tracing::warn!(%path, "channel-A request without a Cookie header; serving it anyway");
+            next.run(request).await
+        }
+        Ok(Credential::Stale) => {
+            tracing::info!(
+                %path,
+                "empty or unknown channel-A cookie; answering code:102 to make the device re-register"
+            );
+            handlers::sid_expired()
+        }
+        Err(error) => {
+            // A database hiccup must not stall the robot: serve the request and let
+            // the handler deal with its own persistence.
+            tracing::error!(%error, %path, "session lookup failed; serving the request anyway");
+            next.run(request).await
+        }
+    }
 }
 
 /// Accept anything, remember it, answer harmlessly.

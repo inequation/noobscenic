@@ -80,3 +80,15 @@ replaces its own older entry.
 
 It is deliberately not the database: the `devices` table remembers what has been
 seen, while the registry only holds what is live and addressable.
+
+## Session gate
+
+The check every channel-A request passes through except `register`
+(`channel_a::cookie_gate`, doc/PLAN.md §9.2). It turns the robot's
+`Cookie: cookies=<sid>` header into a decision: a known cookie proceeds; a *missing*
+header is served with a warning, because refusing it is the fastest way into a
+re-register loop; and a header that is present but empty, or names an unknown or
+expired session, gets `code:102` — "your sid expired" — which makes the robot
+re-run `register` and pick up a fresh session. The empty case is what lets a robot
+that paired against the phase-1 catch-all (and therefore never got a session)
+upgrade itself to a real one on its next request, with no re-home and no reboot.

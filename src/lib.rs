@@ -8,6 +8,7 @@ pub mod channel_b;
 pub mod config;
 pub mod db;
 pub mod error;
+pub mod session;
 pub mod wire;
 
 use std::sync::Arc;
