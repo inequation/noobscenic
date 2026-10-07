@@ -11,6 +11,7 @@ use axum::Router;
 use axum::body::Body;
 use axum::extract::ConnectInfo;
 use axum::http::{Request, StatusCode, header};
+use base64::Engine as _;
 use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -20,7 +21,7 @@ use tower::ServiceExt;
 
 use noobscenic::AppState;
 use noobscenic::channel_b::codec::{self, Decoder};
-use noobscenic::config::{Config, Logging, Wire};
+use noobscenic::config::{Config, Gateway, Logging, Wire};
 
 const SN: &str = "LSLDSM7PROTEST02";
 
@@ -33,8 +34,16 @@ fn scratch(tag: &str) -> PathBuf {
 /// A live gateway, with the wire tap **on**: the queue's `trace_ref` contract is
 /// half of what these tests check.
 async fn gateway(tag: &str) -> (SocketAddr, AppState, JoinHandle<()>) {
+    gateway_with(tag, false).await
+}
+
+async fn gateway_with(tag: &str, encrypt_commands: bool) -> (SocketAddr, AppState, JoinHandle<()>) {
     let config = Config {
         data_dir: scratch(tag),
+        gateway: Gateway {
+            encrypt_commands,
+            ..Gateway::default()
+        },
         logging: Logging {
             file_enabled: false,
             wire: Wire {
@@ -129,7 +138,11 @@ async fn call(app: &Router, request: Request<Body>) -> (StatusCode, Value) {
 }
 
 async fn enqueue(state: &AppState, info_type: i64, payload: &str) -> i64 {
-    noobscenic::db::queries::insert_command(&state.db, SN, info_type, payload, 0)
+    enqueue_with(state, info_type, payload, 0).await
+}
+
+async fn enqueue_with(state: &AppState, info_type: i64, payload: &str, encrypt: i64) -> i64 {
+    noobscenic::db::queries::insert_command(&state.db, SN, info_type, payload, encrypt)
         .await
         .expect("enqueue")
 }
@@ -284,6 +297,106 @@ async fn a_response_acks_the_newest_sent_command_and_a_mismatch_acks_nothing() {
         .await
         .expect("count");
     assert_eq!(acks, 1, "an unmatched response invented an ACK");
+
+    server.abort();
+    cleanup(state).await;
+}
+
+/// AES-128-ECB decrypt, the way the robot does it: padding disabled, so the
+/// plaintext comes back with its trailing space padding still attached.
+fn decrypt(ciphertext_b64: &str, key: &str) -> Value {
+    use aes::Aes128;
+    use aes::cipher::{Array, BlockCipherDecrypt, KeyInit};
+
+    let cipher =
+        Aes128::new_from_slice(key.as_bytes().get(..16).expect("16-byte key")).expect("cipher");
+    let mut ciphertext = base64::engine::general_purpose::STANDARD
+        .decode(ciphertext_b64)
+        .expect("base64 ciphertext");
+    assert_eq!(ciphertext.len() % 16, 0, "ECB needs whole blocks");
+    for chunk in ciphertext.as_chunks_mut::<16>().0 {
+        let mut block = Array::from(*chunk);
+        cipher.decrypt_block(&mut block);
+        chunk.copy_from_slice(&block);
+    }
+    while ciphertext.last() == Some(&b' ') {
+        ciphertext.pop();
+    }
+    serde_json::from_slice(&ciphertext).expect("plaintext JSON")
+}
+
+#[tokio::test]
+async fn an_encrypt_1_command_goes_out_as_aes_128_ecb() {
+    let (addr, state, server) = gateway_with("enc", true).await;
+    let (mut sock, mut decoder) = connect(addr).await;
+
+    let key = "abcdefghijklmnopqrstuvwxyz012345";
+    // Sessions reference `devices(sn)`: in production the register/sync flow has
+    // long since adopted the device, but this fake robot skipped that.
+    noobscenic::db::queries::upsert_device_seen(&state.db, SN, None)
+        .await
+        .expect("device");
+    noobscenic::db::queries::insert_session(&state.db, SN, key, "cookie-enc", None)
+        .await
+        .expect("session");
+
+    let id = enqueue_with(&state, 21018, "{}", 1).await;
+    noobscenic::commands::drain_once(&state).await;
+
+    let frames = read_frames(&mut sock, &mut decoder, 1).await;
+    let frame: Value = serde_json::from_slice(&frames[0]).expect("frame is JSON");
+    assert!(frame["encrypt"].is_i64(), "encrypt must be an integer");
+    assert_eq!(frame["encrypt"].as_i64(), Some(1));
+    let ciphertext = frame["data"]
+        .as_str()
+        .expect("an encrypt:1 frame carries base64 text");
+
+    let message = decrypt(ciphertext, key);
+    assert_eq!(message["infoType"], 21018);
+    assert_eq!(message["data"], json!({}));
+    assert!(
+        message["dInfo"]["ts"].is_string(),
+        "dInfo must survive the encryption"
+    );
+    assert_eq!(message["dInfo"]["userId"], "noobscenic");
+
+    let (row_state, _, trace_ref, _) = command_row(&state, id).await;
+    assert_eq!(row_state, "sent");
+    assert!(trace_ref.is_some());
+
+    server.abort();
+    cleanup(state).await;
+}
+
+#[tokio::test]
+async fn an_encrypt_1_row_fails_while_the_flag_is_off() {
+    let (addr, state, server) = gateway("enc-off").await;
+    let (mut sock, decoder) = connect(addr).await;
+
+    let id = enqueue_with(&state, 21018, "{}", 1).await;
+    noobscenic::commands::drain_once(&state).await;
+
+    let (row_state, sent_ms, _, _) = command_row(&state, id).await;
+    assert_eq!(row_state, "failed");
+    assert!(sent_ms.is_none(), "a failed row must not look sent");
+    let error: Option<String> = sqlx::query_scalar("SELECT error FROM commands WHERE id = ?")
+        .bind(id)
+        .fetch_one(&state.db)
+        .await
+        .expect("error column");
+    assert!(
+        error.unwrap_or_default().contains("encrypt_commands"),
+        "the failure must name the config flag"
+    );
+
+    let mut buffer = [0u8; 64];
+    assert!(
+        timeout(Duration::from_millis(300), sock.read(&mut buffer))
+            .await
+            .is_err(),
+        "a plaintext downgrade must never be sent"
+    );
+    drop(decoder);
 
     server.abort();
     cleanup(state).await;

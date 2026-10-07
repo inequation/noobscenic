@@ -483,6 +483,13 @@ we want to prove the path works: `base64(AES-128-ECB(inner message, session_key[
 — the device does not strip padding, it NUL-terminates and hands the buffer to jsoncpp,
 so trailing spaces are safe and trailing NULs are not [PROTOCOL §B].
 
+**Verified live (2026-10-07):** with `gateway.encrypt_commands` on, a `21018`
+enqueued with `encrypt:1` went out as `{"data":"<base64 ciphertext>","encrypt":1}`
+and the robot decrypted it, handled it and replied — the space-padded,
+padding-disabled AES-128-ECB guess is right. With the flag off the same row fails
+with a visible error and nothing is sent, so there is no silent plaintext downgrade
+(`tests/control.rs` covers both).
+
 Queue semantics: `commands` rows are created `pending`; the registry pushes them when
 the device is online and marks them `sent`; rows older than `command_ttl_secs` become
 `expired` rather than firing hours later when the robot next connects.
@@ -759,7 +766,7 @@ three replies were `"message":"ok"` and every row was ACKed within a second. A
 
 ### Phase 6 — Polish
 - [x] Binding state machine, driven from what the traces actually show
-- [ ] `encrypt:1` (AES-128-ECB, space padding) behind the config flag
+- [x] `encrypt:1` (AES-128-ECB, space padding) behind the config flag
 - [ ] `noobscenic trace` renderer and `--replay` regression mode
 - [ ] Optional TLS for a DNS-override deployment
 - [ ] Operator README: re-home, run, back out

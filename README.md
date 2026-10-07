@@ -12,9 +12,9 @@ Protocol analysis and reverse-engineering artifacts live in [`doc/`](doc/).
 Status: phases 0–5 are done and phase 6 is in progress — the robot is re-homed,
 channel A runs the real register/session/sync flow, channel B both delivers commands
 and takes telemetry, decoded maps, assembled clean paths and an ACK-correlated
-command queue (console and one-shot CLI) land in SQLite with trace references, and
-the preBind is now recorded as a proper binding state; configurable encryption and
-the operator guide are next.
+command queue (console and one-shot CLI) land in SQLite with trace references; the
+preBind is recorded as a proper binding state and AES command encryption is
+live-verified behind its config flag; the operator guide is next.
 
 ## Re-homing a robot
 
