@@ -9,21 +9,24 @@ keeps working without ever talking to Proscenic.
 
 Protocol analysis and reverse-engineering artifacts live in [`doc/`](doc/).
 
-Status: phases 0–5 are done and phase 6's essential items are in — the robot is
-re-homed, channel A runs the real register/session/sync flow, channel B both delivers
-commands and takes telemetry, decoded maps, assembled clean paths and an
-ACK-correlated command queue (console and one-shot CLI) land in SQLite with trace
-references, the preBind is recorded as a binding state and AES command encryption is
-live-verified behind its config flag; the trace viewer, replay mode and TLS are
-deliberately postponed (see "Not yet implemented").
+Status:
+- ☑️ re-homing (pairing) works,
+- ☑️ channel A (REST) real register/session/sync flow works,
+- ☑️ channel B (real-time) both delivers commands and takes telemetry,
+- ☑️ decoded maps, assembled clean paths,
+- ☑️ ACK-correlated command queue (console and one-shot CLI),
+- ☑️ SQLite persistent storage with trace references,
+- ☑️ AES command encryption is configurable;
+- ⬜ no GUI for controlling the robot yet,
+- ⬜ the trace viewer, replay mode and TLS are deliberately postponed (see "Not yet implemented").
 
 ## Operator guide
 
 ### What you need
 
-- A machine that stays on the same LAN as the robot and keeps the same address
-  between sessions: a DHCP reservation, a static IP, or a DNS name. The robot is
-  configured with this address and will keep dialing it.
+- A machine (server) that is reachable from the robot's LAN and keeps the same
+  address between sessions: a DHCP reservation, a static IP, or a DNS name. The
+  robot is configured with this address and will keep dialing it.
 - Rust (stable) to build the server; Python 3, standard library only, for the
   re-home tool.
 - TCP ports **8080** (channel A) and **8081** (channel B) reachable from the robot.
@@ -48,10 +51,11 @@ working directory; unknown keys are rejected). The interesting ones:
 `gateway.encrypt_commands` (allows `encrypt:1` command encryption),
 `logging.wire` (what gets captured), `http.bind` / `gateway.bind`, `console.enabled`.
 
-### 2. Re-home the robot
+### 2. Re-home (pair) the robot
 
 1. Start the server first (above), then put the robot into pairing mode and join
-   this machine to its own open Wi-Fi — the network name begins with `Proscenic-`.
+   this machine to the robot's own open Wi-Fi — the network name begins with
+   `Proscenic-`.
 
 2. Run:
 
