@@ -41,10 +41,17 @@ pub fn spawn(state: AppState, shutdown: watch::Sender<()>) {
                         println!("no devices online");
                     }
                     for device in online {
-                        println!("{}  {}  since {}", device.conn_id, device.peer, device.connected_ms);
+                        println!(
+                            "{}  {}  since {}",
+                            device.conn_id, device.peer, device.connected_ms
+                        );
                     }
                 }
-                Command::Send { sn, info_type, data } => match state.registry.get(&sn) {
+                Command::Send {
+                    sn,
+                    info_type,
+                    data,
+                } => match state.registry.get(&sn) {
                     Some(handle) => {
                         let frame = json!({"infoType": info_type, "encrypt": 0, "data": data});
                         match handle.tx.send(frame).await {
@@ -70,7 +77,11 @@ enum Command {
     Empty,
     Help,
     Devices,
-    Send { sn: String, info_type: i64, data: Value },
+    Send {
+        sn: String,
+        info_type: i64,
+        data: Value,
+    },
     Quit,
     Unknown(String),
 }
@@ -84,7 +95,8 @@ fn parse(line: &str) -> Command {
         "devices" => Command::Devices,
         "quit" => Command::Quit,
         "send" => {
-            let (Some(sn), Some(info_type)) = (parts.next(), parts.next().and_then(|t| t.parse().ok()))
+            let (Some(sn), Some(info_type)) =
+                (parts.next(), parts.next().and_then(|t| t.parse().ok()))
             else {
                 return Command::Unknown(line.to_string());
             };
@@ -95,7 +107,11 @@ fn parse(line: &str) -> Command {
                     Err(_) => return Command::Unknown(line.to_string()),
                 },
             };
-            Command::Send { sn: sn.to_string(), info_type, data }
+            Command::Send {
+                sn: sn.to_string(),
+                info_type,
+                data,
+            }
         }
         _ => Command::Unknown(line.to_string()),
     }
@@ -121,14 +137,24 @@ mod tests {
     fn a_missing_payload_defaults_to_an_empty_object() {
         assert_eq!(
             parse("send SN 20001"),
-            Command::Send { sn: "SN".into(), info_type: 20001, data: json!({}) }
+            Command::Send {
+                sn: "SN".into(),
+                info_type: 20001,
+                data: json!({})
+            }
         );
     }
 
     #[test]
     fn malformed_sends_are_reported_not_guessed() {
-        assert_eq!(parse("send SN not-a-number {}"), Command::Unknown("send SN not-a-number {}".into()));
-        assert_eq!(parse("send SN 20001 {oops"), Command::Unknown("send SN 20001 {oops".into()));
+        assert_eq!(
+            parse("send SN not-a-number {}"),
+            Command::Unknown("send SN not-a-number {}".into())
+        );
+        assert_eq!(
+            parse("send SN 20001 {oops"),
+            Command::Unknown("send SN 20001 {oops".into())
+        );
         assert_eq!(parse("send SN"), Command::Unknown("send SN".into()));
     }
 

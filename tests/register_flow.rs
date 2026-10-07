@@ -13,7 +13,7 @@ use serde_json::Value;
 use tower::ServiceExt;
 
 use noobscenic::AppState;
-use noobscenic::config::{AdvertisedAddr, Config, Gateway, Logging, Wire};
+use noobscenic::config::{AdvertisedAddr, Config, Gateway, Logging, Registration, Wire};
 
 const PEER: SocketAddr =
     SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 45678);
@@ -25,14 +25,31 @@ fn scratch(tag: &str) -> PathBuf {
 }
 
 async fn setup(tag: &str) -> (AppState, Router) {
+    setup_with(
+        tag,
+        Some(vec![AdvertisedAddr {
+            ip: "192.168.1.208".into(),
+            port: 8081,
+        }]),
+        None,
+    )
+    .await
+}
+
+async fn setup_with(
+    tag: &str,
+    advertise: Option<Vec<AdvertisedAddr>>,
+    session_ttl_secs: Option<u64>,
+) -> (AppState, Router) {
     let config = Config {
         data_dir: scratch(tag),
         gateway: Gateway {
-            advertise: Some(vec![AdvertisedAddr {
-                ip: "192.168.1.208".into(),
-                port: 8081,
-            }]),
+            advertise,
             ..Gateway::default()
+        },
+        registration: Registration {
+            session_ttl_secs,
+            ..Registration::default()
         },
         logging: Logging {
             file_enabled: false,
@@ -227,6 +244,80 @@ async fn get_sock_addr_returns_the_configured_gateway() {
     assert_eq!(body["code"], 0);
     assert_eq!(body["data"]["addr_list"][0]["ip"], "192.168.1.208");
     assert_eq!(body["data"]["addr_list"][0]["port"], 8081);
+
+    cleanup(state).await;
+}
+
+#[tokio::test]
+async fn get_sock_addr_auto_detects_the_local_address_when_unconfigured() {
+    let (state, app) = setup_with("sockaddr-auto", None, None).await;
+
+    // No cookie either: the gate serves a missing header, so this is exactly the
+    // path a robot takes when its ip_port.json went missing and it comes asking.
+    let (_, body) = call(
+        &app,
+        request("GET", "/cleanPack/getSockAddr?version=1&sn=SN6", "", None),
+    )
+    .await;
+    assert_eq!(body["code"], 0);
+    assert_eq!(
+        body["data"]["addr_list"][0]["ip"], "127.0.0.1",
+        "the local address facing the requesting peer"
+    );
+    assert_eq!(
+        body["data"]["addr_list"][0]["port"], 8081,
+        "the gateway's configured port"
+    );
+
+    cleanup(state).await;
+}
+
+#[tokio::test]
+async fn an_expired_session_gets_code_102_and_registration_recovers() {
+    let (state, app) = setup_with("ttl", None, Some(60)).await;
+    let (_, registered) = call(&app, request("POST", "/cleanPack/register", "sn=SN7", None)).await;
+    let cookie = registered["data"]["cookies"]
+        .as_str()
+        .expect("cookies")
+        .to_string();
+
+    // Age the session past its TTL: the next request must be told to re-register.
+    sqlx::query("UPDATE sessions SET created_ms = created_ms - 600000 WHERE cookie = ?")
+        .bind(&cookie)
+        .execute(&state.db)
+        .await
+        .expect("age the session");
+    let (_, body) = call(
+        &app,
+        request(
+            "POST",
+            "/cleanPack/sync",
+            "sn=SN7",
+            Some(&format!("cookies={cookie}")),
+        ),
+    )
+    .await;
+    assert_eq!(body["code"], 102, "an expired sid must force a re-register");
+
+    // ...and the device recovering the documented way — register again, retry with
+    // the new cookie — must be served.
+    let (_, again) = call(&app, request("POST", "/cleanPack/register", "sn=SN7", None)).await;
+    let fresh = again["data"]["cookies"]
+        .as_str()
+        .expect("fresh cookie")
+        .to_string();
+    assert_ne!(fresh, cookie);
+    let (_, body) = call(
+        &app,
+        request(
+            "POST",
+            "/cleanPack/sync",
+            "sn=SN7",
+            Some(&format!("cookies={fresh}")),
+        ),
+    )
+    .await;
+    assert_eq!(body["code"], 0);
 
     cleanup(state).await;
 }
