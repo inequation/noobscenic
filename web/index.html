@@ -22,6 +22,8 @@
   canvas.panning { cursor: grabbing; }
   select, button { font: inherit; padding: 8px 10px; border-radius: 6px;
                    border: 1px solid #3a3f48; background: #262a32; color: inherit; }
+  [hidden] { display: none !important; }
+  footer .bar { display: flex; justify-content: center; gap: 8px; }
   select { max-width: 65vw; }
   button { min-width: 88px; }
   button.big { min-width: 64px; font-size: 22px; line-height: 1; padding: 10px 12px; }
@@ -49,6 +51,10 @@
   #rc-left    { grid-area: 1 / 3 / 3 / 4; }
   #remote-close { position: absolute; top: 6px; right: 8px; min-width: 0;
                   font-size: 14px; padding: 4px 8px; }
+  #zone-types { display: flex; align-items: center; gap: 8px; padding: 6px 10px;
+                background: #1f2229; border-bottom: 1px solid #2c313a; }
+  #zone-hint { min-width: 0; font-size: 12px; color: #9aa0aa; overflow: hidden;
+               white-space: nowrap; text-overflow: ellipsis; }
   #sent { min-width: 0; font-size: 13px; color: #9aa0aa;
           white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 </style>
@@ -79,11 +85,34 @@
     <button id="rc-left" title="Rotate left">↩️</button>
   </div>
 </section>
+<div id="zone-types" hidden>
+  <select id="zone-type" title="Zone type">
+    <option value="noGo">No-go</option>
+    <option value="noSweep">No-sweep</option>
+    <option value="noMop">No-mop</option>
+    <option value="clean">Clean zone</option>
+    <option value="deep">Deep clean</option>
+  </select>
+  <span id="zone-hint">drag to draw · tap to select · right-drag or two fingers to pan</span>
+</div>
 <main><canvas id="map" width="1" height="1"></canvas></main>
 <footer>
-  <button id="charge" class="big" title="Charge">⚡</button>
-  <button id="primary" class="big" title="Unknown state" disabled>▶️</button>
-  <button id="zones" class="big" title="Zone cleaning" disabled>🗺️</button>
+  <div id="bar-main" class="bar">
+    <button id="charge" class="big" title="Charge">⚡</button>
+    <button id="primary" class="big" title="Unknown state" disabled>▶️</button>
+    <button id="zones" class="big" title="Zone cleaning">🗺️</button>
+  </div>
+  <div id="bar-zones" class="bar" hidden>
+    <button id="zone-exit" class="big" title="Leave zones">❌</button>
+    <button id="zone-play" class="big" title="Clean selected">▶️</button>
+    <button id="zone-edit" class="big" title="Edit zones">✏️</button>
+  </div>
+  <div id="bar-edit" class="bar" hidden>
+    <button id="edit-cancel" class="big" title="Cancel editing">❌</button>
+    <button id="edit-undo" class="big" title="Undo">↶️</button>
+    <button id="edit-delete" class="big" title="Delete the selected zone">🗑️</button>
+    <button id="edit-save" class="big" title="Save zones">💾</button>
+  </div>
 </footer>
 <script>
 "use strict";
@@ -123,10 +152,50 @@ let rcHolding = null;
 let rcSendTimer = null;
 let rcActiveUntil = 0; // status polls speed up while control frames are recent
 
+// Zones (doc/PLAN.md §20.5). Picker mode selects stored regions to clean; edit mode
+// draws and adjusts rectangles. Edits are blocked while a clean runs (server-enforced,
+// and the pencil is disabled here too).
+const TYPE_FIELDS = {
+  noGo: { active: "forbid", forbidType: "all" },
+  noSweep: { active: "forbid", forbidType: "sweep" },
+  noMop: { active: "forbid", forbidType: "mop" },
+  clean: { active: "normal" },
+  deep: { active: "depth" },
+};
+const TYPE_COLOURS = {
+  noGo: "rgba(220,60,60,0.35)",
+  noSweep: "rgba(230,160,30,0.35)",
+  noMop: "rgba(60,120,230,0.35)",
+  clean: "rgba(60,180,90,0.35)",
+  deep: "rgba(150,80,220,0.35)",
+};
+let zonesView = false;
+let zonesEdit = false;
+let zoneState = { version: 0, zones: [], cleaning: false };
+let zoneBaseline = null;   // the loaded list, for cancel
+let zoneSelected = new Set();
+let zoneEditIndex = -1;
+let zoneUndo = [];
+let zoneDraft = null;      // rectangle being dragged out: {from:[mm,mm], to:[mm,mm]}
+let zoneDrag = null;       // moving a zone or one of its vertices
+let zonePending = null;    // which zone the pointer went down on (picker tap)
+
 async function json(url, options) {
   const response = await fetch(url, options);
-  if (!response.ok) throw new Error(url + ": " + response.status);
+  if (!response.ok) {
+    let detail = String(response.status);
+    try {
+      detail = (await response.json()).error || detail;
+    } catch (ignored) {
+      // not a JSON error body; keep the status
+    }
+    throw new Error(detail);
+  }
   return response.json();
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function api(suffix, options) {
@@ -180,6 +249,15 @@ async function init() {
     menuToggle.textContent = open ? "⦀" : "☰";
     if (open) menu.style.top = header.offsetHeight + "px";
   };
+  document.getElementById("zones").onclick = openZones;
+  document.getElementById("zone-exit").onclick = closeZones;
+  document.getElementById("zone-edit").onclick = startEdit;
+  document.getElementById("edit-cancel").onclick = cancelEdit;
+  document.getElementById("edit-undo").onclick = undoZones;
+  document.getElementById("edit-delete").onclick = deleteSelectedZone;
+  document.getElementById("edit-save").onclick = saveZones;
+  document.getElementById("zone-play").onclick = cleanSelectedZones;
+  document.getElementById("zone-type").onchange = retypeSelectedZone;
 
   if (!robotSelect.value) {
     statusLine.textContent = "no robots seen yet";
@@ -204,6 +282,17 @@ async function tick() {
     const summary = await api("/summary");
     statusLine.textContent = describe(summary);
     updateButtons(summary);
+    if (zonesView) {
+      // Keep the guard and the list fresh, but never clobber local edits in progress.
+      const data = await json(zonesUrl());
+      if (!zonesEdit) {
+        zoneState = data;
+      } else {
+        zoneState.cleaning = data.cleaning;
+      }
+      updateBars();
+      draw();
+    }
     const map = summary.map;
     if (map && map.map_id != null) {
       const rev = map.map_id + ":" + map.received_ms;
@@ -301,6 +390,272 @@ function holdStop(sendZero) {
   if (sendZero && wasHolding) sendControl(4001);
 }
 
+// ── Zones ────────────────────────────────────────────────────────────────────────
+
+function zonesUrl(suffix = "") {
+  return "/api/robot/" + encodeURIComponent(robot) + "/zones" + suffix;
+}
+
+async function openZones() {
+  zonesView = true;
+  zonesEdit = false;
+  zoneSelected.clear();
+  zoneEditIndex = -1;
+  updateBars();
+  await loadZones(true);
+}
+
+function closeZones() {
+  zonesView = false;
+  zonesEdit = false;
+  zoneSelected.clear();
+  zoneEditIndex = -1;
+  zoneDraft = null;
+  updateBars();
+  draw();
+}
+
+/// Fetch the cached list, and with `refresh` also ask the robot for a fresh one
+/// (21004) and wait for the reply to land in the cache.
+async function loadZones(refresh) {
+  try {
+    zoneState = await json(zonesUrl());
+    draw();
+    updateBars();
+    if (!refresh) return;
+    const seen = zoneState.read_ms || 0;
+    await fetch(zonesUrl("/refresh"), { method: "POST" });
+    for (let attempt = 0; attempt < 8; attempt++) {
+      await sleep(750);
+      const data = await json(zonesUrl());
+      if ((data.read_ms || 0) > seen || attempt === 7) {
+        zoneState = data;
+        draw();
+        updateBars();
+        return;
+      }
+    }
+  } catch (error) {
+    statusLine.textContent = "zones: " + error.message;
+  }
+}
+
+function updateBars() {
+  document.getElementById("bar-main").hidden = zonesView;
+  document.getElementById("bar-zones").hidden = !zonesView || zonesEdit;
+  document.getElementById("bar-edit").hidden = !zonesEdit;
+  document.getElementById("zone-types").hidden = !zonesEdit;
+  const play = document.getElementById("zone-play");
+  play.disabled = zoneState.cleaning || zoneSelected.size === 0;
+  play.title = zoneState.cleaning
+    ? "A clean is running"
+    : "Clean " + zoneSelected.size + " selected zone(s)";
+  const edit = document.getElementById("zone-edit");
+  edit.disabled = zoneState.cleaning;
+  edit.title = zoneState.cleaning ? "A clean is running; editing is blocked" : "Edit zones";
+  document.getElementById("edit-delete").disabled = zoneEditIndex < 0;
+  document.getElementById("edit-undo").disabled = zoneUndo.length === 0;
+}
+
+function snapshotZones() {
+  zoneUndo.push(JSON.stringify(zoneState.zones));
+  if (zoneUndo.length > 20) zoneUndo.shift();
+}
+
+function startEdit() {
+  zonesEdit = true;
+  zoneSelected.clear();
+  zoneEditIndex = -1;
+  zoneUndo = [];
+  zoneBaseline = JSON.stringify(zoneState.zones);
+  updateBars();
+  draw();
+}
+
+function cancelEdit() {
+  if (zoneBaseline !== null) zoneState.zones = JSON.parse(zoneBaseline);
+  zonesEdit = false;
+  zoneEditIndex = -1;
+  zoneDraft = null;
+  updateBars();
+  draw();
+}
+
+function undoZones() {
+  const previous = zoneUndo.pop();
+  if (previous === undefined) return;
+  zoneState.zones = JSON.parse(previous);
+  zoneEditIndex = -1;
+  updateBars();
+  draw();
+}
+
+function deleteSelectedZone() {
+  if (zoneEditIndex < 0) return;
+  snapshotZones();
+  zoneState.zones.splice(zoneEditIndex, 1);
+  zoneEditIndex = -1;
+  updateBars();
+  draw();
+}
+
+function retypeSelectedZone() {
+  if (zoneEditIndex < 0) return;
+  snapshotZones();
+  Object.assign(zoneState.zones[zoneEditIndex], TYPE_FIELDS[document.getElementById("zone-type").value]);
+  draw();
+}
+
+async function saveZones() {
+  try {
+    const reply = await json(zonesUrl(), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ version: zoneState.version, value: zoneState.zones }),
+    });
+    statusLine.textContent = "zones saved; confirming with the robot…";
+    zonesEdit = false;
+    zoneState.version = reply.version;
+    updateBars();
+    await loadZones(true);
+    statusLine.textContent = "zones saved";
+  } catch (error) {
+    statusLine.textContent = "zone save refused: " + error.message;
+  }
+}
+
+/// `21023` with the picked stored region ids. Whether that alone starts the job is
+/// unestablished (FUNC_MAP §6.2), so if the robot is not cleaning a few seconds later
+/// we follow with `smartClean`, which starts the job with the active regions set —
+/// the pairing the docs describe.
+async function cleanSelectedZones() {
+  const ids = [...zoneSelected].map((index) => zoneState.zones[index]).filter(Boolean)
+    .map((zone) => Number(zone.id)).filter((id) => Number.isFinite(id));
+  if (!ids.length) return;
+  try {
+    await json(zonesUrl("/clean"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids }),
+    });
+    statusLine.textContent = "zone clean queued (" + ids.join(", ") + ")";
+    closeZones();
+    setTimeout(async () => {
+      try {
+        const summary = await json("/api/robot/" + encodeURIComponent(robot) + "/summary");
+        const mode = (summary.status || {}).mode || "";
+        if (!["sweep", "backcharge", "FindChargerAndWash"].includes(mode)) {
+          sendCommand("smartClean");
+        }
+      } catch (error) {
+        statusLine.textContent = "zone clean check failed: " + error.message;
+      }
+    }, 3000);
+  } catch (error) {
+    statusLine.textContent = "zone clean refused: " + error.message;
+  }
+}
+
+function zoneType(zone) {
+  if (zone.active === "depth") return "deep";
+  if (zone.active === "forbid") {
+    if (zone.forbidType === "sweep") return "noSweep";
+    if (zone.forbidType === "mop") return "noMop";
+    return "noGo";
+  }
+  return "clean";
+}
+
+/// Only normal/deep zones are clean *targets*; forbid zones are obstacles
+/// (FUNC_MAP §6.1: `-4` means "stored non-forbid regions only").
+function cleanableZone(zone) {
+  const type = zoneType(zone);
+  return type === "clean" || type === "deep";
+}
+
+function zonePoints(zone) {
+  return (zone.vertexs || []).map(([x, y]) => toPixel(x / 1000, y / 1000));
+}
+
+/// Canvas pixel → millimetres in the robot's world frame (the inverse of toPixel).
+function fromPixel(px, py) {
+  const resolution = (base.resolution || 0.05) * 1000;
+  const x0 = (base.x_min || 0) * 1000;
+  const y0 = (base.y_min || 0) * 1000;
+  const col = px - 0.5;
+  const row = base.height - 1 - (py - 0.5);
+  return [
+    Math.round(col * resolution + x0 + resolution),
+    Math.round(row * resolution + y0 + resolution),
+  ];
+}
+
+function pointerMillimetres(event) {
+  const rect = canvas.getBoundingClientRect();
+  return fromPixel(event.clientX - rect.left, event.clientY - rect.top);
+}
+
+function pointInPolygon([x, y], vertices) {
+  let inside = false;
+  for (let i = 0, j = vertices.length - 1; i < vertices.length; j = i++) {
+    const [xi, yi] = vertices[i];
+    const [xj, yj] = vertices[j];
+    if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+function zoneAt(point) {
+  for (let index = zoneState.zones.length - 1; index >= 0; index--) {
+    if (pointInPolygon(point, zoneState.zones[index].vertexs || [])) return index;
+  }
+  return -1;
+}
+
+/// The zone vertex under the pointer, in canvas pixels (fat targets for fingers).
+function vertexAt(event) {
+  if (zoneEditIndex < 0) return -1;
+  const rect = canvas.getBoundingClientRect();
+  const x = event.clientX - rect.left;
+  const y = event.clientY - rect.top;
+  const vertices = zoneState.zones[zoneEditIndex].vertexs || [];
+  for (let index = 0; index < vertices.length; index++) {
+    const [px, py] = toPixel(vertices[index][0] / 1000, vertices[index][1] / 1000);
+    if (Math.hypot(px - x, py - y) < 14) return index;
+  }
+  return -1;
+}
+
+/// Finish a dragged-out rectangle: round to whole millimetres, insist on the same
+/// two-cell minimum the server enforces, and give it the picked type.
+function commitZoneDraft() {
+  const [x1, y1] = zoneDraft.from;
+  const [x2, y2] = zoneDraft.to;
+  zoneDraft = null;
+  const minX = Math.round(Math.min(x1, x2));
+  const maxX = Math.round(Math.max(x1, x2));
+  const minY = Math.round(Math.min(y1, y2));
+  const maxY = Math.round(Math.max(y1, y2));
+  if (maxX - minX < 100 || maxY - minY < 100) {
+    statusLine.textContent = "zone too small: needs two 50 mm cells each way";
+    draw();
+    return;
+  }
+  snapshotZones();
+  const id = zoneState.zones.reduce((max, zone) => Math.max(max, Number(zone.id) || 0), 0) + 1;
+  zoneState.zones.push({
+    ...TYPE_FIELDS[document.getElementById("zone-type").value],
+    vertexs: [[minX, minY], [maxX, minY], [maxX, maxY], [minX, maxY]],
+    id,
+    mode: "area",
+    name: "",
+    tag: "",
+  });
+  zoneEditIndex = zoneState.zones.length - 1;
+  updateBars();
+  draw();
+}
+
 // Bottom bar: the stateful button follows the robot's `mode` (FUNC_STATUS §3.1):
 // docked and idle start a clean, `sweep` pauses the clean, `backcharge` pauses the
 // return, and the paused states resume. Anything else (manual control, fault,
@@ -361,6 +716,38 @@ function draw() {
   if (base.dock_x != null && base.dock_y != null) {
     diamond(toPixel(base.dock_x / 1000, base.dock_y / 1000));
   }
+  drawZones();
+}
+
+function drawZones() {
+  if (!zonesView) return;
+  zoneState.zones.forEach((zone, index) => {
+    const points = zonePoints(zone);
+    if (points.length < 2) return;
+    ctx.beginPath();
+    points.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
+    if (points.length > 2) ctx.closePath();
+    ctx.fillStyle = TYPE_COLOURS[zoneType(zone)];
+    ctx.fill();
+    const active = zonesEdit ? index === zoneEditIndex : zoneSelected.has(index);
+    ctx.lineWidth = (active ? 3 : 2) / view.scale;
+    ctx.strokeStyle = active ? "rgb(255,255,255)" : "rgba(255,255,255,0.55)";
+    ctx.stroke();
+    if (zonesEdit && index === zoneEditIndex) {
+      const radius = 7 / view.scale;
+      ctx.fillStyle = "rgb(255,255,255)";
+      points.forEach(([x, y]) => ctx.fillRect(x - radius / 2, y - radius / 2, radius, radius));
+    }
+  });
+  if (zoneDraft) {
+    const [x1, y1] = toPixel(zoneDraft.from[0] / 1000, zoneDraft.from[1] / 1000);
+    const [x2, y2] = toPixel(zoneDraft.to[0] / 1000, zoneDraft.to[1] / 1000);
+    ctx.setLineDash([6 / view.scale, 4 / view.scale]);
+    ctx.lineWidth = 2 / view.scale;
+    ctx.strokeStyle = "rgb(255,255,255)";
+    ctx.strokeRect(Math.min(x1, x2), Math.min(y1, y2), Math.abs(x2 - x1), Math.abs(y2 - y1));
+    ctx.setLineDash([]);
+  }
 }
 
 // The same frame mapping tools/map2png.py validated: cell centres sit half a
@@ -373,8 +760,9 @@ function toPixel(x, y) {
   return [col + 0.5, row + 0.5];
 }
 
-function dot([x, y], colour) {
-  if (x == null) return;
+function dot(point, colour) {
+  if (!point) return;
+  const [x, y] = point;
   ctx.fillStyle = colour;
   ctx.beginPath();
   ctx.arc(x, y, 3 / view.scale, 0, 7);
@@ -499,43 +887,104 @@ function startPinch() {
   const rect = canvas.getBoundingClientRect();
   pinch = {
     distance: Math.hypot(a.x - b.x, a.y - b.y),
-    scale: view.scale,
-    x: view.x,
-    y: view.y,
-    cx: (a.x + b.x) / 2 - rect.left,
-    cy: (a.y + b.y) / 2 - rect.top,
+    mx: (a.x + b.x) / 2 - rect.left,
+    my: (a.y + b.y) / 2 - rect.top,
   };
 }
 
+/// Incremental pinch: pan by however far the midpoint moved, then zoom about the new
+/// midpoint. Two fingers therefore both zoom and drag the map.
 function pinchMove() {
   const [a, b] = pointerPair();
   if (!pinch || !pinch.distance) return;
+  const rect = canvas.getBoundingClientRect();
   const distance = Math.hypot(a.x - b.x, a.y - b.y);
+  const mx = (a.x + b.x) / 2 - rect.left;
+  const my = (a.y + b.y) / 2 - rect.top;
   const min = fitScale();
-  const next = Math.min(Math.max(pinch.scale * (distance / pinch.distance), min), min * 20);
+  const next = Math.min(Math.max(view.scale * (distance / pinch.distance), min), min * 20);
   if (next <= min) {
     fit();
+    pinch.distance = distance;
+    pinch.mx = mx;
+    pinch.my = my;
     return;
   }
+  view.x += mx - pinch.mx;
+  view.y += my - pinch.my;
+  const ratio = next / view.scale;
+  view.x = mx - (mx - view.x) * ratio;
+  view.y = my - (my - view.y) * ratio;
   view.scale = next;
-  view.x = pinch.cx - (pinch.cx - pinch.x) * (next / pinch.scale);
-  view.y = pinch.cy - (pinch.cy - pinch.y) * (next / pinch.scale);
+  pinch.distance = distance;
+  pinch.mx = mx;
+  pinch.my = my;
   autoFit = false;
   draw();
 }
 
 canvas.addEventListener("pointerdown", (event) => {
-  if (event.pointerType === "mouse" && event.button !== 0) return;
+  if (event.pointerType === "mouse" && event.button !== 0 && event.button !== 2) return;
   canvas.setPointerCapture(event.pointerId);
-  pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+  // In the zone editor a left drag draws or moves; right drag and (elsewhere) left
+  // drag pan. Two fingers always pinch/pan.
+  const pan = event.button === 2 || !(zonesView && zonesEdit);
+  pointers.set(event.pointerId, { x: event.clientX, y: event.clientY, moved: 0, pan });
   canvas.classList.add("panning");
-  if (pointers.size === 2) startPinch();
+  if (pointers.size === 2) {
+    startPinch();
+  } else if (pointers.size === 1 && !pan) {
+    const point = pointerMillimetres(event);
+    const vertex = vertexAt(event);
+    if (vertex >= 0) {
+      zoneDrag = { kind: "vertex", vertex, snapshot: false };
+    } else {
+      const hit = zoneAt(point);
+      if (hit >= 0) {
+        zoneEditIndex = hit;
+        document.getElementById("zone-type").value = zoneType(zoneState.zones[hit]);
+        zoneDrag = { kind: "move", index: hit, from: point, original: JSON.parse(JSON.stringify(zoneState.zones[hit].vertexs)), snapshot: false };
+      } else {
+        zoneDraft = { from: point, to: point };
+      }
+      updateBars();
+    }
+  } else if (pointers.size === 1 && zonesView && !zonesEdit) {
+    // Picker mode: a drag pans, but a tap (no movement) toggles the zone under it.
+    const hit = zoneAt(pointerMillimetres(event));
+    zonePending = hit >= 0 ? hit : null;
+    if (hit >= 0) updateBars();
+  }
 });
 
 canvas.addEventListener("pointermove", (event) => {
   const point = pointers.get(event.pointerId);
   if (!point || !view) return;
+  if (zoneDrag) {
+    const [x, y] = pointerMillimetres(event);
+    if (!zoneDrag.snapshot) {
+      snapshotZones();
+      zoneDrag.snapshot = true;
+    }
+    if (zoneDrag.kind === "vertex") {
+      zoneState.zones[zoneEditIndex].vertexs[zoneDrag.vertex] = [x, y];
+    } else {
+      const dx = x - zoneDrag.from[0];
+      const dy = y - zoneDrag.from[1];
+      zoneState.zones[zoneDrag.index].vertexs =
+        zoneDrag.original.map(([vx, vy]) => [vx + dx, vy + dy]);
+    }
+    draw();
+    return;
+  }
+  if (zoneDraft) {
+    zoneDraft.to = pointerMillimetres(event);
+    draw();
+    return;
+  }
+  if (!point.pan) return;
   if (pointers.size === 1) {
+    point.moved += Math.abs(event.clientX - point.x) + Math.abs(event.clientY - point.y);
     view.x += event.clientX - point.x;
     view.y += event.clientY - point.y;
     point.x = event.clientX;
@@ -550,9 +999,31 @@ canvas.addEventListener("pointermove", (event) => {
 });
 
 function endPointer(event) {
+  const point = pointers.get(event.pointerId);
   pointers.delete(event.pointerId);
   if (pointers.size < 2) pinch = null;
   if (pointers.size === 0) canvas.classList.remove("panning");
+  if (zoneDrag) {
+    zoneDrag = null;
+    return;
+  }
+  if (zoneDraft) {
+    commitZoneDraft();
+    return;
+  }
+  if (zonePending !== null && point && point.moved < 6) {
+    const zone = zoneState.zones[zonePending];
+    if (!cleanableZone(zone)) {
+      statusLine.textContent = zoneType(zone) + " zones are obstacles, not clean targets";
+    } else if (zoneSelected.has(zonePending)) {
+      zoneSelected.delete(zonePending);
+    } else {
+      zoneSelected.add(zonePending);
+    }
+    updateBars();
+    draw();
+  }
+  zonePending = null;
 }
 canvas.addEventListener("pointerup", endPointer);
 canvas.addEventListener("pointercancel", endPointer);

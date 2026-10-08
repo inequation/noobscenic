@@ -611,6 +611,72 @@ pub async fn has_active_command(pool: &SqlitePool, sn: &str, info_type: i64) -> 
     Ok(count > 0)
 }
 
+/// The newest known zone list (`AreaSetting`) for a device.
+#[derive(Debug, sqlx::FromRow)]
+pub struct AreaSettings {
+    pub version: i64,
+    pub read_ms: Option<i64>,
+    pub payload: Option<String>,
+    pub trace_ref: Option<String>,
+}
+
+pub async fn load_area_settings(pool: &SqlitePool, sn: &str) -> Result<Option<AreaSettings>> {
+    Ok(sqlx::query_as(
+        "SELECT version, read_ms, payload, trace_ref FROM area_settings WHERE sn = ?",
+    )
+    .bind(sn)
+    .fetch_optional(pool)
+    .await?)
+}
+
+/// A zone list that just came back from the robot (`21004`): it becomes the known
+/// truth and bumps the etag. Returns the new version.
+pub async fn store_area_settings(
+    pool: &SqlitePool,
+    sn: &str,
+    payload: &str,
+    trace_ref: Option<&str>,
+) -> Result<i64> {
+    Ok(sqlx::query_scalar(
+        "INSERT INTO area_settings (sn, version, read_ms, payload, trace_ref)
+         VALUES (?, 1, ?, ?, ?)
+         ON CONFLICT(sn) DO UPDATE SET
+             version   = area_settings.version + 1,
+             read_ms   = excluded.read_ms,
+             payload   = excluded.payload,
+             trace_ref = excluded.trace_ref
+         RETURNING version",
+    )
+    .bind(sn)
+    .bind(now_ms())
+    .bind(payload)
+    .bind(trace_ref)
+    .fetch_one(pool)
+    .await?)
+}
+
+/// A zone list we just sent to the robot (`21003`): adopt it optimistically, keep the
+/// old list as the one-step snapshot, and bump the etag so an editor that read the
+/// previous version cannot save it again. Returns the new version.
+pub async fn record_zone_write(pool: &SqlitePool, sn: &str, payload: &str) -> Result<i64> {
+    Ok(sqlx::query_scalar(
+        "INSERT INTO area_settings (sn, version, read_ms, payload, trace_ref)
+         VALUES (?, 1, ?, ?, NULL)
+         ON CONFLICT(sn) DO UPDATE SET
+             previous_payload = area_settings.payload,
+             previous_ms      = area_settings.read_ms,
+             version          = area_settings.version + 1,
+             read_ms          = excluded.read_ms,
+             payload          = excluded.payload
+         RETURNING version",
+    )
+    .bind(sn)
+    .bind(now_ms())
+    .bind(payload)
+    .fetch_one(pool)
+    .await?)
+}
+
 /// Every device ever seen, for `devices`.
 pub async fn list_devices(
     pool: &SqlitePool,

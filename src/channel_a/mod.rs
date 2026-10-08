@@ -58,6 +58,15 @@ pub fn router(state: AppState) -> Router {
         .route("/api/robot/{id}/path", get(crate::web::path))
         .route("/api/robot/{id}/command", post(crate::web::command))
         .route("/api/robot/{id}/control", post(crate::web::control))
+        .route(
+            "/api/robot/{id}/zones",
+            get(crate::web::zones).put(crate::web::zones_write),
+        )
+        .route(
+            "/api/robot/{id}/zones/refresh",
+            post(crate::web::zones_refresh),
+        )
+        .route("/api/robot/{id}/zones/clean", post(crate::web::zones_clean))
         .route("/cleanPack/register", post(handlers::register::register))
         .route(
             "/cleanPack/getSockAddr",

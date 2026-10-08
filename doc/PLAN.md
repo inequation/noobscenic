@@ -50,8 +50,8 @@ and that can push commands back to it.
 
 ## 2. Design principles
 
-* **Permissive by default; log everything.** The RE docs flag several unknowns
-  (§16). Every one of them is handled the same way: accept the input, persist it
+* **Permissive by default; log everything.** The RE docs flag unknowns
+  (§16). Each one is handled the same way: accept the input, persist it
   verbatim, answer with the most benign valid response, and emit a warning. A
   replacement server that 400s an unrecognised field just pushes the robot into a
   re-register or reconnect loop, which destroys the very traces we need.
@@ -290,8 +290,8 @@ CREATE TABLE uploads_raw (            -- uploadLogs / uploadStats / uploadSingle
 ```
 
 Map grids are kept **as received** (LZ4 block, plus `width`/`height`/`lz4_len`) and
-decoded on demand. That keeps rows small, and it means an incorrect guess about cell
-semantics (§16) costs nothing — re-decode later.
+decoded on demand. That keeps rows small and keeps the decoding replaceable: a later
+correction to the cell semantics costs nothing but a re-decode.
 
 ---
 
@@ -342,7 +342,7 @@ and rebuilds the request; the response body is tapped on the way out.
 | Route | Handler | Response |
 |---|---|---|
 | `POST /cleanPack/register` | mint session | `{"code":0,"message":"ok","data":{"session":…,"cookies":…}}` |
-| `GET`/`POST /cleanPack/getSockAddr` | gateway address | `data.addr_list:[{ip,port}]` |
+| `GET`/`POST /cleanPack/getSockAddr` | gateway address | `data.addr_list:[{ip,port}]`; the device asks with `GET ?version=1&sn=…&companyId=…`, no body [PROTOCOL §A] |
 | `POST /cleanPack/sync` | device attrs + OTA check | `{"code":0,…,"hasUpdateFile":0}` |
 | `POST /cleanPack/response` | command ACK | `{"code":0}` |
 | `POST /cleanPack/uploadEvents` | telemetry → `proto::dispatch` | `{"code":0}` |
@@ -414,7 +414,7 @@ the device row and answers `code:0`. OTA stays off: `hasUpdateFile: 0`, no `down
 The two RE sources disagree on the shape of the version-check reply — `PROTOCOL.md`
 shows the fields at the top level, `schemas/channelA_rest.schema.json` puts them under
 `data`. We emit **both**: `{"code":0,"message":"ok","hasUpdateFile":0,"data":{"hasUpdateFile":0}}`.
-Cheap, and it removes an unknown.
+Cheap, and it keeps either reading working.
 
 ---
 
@@ -447,7 +447,8 @@ interleave mid-frame).
   then flush any pending commands. `gateway.ack_handshake` (default `true`) sends
   the ack in the corrected envelope (below) with inner `infoType` 10001; the dispatcher
   has no 10001 handler, so it only earns a device-side `"Unknown infoType"` log — a
-  config toggle, not a guess baked into the code (§16).
+  config toggle, not a guess baked into the code. The robot never waits for it:
+  every live handshake was followed by its first `21006` 2–5 ms later, before the ack.
 * **`21006` Ping** — pong **immediately**, before any other work on that frame:
   `{"encrypt":0,"data":{"infoType":21006,"data":{"isExistConnect":true}}}` with
   `announce_app_online` (default on), or inner `"data":{}` with it off. The device
@@ -456,9 +457,10 @@ interleave mid-frame).
   tells the robot an app/cloud is online so it pushes status and maps. A *flat* pong
   only refreshes the link timer — it never runs the handler, so no pushes ever start
   (verified live 2026-10-07).
-* **Watchdog** — no ping within `ping_timeout_secs` (default 120; the device's actual
-  interval is a runtime variable, so this is measured from the first live session and
-  tuned) → mark offline, close, let the device reconnect.
+* **Watchdog** — no ping within `ping_timeout_secs` (default 120) → mark offline,
+  close, let the device reconnect. Measured live (2026-10-06…08): the robot pings
+  every ~6 s in steady state (5990 of 6169 gaps landed in 5–8 s), with a few stretches
+  at 30–36 s; 120 s stays clear of both.
 * **`20002` / `21011` / anything else** → `proto::dispatch`.
 * **Unknown `infoType`** → persist to `events` with the raw frame as payload, `WARN`,
   carry on. Never close the connection over a frame we do not understand.
@@ -544,6 +546,11 @@ transport and is the only place that understands payloads.
 * **`21003` SetAreaTactics** — outbound only in v1: the console accepts a region list
   and enqueues it. Region descriptors (`id`, `name`, `tag`, `active`, `mode`,
   `forbidType`) are shared with the map's `area[]` parsing.
+* **Upload ACKs** — there is no channel-B upload to acknowledge: `20002` is
+  HTTP-only [FUNC_MAP §2.1], and a failed `uploadEvents` POST retries up to 3× then
+  drops the pending change [FUNC_MAP §2.2]. Live (2026-10-05…08, 1036 uploads): every
+  post was answered `{"code":0}`, no body was ever sent twice, and channel B carried
+  nothing but `10001` and `21006`.
 * Everything else — persisted, named where `eid_catalog.tsv` gives a name, warned about
   otherwise. `info_type.rs` also loads the 355-entry catalog as a static name table for
   readable logs (note: `EID_*` bus ids and wire `infoType`s are **different number
@@ -599,16 +606,15 @@ not needed to reach v1, and building it now would be speculative.
 Python 3, **standard library only** (`socket`, `json`, `argparse`) so it runs from a
 laptop that has just joined the robot's soft-AP with nothing installed.
 
-Context: the robot's LAN control server binds a UDP port chosen as
-`rand()%1000 + 9000`, i.e. somewhere in 9000–9999, and the app finds it with a
-broadcast `getID` exchange [PROTOCOL §C]. In pairing mode the robot is the AP at
-`192.168.78.1` (DHCP .50–.150) — `LDRobot` on the firmware sample, vendor-branded
-on shipping units (`Proscenic-6716_<serial>`).
+Context: the firmware sample's `rand()%1000 + 9000` socket is the cloud-triggered
+RemoteCtrl listener; the shipping image's provisioning listener is hardcoded to
+**UDP 7913**, which the bench unit confirmed end to end [PROTOCOL §C]. In pairing mode
+the robot is the AP at `192.168.78.1` (DHCP .50–.150) — `LDRobot` on the firmware
+sample, vendor-branded on shipping units (`Proscenic-6716_<serial>`).
 
 It is a one-shot tool: running it performs the whole re-home, there are no
-subcommands, and the server itself never speaks channel C. The bench unit answers on
-**UDP 7913**, outside the documented range, so the discovery sweep defaults to
-7000–9999 and `--discover-ports` widens it.
+subcommands, and the server itself never speaks channel C. The discovery sweep
+defaults to 7000–9999 — it covers both readings — and `--discover-ports` widens it.
 
 The run, in order (this order is the tool):
 
@@ -641,10 +647,10 @@ Details that matter:
 * The script writes its own JSONL trace (`--trace FILE`) of every datagram sent and
   received, same spirit as the server's tap. The Wi-Fi password is redacted in it
   (and on the console) unless `--show-secrets`.
-* Field names `ssid`/`staPwd` and the `url` vs `ip`/`port` forms of `setUrl` come from
-  firmware JSON templates and are flagged in the RE docs as "confirm against a live
-  capture" — the script therefore accepts `--ssid-key`/`--pwd-key` to switch to the
-  documented names if a capture says a unit wants them.
+* Field names `staName`/`staPwd` and the `url` vs `ip`/`port` forms of `setUrl` are
+  firmware literals, and the bench unit accepted `staPwd` live
+  (PAIRING_LOG_ANALYSIS.md §3); `--ssid-key`/`--pwd-key` still switch the two names
+  for other builds.
 * Documented alternative for a rooted device: these commands only write
   `/data/bin/Run/Config/url`, `ip_port.json`, `wpa_supplicant.conf` and `wifi_mode`
   [PROTOCOL §C] — the README notes that shell access can set them directly.
@@ -830,21 +836,17 @@ The phase's other three items are untouched.
 
 ## 16. Known unknowns
 
-The RE docs mark these as unverified. None of them blocks implementation, because each
-has a designed-in tolerance; all are settled by reading one real trace.
+The RE docs marked these as unverified; each carried a designed-in tolerance, so none
+blocked implementation. The live captures of 2026-10-03…08 and the RE-doc corrections
+they drove have since settled all but one — the answers now live in the sections above
+and in `doc/reverse-engineering/` (Gap 1/Gap 2 closed, the corrected channel-B
+envelope, the heartbeat cadence, the HTTP-only uploads, the 7913 channel-C port and
+the `staPwd` names, the map cell values, the AES padding). What is still genuinely
+open:
 
 | Unknown | Source | How the design tolerates it |
 |---|---|---|
-| `getSockAddr` request body fields | PROTOCOL §A "Gap 1" | The handler requires **no** fields; it answers on the cookie alone. |
-| Binding state machine; whether maps/commands are gated on bind | PROTOCOL §A "Gap 2" | **Settled:** `binding`/`unbinding` are recorded (`devices.bind_state`, `bind_user`, timestamps) and answered `code:0` idempotently, so a preBind retry cannot fail the bind; nothing is gated on the state (`tests/binding.rs`). |
-| Whether the device expects a reply to `10001` | PROTOCOL §B | `gateway.ack_handshake` toggle, default on; an unexpected `infoType` only costs a device-side log line. |
-| The pong's exact `infoType` demux (21006 near-certain) | PROTOCOL §B | Pong `21006` by default; the value is a constant in `info_type.rs`, and the ping/pong pairing is visible in the trace timeline. |
-| Ping interval and drop timeout (runtime variables) | PROTOCOL §B | Pong immediately, never on a timer; `ping_timeout_secs` is generous (120) and gets tuned from a measured session. |
-| Whether uploads want a channel-B ACK | PROTOCOL §B | Config toggle per class, default off; a missing ACK shows up as a device retry in the trace. |
-| AES `encrypt:1` pad byte | PROTOCOL §B | Default is `encrypt:0`, which sidesteps it entirely; space padding when enabled. |
-| Map cell value semantics (free/occupied/unknown) | MAP.md | **Settled live 2026-10-07:** `0x00` wall, `0x7F` unknown, `0xFF` free; grids still stored as received, decoding stays replaceable. |
-| `setSta` key names (`staPwd` vs `pwd`); discovery port | PROTOCOL §C | `--pwd-key` override; discovery sprays the whole 9000–9999 range. |
-| Version-check response shape (top level vs `data`) | PROTOCOL §A vs schema | Emit both. |
+| Which level of the version-check reply the device parses — top level per PROTOCOL §A, under `data` per the schema | PROTOCOL §A vs schema | Emit both (§9.3); it only matters if we ever serve a real update, which v1 does not. Live, the robot's version exchange is the `sync` POST: it accepted the 2026-10-05 catch-all (no `hasUpdateFile` field at all) and the 2026-10-07 both-shapes reply, so the reply shape is tolerated either way — which does not yet tell us what it reads when `hasUpdateFile` is 1. |
 
 ---
 
@@ -1075,3 +1077,14 @@ Operational hygiene: keep the last-read list in the database so edits always sta
 from something real, write only after a successful 21004, re-read to confirm, and
 offer "restore the previous list". Whether an edit takes effect mid-clean is unknown;
 assume it applies to the next job.
+
+**Implemented (2026-10-08):** the cache (`area_settings`, with a `version` etag and a
+one-step snapshot), the refresh/read/write/clean endpoints, and the UI — `🗺️` opens
+the zones view in picker mode (tap a clean zone to select it, `▶️` starts the set,
+`✏️` switches to editing), and edit mode draws rectangles, drags whole zones and
+their vertices, retypes, deletes, undoes and saves through the 21004 → edit → 21003
+round trip. Live-verified: a zone written over the API came back verbatim from the
+robot, a stale-version write was refused with 409, and the cleaning guard holds both
+edits and starts. Open: `21023` alone does not start a job (ACKed, mode unchanged)
+and the one fallback run cleaned near the robot's start rather than the drawn zone,
+so region targeting is unverified — see FIELD_NOTES.md for the `mapId` hypothesis.

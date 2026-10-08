@@ -146,6 +146,25 @@ and 3008 counter-clockwise (left)**. The pad binds the glyphs accordingly — `�
 3007, `↩️` → 3008 — and the buttons then turn the robot the way the arrows point.
 Treat the §2.1 labels as swapped until someone re-checks them.
 
+## Zone editing over channel B (2026-10-08, [field])
+
+* `21004 {}` returns the stored list verbatim — on this unit `{"mapId":-1,"value":[]}`
+  when empty. `21003 {"mapId":…,"value":[…]}` is accepted and ACKed ("ok"), and a
+  written rectangle reads back **exactly** as sent, unsnapped.
+* The robot's vertex snap rule could **not** be observed: 21004 echoes the stored JSON
+  verbatim (as FUNC_MAP §5.2 warns), and a forced map upload (`21014 {}` → fresh 20002)
+  still carried `"area": []` even with a region saved. The web UI therefore snaps
+  nothing and enforces a two-cell (100 mm) minimum thickness instead, so no half-cell
+  offset in either direction can collapse a zone.
+* `21023 {"cleanId":[N]}` is ACKed but does **not** start a job on this build: mode
+  stayed `fullcharge` for 12 s after the robot acknowledged it. Following it with
+  `21005 {"mode":"smartClean"}` did start a clean within ~5 s.
+* **But the one observation cleaned near the robot's starting position (~1 m² at
+  x≈−3.7 m), not the 0.8×0.8 m rectangle drawn at (4.8–5.6 m, −2.2–−1.4 m)**, so
+  whether `cleanId` resolved to the stored region is unverified. Hypothesis for a
+  later session: the stored list's `mapId` (we preserved the robot's own `-1`) may
+  have to be the current map id (`1791385091` here) for `cleanId` to resolve.
+
 ## Raw evidence
 
 * `/media/sf_reshell-shared/device-log.bin` — robot's `/tmp/WifiConfLog`, 2026-10-04

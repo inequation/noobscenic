@@ -339,6 +339,260 @@ pub struct ControlForm {
     code: i64,
 }
 
+/// `GET /api/robot/{id}/zones` — the newest known `AreaSetting`.
+pub async fn zones(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    let Some(sn) = resolve(&state, &id).await else {
+        return unknown(&id);
+    };
+    state.watchers.touch(&sn);
+
+    let stored = match queries::load_area_settings(&state.db, &sn).await {
+        Ok(stored) => stored,
+        Err(error) => return internal(error),
+    };
+    let (version, read_ms, payload) = match stored {
+        Some(stored) => (stored.version, stored.read_ms, stored.payload),
+        None => (0, None, None),
+    };
+    let parsed: Option<Value> = payload.and_then(|text| serde_json::from_str(&text).ok());
+    let zones = parsed.as_ref().map(zones_from_payload).unwrap_or_default();
+    let map_id = parsed
+        .as_ref()
+        .and_then(|value| value.get("mapId"))
+        .cloned()
+        .unwrap_or(Value::Null);
+
+    Json(json!({
+        "version": version,
+        "read_ms": read_ms,
+        "map_id": map_id,
+        "zones": zones,
+        "cleaning": cleaning_in_progress(&state, &sn).await,
+        "online": state.registry.is_online(&sn),
+    }))
+    .into_response()
+}
+
+/// `POST /api/robot/{id}/zones/refresh` — ask the robot for its list (`21004`). The
+/// reply lands in the cache through `cleanPack/response`, like a path chunk.
+pub async fn zones_refresh(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    let Some(sn) = resolve(&state, &id).await else {
+        return unknown(&id);
+    };
+    state.watchers.touch(&sn);
+    if !state.registry.is_online(&sn) {
+        return conflict("device is offline");
+    }
+    match queries::insert_command(&state.db, &sn, info_type::ZONES_READ, "{}", 0).await {
+        Ok(command_id) => Json(json!({"queued": command_id})).into_response(),
+        Err(error) => internal(error),
+    }
+}
+
+/// `PUT /api/robot/{id}/zones` — replace the whole list (`21003`).
+///
+/// Two deliberate refusals, both operator decisions from 2026-10-08:
+/// * a clean in progress blocks edits — the robot's behaviour on mid-job edits is
+///   untested, and an edit made against a list that is about to change could be
+///   written back stale;
+/// * the client must echo the `version` it read; a newer version means someone else
+///   (or our own last write) touched the list, so we 409 instead of stomping it.
+pub async fn zones_write(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<Value>,
+) -> Response {
+    let Some(sn) = resolve(&state, &id).await else {
+        return unknown(&id);
+    };
+    state.watchers.touch(&sn);
+    if !state.registry.is_online(&sn) {
+        return conflict("device is offline");
+    }
+    if cleaning_in_progress(&state, &sn).await {
+        return conflict("a clean is running; zone edits are blocked");
+    }
+
+    let stored = match queries::load_area_settings(&state.db, &sn).await {
+        Ok(Some(stored)) => stored,
+        Ok(None) => return conflict("no zone list has been read yet; refresh first"),
+        Err(error) => return internal(error),
+    };
+    let client_version = body.get("version").and_then(Value::as_i64);
+    if client_version != Some(stored.version) {
+        return conflict(&format!(
+            "zones changed since version {}; refresh and try again",
+            client_version.unwrap_or(0)
+        ));
+    }
+    let Some(value) = body.get("value") else {
+        return bad_request("missing value: the list of regions");
+    };
+    let zones = match validate_zones(value) {
+        Ok(zones) => zones,
+        Err(message) => return bad_request(&message),
+    };
+
+    // The firmware stores `mapId` but never checks it (FUNC_MAP §5.1); keep whatever
+    // the robot itself reported so the list round-trips unchanged apart from the edit.
+    let map_id = stored
+        .payload
+        .as_deref()
+        .and_then(|text| serde_json::from_str::<Value>(text).ok())
+        .and_then(|value| value.get("mapId").cloned())
+        .unwrap_or(Value::Null);
+    let payload = json!({"mapId": map_id, "value": zones}).to_string();
+
+    let command_id =
+        match queries::insert_command(&state.db, &sn, info_type::ZONES_WRITE, &payload, 0).await {
+            Ok(command_id) => command_id,
+            Err(error) => return internal(error),
+        };
+    let version = match queries::record_zone_write(&state.db, &sn, &payload).await {
+        Ok(version) => version,
+        Err(error) => return internal(error),
+    };
+    tracing::info!(sn = %sn, command_id, version, "zone list written");
+    Json(json!({"queued": command_id, "version": version})).into_response()
+}
+
+/// `POST /api/robot/{id}/zones/clean` — clean the picked stored regions (`21023`).
+///
+/// Whether `21023` alone starts the job is unestablished (FUNC_MAP §6.2); the UI
+/// watches the status and falls back to `smartClean` if nothing starts, so the server
+/// stays a dumb pipe here.
+pub async fn zones_clean(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<Value>,
+) -> Response {
+    let Some(sn) = resolve(&state, &id).await else {
+        return unknown(&id);
+    };
+    state.watchers.touch(&sn);
+    if !state.registry.is_online(&sn) {
+        return conflict("device is offline");
+    }
+    if cleaning_in_progress(&state, &sn).await {
+        return conflict("a clean is already running");
+    }
+    let ids: Vec<i64> = body
+        .get("ids")
+        .and_then(Value::as_array)
+        .map(|ids| ids.iter().filter_map(Value::as_i64).collect())
+        .unwrap_or_default();
+    if ids.is_empty() {
+        return bad_request("missing ids: the stored regions to clean");
+    }
+    let payload = json!({"cleanId": ids}).to_string();
+    match queries::insert_command(&state.db, &sn, info_type::ZONE_CLEAN, &payload, 0).await {
+        Ok(command_id) => Json(json!({"queued": command_id})).into_response(),
+        Err(error) => internal(error),
+    }
+}
+
+/// A clean in progress blocks zone edits and zone-clean starts (operator decision,
+/// 2026-10-08). `FindChargerAndWash` counts as part of the job it interrupted.
+async fn cleaning_in_progress(state: &AppState, sn: &str) -> bool {
+    matches!(
+        latest_mode(state, sn).await.as_deref(),
+        Some("sweep") | Some("FindChargerAndWash") | Some("DustCenterWorking")
+    )
+}
+
+/// The list out of either shape the robot might answer with: `{"mapId":…,"value":[…]}`,
+/// or a bare array.
+fn zones_from_payload(payload: &Value) -> Vec<Value> {
+    if let Some(value) = payload.get("value").and_then(Value::as_array) {
+        return value.clone();
+    }
+    payload.as_array().cloned().unwrap_or_default()
+}
+
+/// Validate an edited zone list before it reaches the firmware (doc/PLAN.md §20.5):
+/// whole `[x, y]` integer vertices, at least three distinct ones, no collapsed
+/// polygon, and the string fields inside the robot's fixed buffers (`name`/`tag` 31
+/// UTF-8 bytes, `mode` 30 — a longer value overruns its parser). Returns the list
+/// with consecutive duplicate vertices dropped.
+fn validate_zones(value: &Value) -> std::result::Result<Vec<Value>, String> {
+    let Some(regions) = value.as_array() else {
+        return Err("value must be an array of regions".into());
+    };
+    let mut out = Vec::with_capacity(regions.len());
+    for (index, region) in regions.iter().enumerate() {
+        let Some(object) = region.as_object() else {
+            return Err(format!("region {index} is not an object"));
+        };
+        for (key, limit) in [("name", 31), ("tag", 31), ("mode", 30)] {
+            if let Some(text) = object.get(key).and_then(Value::as_str)
+                && text.len() > limit
+            {
+                return Err(format!(
+                    "region {index}: {key} is {} bytes; the robot's buffer holds {limit}",
+                    text.len()
+                ));
+            }
+        }
+        let Some(vertices) = object.get("vertexs").and_then(Value::as_array) else {
+            return Err(format!("region {index}: missing vertexs"));
+        };
+        let mut points: Vec<[i64; 2]> = Vec::with_capacity(vertices.len());
+        for vertex in vertices {
+            let pair = vertex
+                .as_array()
+                .filter(|pair| pair.len() == 2)
+                .ok_or_else(|| format!("region {index}: every vertex must be [x, y]"))?;
+            let (Some(x), Some(y)) = (pair[0].as_i64(), pair[1].as_i64()) else {
+                return Err(format!(
+                    "region {index}: vertex coordinates must be integers (mm)"
+                ));
+            };
+            if points.last() != Some(&[x, y]) {
+                points.push([x, y]);
+            }
+        }
+        if points.len() < 3 {
+            return Err(format!(
+                "region {index}: fewer than three distinct vertices"
+            ));
+        }
+        if polygon_area(&points) == 0 {
+            return Err(format!("region {index}: the polygon collapses to a line"));
+        }
+        // The robot snaps vertices onto its own 50 mm lattice, whose phase relative to
+        // the map raster could not be observed from the wire (21004 echoes verbatim and
+        // 20002 area[] stayed empty even with a saved zone). Two cells of thickness in
+        // each axis means no half-cell offset in either direction can collapse a zone.
+        let xs: Vec<i64> = points.iter().map(|[x, _]| *x).collect();
+        let ys: Vec<i64> = points.iter().map(|[_, y]| *y).collect();
+        let span_x = xs.iter().max().unwrap_or(&0) - xs.iter().min().unwrap_or(&0);
+        let span_y = ys.iter().max().unwrap_or(&0) - ys.iter().min().unwrap_or(&0);
+        if span_x < 100 || span_y < 100 {
+            return Err(format!(
+                "region {index}: {span_x}x{span_y} mm is thinner than two 50 mm cells"
+            ));
+        }
+        let mut normalized = object.clone();
+        normalized.insert(
+            "vertexs".into(),
+            Value::Array(points.iter().map(|[x, y]| json!([x, y])).collect()),
+        );
+        out.push(Value::Object(normalized));
+    }
+    Ok(out)
+}
+
+/// Twice the shoelace area of a polygon; zero means every vertex is collinear.
+fn polygon_area(points: &[[i64; 2]]) -> i128 {
+    let mut sum = 0i128;
+    for index in 0..points.len() {
+        let [x1, y1] = points[index];
+        let [x2, y2] = points[(index + 1) % points.len()];
+        sum += i128::from(x1) * i128::from(y2) - i128::from(x2) * i128::from(y1);
+    }
+    sum
+}
+
 /// `POST /api/robot/{id}/control` — one realtime `21020` frame for the steering pad.
 ///
 /// This deliberately bypasses the commands queue (doc/PLAN.md §20.4): the robot
@@ -627,6 +881,14 @@ fn internal(error: Error) -> Response {
         Json(json!({"error": "internal"})),
     )
         .into_response()
+}
+
+fn conflict(message: &str) -> Response {
+    (StatusCode::CONFLICT, Json(json!({"error": message}))).into_response()
+}
+
+fn bad_request(message: &str) -> Response {
+    (StatusCode::BAD_REQUEST, Json(json!({"error": message}))).into_response()
 }
 
 #[cfg(test)]

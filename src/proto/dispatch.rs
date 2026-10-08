@@ -64,6 +64,13 @@ pub async fn dispatch(state: &AppState, incoming: Incoming<'_>) {
     match incoming.info_type {
         Some(info_type::MAP) => store_map(state, &incoming).await,
         Some(info_type::PATH) => store_path(state, &incoming).await,
+        Some(info_type::ZONES_READ) => store_zones(state, &incoming).await,
+        // One-shot zone replies: the commands row carries the ACK already; keep the
+        // body as an event without the "unhandled infoType" warning.
+        Some(info_type::ZONES_WRITE) | Some(info_type::ZONE_CLEAN) => {
+            tracing::debug!(sn = %incoming.sn, info_type = incoming.info_type, "zone command reply");
+            store_event(state, &incoming).await;
+        }
         Some(info_type::STATUS) => {
             tracing::debug!(sn = %incoming.sn, trace, "status push");
             store_event(state, &incoming).await;
@@ -90,6 +97,15 @@ pub async fn dispatch(state: &AppState, incoming: Incoming<'_>) {
             tracing::warn!(sn = %incoming.sn, trace, "payload without an infoType; persisted");
             store_event(state, &incoming).await;
         }
+    }
+}
+
+/// A `21004` reply is the robot's whole `AreaSetting` list, verbatim (doc/PLAN.md §20.5).
+async fn store_zones(state: &AppState, incoming: &Incoming<'_>) {
+    let payload = serde_json::to_string(incoming.data).unwrap_or_else(|_| "null".to_string());
+    match queries::store_area_settings(&state.db, incoming.sn, &payload, incoming.trace_ref).await {
+        Ok(version) => tracing::info!(sn = %incoming.sn, version, "zone list read back"),
+        Err(error) => tracing::error!(%error, sn = %incoming.sn, "could not store the zone list"),
     }
 }
 

@@ -80,6 +80,38 @@ fn post_form(path: &str, body: &str) -> Request<Body> {
     request
 }
 
+fn post_json(path: &str, body: &Value) -> Request<Body> {
+    let mut request = Request::builder()
+        .method("POST")
+        .uri(path)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(body.to_string()))
+        .expect("request");
+    request
+        .extensions_mut()
+        .insert(ConnectInfo(std::net::SocketAddr::from((
+            [127, 0, 0, 1],
+            45678,
+        ))));
+    request
+}
+
+fn put_json(path: &str, body: &Value) -> Request<Body> {
+    let mut request = Request::builder()
+        .method("PUT")
+        .uri(path)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(body.to_string()))
+        .expect("request");
+    request
+        .extensions_mut()
+        .insert(ConnectInfo(std::net::SocketAddr::from((
+            [127, 0, 0, 1],
+            45678,
+        ))));
+    request
+}
+
 async fn call(app: &Router, request: Request<Body>) -> (StatusCode, String, Option<String>) {
     let response = app.clone().oneshot(request).await.expect("response");
     let status = response.status();
@@ -362,6 +394,174 @@ async fn the_control_watchdog_leaves_manual_mode_when_the_client_goes_quiet() {
         rx.try_recv().is_err(),
         "an explicit leave must not be followed by a watchdog frame"
     );
+
+    cleanup(state).await;
+}
+
+async fn store_status(state: &AppState, mode: &str) {
+    noobscenic::db::queries::insert_event(
+        &state.db,
+        SN,
+        "A",
+        Some("/cleanPack/uploadEvents"),
+        Some(20001),
+        None,
+        None,
+        Some(ID),
+        None,
+        &format!("{{\"mode\":\"{mode}\",\"elec\":90}}"),
+        None,
+    )
+    .await
+    .expect("status event");
+}
+
+async fn last_command(state: &AppState) -> (i64, String) {
+    sqlx::query_as("SELECT info_type, payload FROM commands ORDER BY id DESC LIMIT 1")
+        .fetch_one(&state.db)
+        .await
+        .expect("a command row")
+}
+
+#[tokio::test]
+async fn zones_read_back_can_be_edited_and_written_with_an_etag() {
+    let (state, app) = setup("zones").await;
+    adopt(&state).await;
+    let (tx, _rx) = tokio::sync::mpsc::channel(4);
+    state.registry.register(
+        SN,
+        noobscenic::channel_b::registry::handle("b-test", "127.0.0.1:1", tx),
+    );
+
+    // Refresh enqueues a 21004 read.
+    let (status, _) = call_json(&app, post_form("/api/robot/Foo/zones/refresh", "")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(last_command(&state).await.0, 21004);
+
+    // The robot's reply lands through cleanPack/response and becomes the cached list.
+    let reply = format!(
+        "sn={SN}&infoType=21004&ts=1&userId=u&data={}",
+        "{\"infoType\":21004,\"data\":{\"mapId\":7,\"value\":[]}}"
+    );
+    let (status, _) = call_json(&app, post_form("/cleanPack/response", &reply)).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, zones) = call_json(&app, get("/api/robot/Foo/zones")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(zones["version"], 1);
+    assert_eq!(zones["map_id"], 7);
+    assert_eq!(zones["zones"], json!([]));
+
+    // Save a rectangle against that version.
+    let rectangle = json!([{
+        "vertexs": [[100, 100], [300, 100], [300, 300], [100, 300]],
+        "active": "forbid", "forbidType": "all", "id": 1, "name": "Desk",
+    }]);
+    let (status, written) = call_json(
+        &app,
+        put_json(
+            "/api/robot/Foo/zones",
+            &json!({"version": 1, "value": rectangle}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(written["version"], 2);
+    let (info_type, payload) = last_command(&state).await;
+    assert_eq!(info_type, 21003);
+    let payload: Value = serde_json::from_str(&payload).expect("payload JSON");
+    assert_eq!(payload["mapId"], 7, "the robot's own mapId is kept");
+    assert_eq!(payload["value"][0]["name"], "Desk");
+
+    // The etag: the same version cannot be written twice, and a bad list is refused.
+    let (status, _) = call_json(
+        &app,
+        put_json(
+            "/api/robot/Foo/zones",
+            &json!({"version": 1, "value": rectangle}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "stale version");
+    let two_vertices = json!([{"vertexs": [[0, 0], [100, 100]], "active": "forbid"}]);
+    let (status, _) = call_json(
+        &app,
+        put_json(
+            "/api/robot/Foo/zones",
+            &json!({"version": 2, "value": two_vertices}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "two vertices");
+    let long_name = json!([{
+        "vertexs": [[0, 0], [100, 0], [100, 100]],
+        "active": "forbid", "name": "x".repeat(32),
+    }]);
+    let (status, _) = call_json(
+        &app,
+        put_json(
+            "/api/robot/Foo/zones",
+            &json!({"version": 2, "value": long_name}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "name over the buffer");
+
+    cleanup(state).await;
+}
+
+#[tokio::test]
+async fn zone_edits_and_zone_cleans_are_blocked_while_a_clean_runs() {
+    let (state, app) = setup("zones-clean").await;
+    adopt(&state).await;
+    let (tx, _rx) = tokio::sync::mpsc::channel(4);
+    state.registry.register(
+        SN,
+        noobscenic::channel_b::registry::handle("b-test", "127.0.0.1:1", tx),
+    );
+    noobscenic::db::queries::store_area_settings(&state.db, SN, "{\"mapId\":7,\"value\":[]}", None)
+        .await
+        .expect("cached list");
+    store_status(&state, "sweep").await;
+
+    let rectangle = json!([{"vertexs": [[0, 0], [100, 0], [100, 100]], "active": "forbid"}]);
+    let (status, error) = call_json(
+        &app,
+        put_json(
+            "/api/robot/Foo/zones",
+            &json!({"version": 1, "value": rectangle}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(
+        error["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("clean"),
+        "the refusal names the running clean: {error}"
+    );
+
+    let (status, _) = call_json(
+        &app,
+        post_json("/api/robot/Foo/zones/clean", &json!({"ids": [1]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "no second clean");
+
+    // Once docked, the same request becomes a queued 21023.
+    store_status(&state, "fullcharge").await;
+    let (status, queued) = call_json(
+        &app,
+        post_json("/api/robot/Foo/zones/clean", &json!({"ids": [1, 2]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(queued["queued"].is_i64());
+    let (info_type, payload) = last_command(&state).await;
+    assert_eq!(info_type, 21023);
+    let payload: Value = serde_json::from_str(&payload).expect("payload JSON");
+    assert_eq!(payload["cleanId"], json!([1, 2]));
 
     cleanup(state).await;
 }
