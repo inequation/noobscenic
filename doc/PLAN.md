@@ -802,7 +802,7 @@ has its id (`Foo`) recovered from the stored preBind, so `?id=Foo` resolves; pre
 gating and the charging skip are covered by `tests/web.rs`.
 
 ### Phase 8 — Web UI, control depth (design: §20)
-- [ ] pan and zoom for the map canvas, paths and zones included (§20.1)
+- [x] pan and zoom for the map canvas, paths and zones included (§20.1)
 - [ ] spot clean button (§20.2)
 - [ ] "more" menu: specialised modes plus the consumables view (§20.3)
 - [ ] manual steering pad with the ≤300 ms repeat, the 4001 release and the 4000 watchdog (§20.4)
@@ -810,6 +810,12 @@ gating and the charging skip are covered by `tests/web.rs`.
 
 **Done when:** a phone can steer the robot, spot-clean it, pick a specialised mode
 and draw a no-go zone, all on the same page.
+**Status (2026-10-08):** pan and zoom are in. The map starts fitted to the client
+area (contain, centred), pinch zooms and drag pans on mobile, the wheel zooms about
+the pointer on desktop, and double-click / double-tap refits. The grid is rendered
+once per map revision into an offscreen canvas and drawn under the view transform, so
+paths and (one day) zones share the transform and the inverse is ready for hit-testing.
+The phase's other four items are untouched.
 
 ---
 

@@ -15,9 +15,10 @@
   header { flex-wrap: wrap; }
   #status { flex: 1 1 100%; min-width: 0; font-size: 13px; color: #9aa0aa;
             white-space: nowrap; overflow-x: auto; }
-  main { flex: 1; display: grid; place-items: center; overflow: hidden; padding: 4px; }
-  canvas { max-width: 100%; max-height: 100%; image-rendering: pixelated;
-           background: #55585f; }
+  main { flex: 1; position: relative; overflow: hidden; }
+  canvas { display: block; width: 100%; height: 100%; touch-action: none;
+           cursor: grab; user-select: none; -webkit-user-select: none; }
+  canvas.panning { cursor: grabbing; }
   select, button { font: inherit; padding: 8px 10px; border-radius: 6px;
                    border: 1px solid #3a3f48; background: #262a32; color: inherit; }
   select { max-width: 65vw; }
@@ -52,6 +53,11 @@ let mapRev = null;  // "id:received_ms" of the drawn map
 let pathRev = null; // "id:span" of the drawn path
 let base = null;    // the fetched map frame
 let points = [];    // the fetched path, tags already stripped
+let grid = null;    // offscreen canvas with the map at one pixel per cell
+let view = null;    // {scale, x, y}: map origin in CSS pixels, and pixels per cell
+let autoFit = true; // until the first pan or zoom, keep the map fitted
+const pointers = new Map();
+let pinch = null;
 
 async function json(url, options) {
   const response = await fetch(url, options);
@@ -94,6 +100,7 @@ async function init() {
     return;
   }
   robot = robotSelect.value;
+  resize();
   tick();
   setInterval(tick, 1500);
 }
@@ -110,7 +117,7 @@ async function tick() {
       if (rev !== mapRev) {
         base = await api("/map");
         mapRev = rev;
-        draw();
+        setMap(base);
       }
     }
     const path = summary.path;
@@ -147,31 +154,19 @@ async function send() {
 }
 
 function draw() {
-  if (!base) return;
-  const width = base.width;
-  const height = base.height;
-  canvas.width = width;
-  canvas.height = height;
-  const cells = base64Bytes(base.grid_b64);
-  const image = ctx.createImageData(width, height);
-  for (let row = 0; row < height; row++) {
-    // Wire row 0 is the smallest y; the page reads like a floor plan (+y up).
-    const src = (height - 1 - row) * width;
-    const dst = row * width * 4;
-    for (let col = 0; col < width; col++) {
-      const [r, g, b] = cellColour(cells[src + col]);
-      const at = dst + col * 4;
-      image.data[at] = r;
-      image.data[at + 1] = g;
-      image.data[at + 2] = b;
-      image.data[at + 3] = 255;
-    }
-  }
-  ctx.putImageData(image, 0, 0);
+  if (!base || !grid || !view) return;
+  const dpr = window.devicePixelRatio || 1;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.setTransform(
+    dpr * view.scale, 0, 0, dpr * view.scale, dpr * view.x, dpr * view.y,
+  );
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(grid, 0, 0);
 
   if (points.length > 1) {
     ctx.strokeStyle = "rgb(30,90,220)";
-    ctx.lineWidth = 0.7;
+    ctx.lineWidth = 1.5 / view.scale;
     ctx.lineJoin = "round";
     ctx.beginPath();
     points.forEach(([x, y], index) => {
@@ -202,17 +197,18 @@ function dot([x, y], colour) {
   if (x == null) return;
   ctx.fillStyle = colour;
   ctx.beginPath();
-  ctx.arc(x, y, 1.6, 0, 7);
+  ctx.arc(x, y, 3 / view.scale, 0, 7);
   ctx.fill();
 }
 
 function diamond([x, y]) {
+  const radius = 4 / view.scale;
   ctx.fillStyle = "rgb(230,40,40)";
   ctx.beginPath();
-  ctx.moveTo(x, y - 2);
-  ctx.lineTo(x + 2, y);
-  ctx.lineTo(x, y + 2);
-  ctx.lineTo(x - 2, y);
+  ctx.moveTo(x, y - radius);
+  ctx.lineTo(x + radius, y);
+  ctx.lineTo(x, y + radius);
+  ctx.lineTo(x - radius, y);
   ctx.fill();
 }
 
@@ -239,6 +235,155 @@ function base64Bytes(text) {
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
   return bytes;
 }
+
+// Render the wire grid into an offscreen canvas once, at one pixel per cell.
+function setMap(map) {
+  const width = map.width;
+  const height = map.height;
+  const cells = base64Bytes(map.grid_b64);
+  grid = document.createElement("canvas");
+  grid.width = width;
+  grid.height = height;
+  const target = grid.getContext("2d");
+  const image = target.createImageData(width, height);
+  for (let row = 0; row < height; row++) {
+    // Wire row 0 is the smallest y; the page reads like a floor plan (+y up).
+    const src = (height - 1 - row) * width;
+    const dst = row * width * 4;
+    for (let col = 0; col < width; col++) {
+      const [r, g, b] = cellColour(cells[src + col]);
+      const at = dst + col * 4;
+      image.data[at] = r;
+      image.data[at + 1] = g;
+      image.data[at + 2] = b;
+      image.data[at + 3] = 255;
+    }
+  }
+  target.putImageData(image, 0, 0);
+  if (autoFit || !view) fit();
+  else draw();
+}
+
+function resize() {
+  const dpr = window.devicePixelRatio || 1;
+  const width = canvas.clientWidth;
+  const height = canvas.clientHeight;
+  if (!width || !height) return;
+  canvas.width = Math.round(width * dpr);
+  canvas.height = Math.round(height * dpr);
+  if (!grid) return;
+  if (autoFit) fit();
+  else draw();
+}
+
+// The largest map that fits the client area whole, aspect ratio intact.
+function fitScale() {
+  return Math.min(canvas.clientWidth / grid.width, canvas.clientHeight / grid.height);
+}
+
+function fit() {
+  const scale = fitScale();
+  view = {
+    scale,
+    x: (canvas.clientWidth - grid.width * scale) / 2,
+    y: (canvas.clientHeight - grid.height * scale) / 2,
+  };
+  autoFit = true;
+  draw();
+}
+
+// Zoom about a point in canvas coordinates, so the map stays put under the cursor.
+function zoomAt(x, y, factor) {
+  if (!view) return;
+  const min = fitScale();
+  const next = Math.min(Math.max(view.scale * factor, min), min * 20);
+  view.x = x - (x - view.x) * (next / view.scale);
+  view.y = y - (y - view.y) * (next / view.scale);
+  view.scale = next;
+  autoFit = false;
+  draw();
+}
+
+function pointerPair() {
+  return [...pointers.values()].slice(0, 2);
+}
+
+function startPinch() {
+  const [a, b] = pointerPair();
+  const rect = canvas.getBoundingClientRect();
+  pinch = {
+    distance: Math.hypot(a.x - b.x, a.y - b.y),
+    scale: view.scale,
+    x: view.x,
+    y: view.y,
+    cx: (a.x + b.x) / 2 - rect.left,
+    cy: (a.y + b.y) / 2 - rect.top,
+  };
+}
+
+function pinchMove() {
+  const [a, b] = pointerPair();
+  if (!pinch || !pinch.distance) return;
+  const distance = Math.hypot(a.x - b.x, a.y - b.y);
+  const min = fitScale();
+  const next = Math.min(Math.max(pinch.scale * (distance / pinch.distance), min), min * 20);
+  view.scale = next;
+  view.x = pinch.cx - (pinch.cx - pinch.x) * (next / pinch.scale);
+  view.y = pinch.cy - (pinch.cy - pinch.y) * (next / pinch.scale);
+  autoFit = false;
+  draw();
+}
+
+canvas.addEventListener("pointerdown", (event) => {
+  if (event.pointerType === "mouse" && event.button !== 0) return;
+  canvas.setPointerCapture(event.pointerId);
+  pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+  canvas.classList.add("panning");
+  if (pointers.size === 2) startPinch();
+});
+
+canvas.addEventListener("pointermove", (event) => {
+  const point = pointers.get(event.pointerId);
+  if (!point || !view) return;
+  if (pointers.size === 1) {
+    view.x += event.clientX - point.x;
+    view.y += event.clientY - point.y;
+    point.x = event.clientX;
+    point.y = event.clientY;
+    autoFit = false;
+    draw();
+  } else {
+    point.x = event.clientX;
+    point.y = event.clientY;
+    if (pointers.size === 2) pinchMove();
+  }
+});
+
+function endPointer(event) {
+  pointers.delete(event.pointerId);
+  if (pointers.size < 2) pinch = null;
+  if (pointers.size === 0) canvas.classList.remove("panning");
+}
+canvas.addEventListener("pointerup", endPointer);
+canvas.addEventListener("pointercancel", endPointer);
+
+canvas.addEventListener(
+  "wheel",
+  (event) => {
+    event.preventDefault();
+    const rect = canvas.getBoundingClientRect();
+    zoomAt(
+      event.clientX - rect.left,
+      event.clientY - rect.top,
+      Math.exp(-event.deltaY * 0.002),
+    );
+  },
+  { passive: false },
+);
+
+// Double-click / double-tap: back to the fitted view.
+canvas.addEventListener("dblclick", () => { if (grid) fit(); });
+window.addEventListener("resize", resize);
 
 init().catch((error) => { statusLine.textContent = "error: " + error.message; });
 </script>
