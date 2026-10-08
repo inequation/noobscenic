@@ -248,7 +248,14 @@ async fn catalog_commands_are_enqueued_and_unknown_names_rejected() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
         value["commands"],
-        json!(["smartClean", "pause", "continue", "stop", "findCharge", "pauseReturn"])
+        json!([
+            "smartClean",
+            "pause",
+            "continue",
+            "stop",
+            "findCharge",
+            "pauseReturn"
+        ])
     );
 
     let (status, value) =
@@ -309,6 +316,52 @@ async fn the_control_endpoint_writes_realtime_steering_frames() {
     state.registry.remove(SN, "b-test");
     let (status, _) = call_json(&app, post_form("/api/robot/Foo/control", "code=4000")).await;
     assert_eq!(status, StatusCode::CONFLICT);
+
+    cleanup(state).await;
+}
+
+#[tokio::test]
+async fn the_control_watchdog_leaves_manual_mode_when_the_client_goes_quiet() {
+    let (state, app) = setup("watchdog").await;
+    adopt(&state).await;
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+    state.registry.register(
+        SN,
+        noobscenic::channel_b::registry::handle("b-test", "127.0.0.1:1", tx),
+    );
+
+    // A steering frame arms the watchdog; a fresh one must not fire it.
+    let _ = call_json(&app, post_form("/api/robot/Foo/control", "code=3005")).await;
+    let steering = rx.try_recv().expect("the steering frame");
+    assert_eq!(steering.frame["data"]["data"]["ctrlCode"], 3005);
+    noobscenic::web::poll_control_watchdog_once(&state, i64::MAX).await;
+    assert!(
+        rx.try_recv().is_err(),
+        "a recent frame must not trigger the watchdog"
+    );
+
+    // Silence: the watchdog leaves manual mode once, then stays quiet.
+    noobscenic::web::poll_control_watchdog_once(&state, 0).await;
+    let stop = rx.try_recv().expect("the watchdog frame");
+    assert_eq!(stop.frame["encrypt"], 0);
+    assert_eq!(stop.frame["data"]["infoType"], 21020);
+    assert_eq!(stop.frame["data"]["data"]["ctrlCode"], 4000);
+    noobscenic::web::poll_control_watchdog_once(&state, 0).await;
+    assert!(
+        rx.try_recv().is_err(),
+        "the watchdog fires once per session"
+    );
+
+    // An explicit 4000 from the client clears the tracking, so no second stop follows.
+    let _ = call_json(&app, post_form("/api/robot/Foo/control", "code=4000")).await;
+    let explicit = rx.try_recv().expect("the client's own 4000");
+    assert_eq!(explicit.frame["data"]["data"]["ctrlCode"], 4000);
+    noobscenic::web::poll_control_watchdog_once(&state, 0).await;
+    assert!(
+        rx.try_recv().is_err(),
+        "an explicit leave must not be followed by a watchdog frame"
+    );
 
     cleanup(state).await;
 }

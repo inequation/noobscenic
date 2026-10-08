@@ -821,9 +821,10 @@ Steering is in too: the drawer's `🕹️` opens a bottom sheet whose four butto
 realtime `21020` frames straight to the device writer (no queue, no rows), repeating
 every 250 ms while held, with `4001` on release and `4000` on close; the status poll
 speeds up to 300 ms while control frames flow and falls back to 1.5 s after they stop.
-The server-side watchdog from §20.4 is not implemented yet — the robot zeroes its own
-speed after 400 ms and leaves manual mode after 30 s, so a dead client cannot leave it
-driving. The phase's other three items are untouched.
+The server-side watchdog is in as well: after 2 s without a control frame the server
+sends `4000` itself, so a closed tab or dead Wi-Fi leaves the robot stationary (its own
+400 ms speed timeout is the first line, this is the second) and out of manual mode.
+The phase's other three items are untouched.
 
 ---
 
@@ -1037,9 +1038,10 @@ Three facts shape the design:
 * The first steering command **interrupts a running clean** and enters manual mode;
   4001 also starts manual mode, so it is only ever sent after a steering command.
 
-Safety: a server-side watchdog (no steering frame from a watched client for ~2 s →
-send 4000) so a closed tab or dead Wi-Fi cannot leave the robot in manual mode. The
-UI is a four-button pad (`pointerdown`/`pointerup`/`pointercancel`, arrow keys on
+Safety: a server-side watchdog — no steering frame from a watched client for 2 s and
+the server sends 4000 itself, so a closed tab or dead Wi-Fi cannot leave the robot in
+manual mode (an explicit 4000 from the client clears the watch instead of arming it).
+The UI is a four-button pad (`pointerdown`/`pointerup`/`pointercancel`, arrow keys on
 desktop) that shows when the robot is in `rfctrl`.
 
 ### 20.5 Editing designated zones (the big one)

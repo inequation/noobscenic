@@ -25,7 +25,7 @@ use tokio::sync::watch;
 
 use crate::AppState;
 use crate::channel_a::handlers;
-use crate::channel_b::codec;
+use crate::channel_b::{codec, registry};
 use crate::db::{now_ms, queries};
 use crate::error::Error;
 use crate::proto::info_type;
@@ -39,6 +39,12 @@ const WATCHER_TTL_MS: i64 = 5_000;
 
 /// The presence-gated path poller's cadence while someone is watching.
 const PATH_POLL_INTERVAL: Duration = Duration::from_secs(5);
+
+/// How long after the last control frame the watchdog steps in and leaves manual mode
+/// (doc/PLAN.md §20.4). The robot would wait 30 s of its own accord; a closed tab or a
+/// dead Wi-Fi should not leave it in `rfctrl` that long.
+const CONTROL_WATCHDOG_MS: i64 = 2_000;
+const CONTROL_WATCHDOG_TICK: Duration = Duration::from_millis(500);
 
 /// The argument-less commands the UI offers, by raw name. Every entry is a fixed
 /// frame; the queue, its TTL and the ACK correlation do the rest (doc/PLAN.md §19).
@@ -60,6 +66,47 @@ const CONTROL_CODES: [i64; 6] = [3005, 3006, 3007, 3008, 4000, 4001];
 #[derive(Default)]
 pub struct Watchers {
     last_touch: Mutex<HashMap<String, i64>>,
+}
+
+/// Devices we have recently sent steering frames to, and when — what the watchdog
+/// needs to know. Cleared by an explicit `4000` (the client leaving manual mode).
+#[derive(Default)]
+pub struct Controls {
+    last_frame: Mutex<HashMap<String, i64>>,
+}
+
+impl Controls {
+    pub fn new() -> Controls {
+        Controls::default()
+    }
+
+    pub fn touch(&self, sn: &str) {
+        self.lock().insert(sn.to_string(), now_ms());
+    }
+
+    pub fn clear(&self, sn: &str) {
+        self.lock().remove(sn);
+    }
+
+    fn stale(&self, stale_ms: i64) -> Vec<String> {
+        let now = now_ms();
+        self.lock()
+            .iter()
+            .filter(|(_, at)| now - **at >= stale_ms)
+            .map(|(sn, _)| sn.clone())
+            .collect()
+    }
+
+    fn lock(&self) -> MutexGuard<'_, HashMap<String, i64>> {
+        self.last_frame
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    #[cfg(test)]
+    fn touch_at(&self, sn: &str, ms: i64) {
+        self.lock().insert(sn.to_string(), ms);
+    }
 }
 
 impl Watchers {
@@ -327,12 +374,16 @@ pub async fn control(
         0,
         codec::message(21020, json!({"ctrlCode": form.code}), None),
     );
-    match handle
-        .tx
-        .send(crate::channel_b::registry::Outbound::frame(frame))
-        .await
-    {
-        Ok(()) => Json(json!({"code": form.code})).into_response(),
+    match handle.tx.send(registry::Outbound::frame(frame)).await {
+        Ok(()) => {
+            // Arm the watchdog, unless this frame *is* the client leaving manual mode.
+            if form.code == 4000 {
+                state.controls.clear(&sn);
+            } else {
+                state.controls.touch(&sn);
+            }
+            Json(json!({"code": form.code})).into_response()
+        }
         Err(_) => (
             StatusCode::CONFLICT,
             Json(json!({"error": "connection is gone"})),
@@ -378,6 +429,39 @@ pub fn spawn_path_tracker(state: AppState, mut shutdown: watch::Receiver<()>) {
             }
         }
     });
+}
+
+/// The steering watchdog (doc/PLAN.md §20.4): a client that stops sending control
+/// frames — tab closed, Wi-Fi died mid-hold — gets `4000` from the server instead of
+/// leaving the robot in manual mode until its own 30 s timeout.
+pub fn spawn_control_watchdog(state: AppState, mut shutdown: watch::Receiver<()>) {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(CONTROL_WATCHDOG_TICK);
+        loop {
+            tokio::select! {
+                _ = shutdown.changed() => break,
+                _ = ticker.tick() => poll_control_watchdog_once(&state, CONTROL_WATCHDOG_MS).await,
+            }
+        }
+    });
+}
+
+/// One watchdog pass. Public so tests can drive it without the timer.
+pub async fn poll_control_watchdog_once(state: &AppState, stale_ms: i64) {
+    for sn in state.controls.stale(stale_ms) {
+        state.controls.clear(&sn);
+        let Some(handle) = state.registry.get(&sn) else {
+            continue; // offline: there is nothing left to stop
+        };
+        let frame = codec::envelope(0, codec::message(21020, json!({"ctrlCode": 4000}), None));
+        match handle.tx.send(registry::Outbound::frame(frame)).await {
+            Ok(()) => tracing::info!(
+                sn = %sn,
+                "steering watchdog: no control frames; sent 4000 to leave manual mode"
+            ),
+            Err(_) => tracing::debug!(sn = %sn, "steering watchdog: writer is gone"),
+        }
+    }
 }
 
 /// One pass of the path poller: ask each watched, online, not-charging robot for the
@@ -557,5 +641,25 @@ mod tests {
         assert!(watchers.fresh("SN"), "inside the window");
         watchers.touch_at("SN", now_ms() - WATCHER_TTL_MS - 1);
         assert!(!watchers.fresh("SN"), "past the window");
+    }
+
+    #[test]
+    fn control_frames_arm_the_watchdog_until_they_go_stale() {
+        let controls = Controls::new();
+        assert!(controls.stale(0).is_empty(), "nothing to watch yet");
+        controls.touch("SN");
+        assert!(
+            controls.stale(60_000).is_empty(),
+            "a fresh frame is not stale"
+        );
+        assert_eq!(controls.stale(0), vec!["SN".to_string()]);
+        controls.touch_at("SN", now_ms() - 5_000);
+        assert_eq!(
+            controls.stale(CONTROL_WATCHDOG_MS),
+            vec!["SN".to_string()],
+            "five seconds of silence is past the watchdog"
+        );
+        controls.clear("SN");
+        assert!(controls.stale(0).is_empty(), "cleared by an explicit 4000");
     }
 }

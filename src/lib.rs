@@ -42,6 +42,8 @@ pub struct AppState {
     /// Which robots have the web UI open right now (doc/PLAN.md §19): the page's
     /// poll is the heartbeat that gates the path poller.
     pub watchers: Arc<web::Watchers>,
+    /// Which robots have been steered recently, for the control watchdog (§20.4).
+    pub controls: Arc<web::Controls>,
 }
 
 /// Open everything the server needs. Fails loudly here, so that once we are serving,
@@ -77,6 +79,7 @@ pub async fn start(config: Config) -> Result<AppState> {
         frame_style: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         pongs: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         watchers: Arc::new(web::Watchers::new()),
+        controls: Arc::new(web::Controls::new()),
     })
 }
 
@@ -99,6 +102,8 @@ pub async fn run(config: Config) -> Result<()> {
     // The presence-gated path poller — doc/PLAN.md §19. It only fetches `21011`
     // chunks while somebody has the web UI open.
     web::spawn_path_tracker(state.clone(), shutdown_tx.subscribe());
+    // Belt and braces for steering: a client that stops sending frames gets 4000.
+    web::spawn_control_watchdog(state.clone(), shutdown_tx.subscribe());
     let signal = tokio::spawn(async move {
         shutdown_signal().await;
         let _ = shutdown_tx.send(());
