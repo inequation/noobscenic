@@ -297,6 +297,12 @@ function zoomAt(x, y, factor) {
   if (!view) return;
   const min = fitScale();
   const next = Math.min(Math.max(view.scale * factor, min), min * 20);
+  // Zoomed all the way out: snap back to the fitted, centred view, so the
+  // minimum zoom can never leave the map off in a corner of empty space.
+  if (next <= min) {
+    fit();
+    return;
+  }
   view.x = x - (x - view.x) * (next / view.scale);
   view.y = y - (y - view.y) * (next / view.scale);
   view.scale = next;
@@ -327,6 +333,10 @@ function pinchMove() {
   const distance = Math.hypot(a.x - b.x, a.y - b.y);
   const min = fitScale();
   const next = Math.min(Math.max(pinch.scale * (distance / pinch.distance), min), min * 20);
+  if (next <= min) {
+    fit();
+    return;
+  }
   view.scale = next;
   view.x = pinch.cx - (pinch.cx - pinch.x) * (next / pinch.scale);
   view.y = pinch.cy - (pinch.cy - pinch.y) * (next / pinch.scale);

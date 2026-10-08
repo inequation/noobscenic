@@ -812,7 +812,9 @@ gating and the charging skip are covered by `tests/web.rs`.
 and draw a no-go zone, all on the same page.
 **Status (2026-10-08):** pan and zoom are in. The map starts fitted to the client
 area (contain, centred), pinch zooms and drag pans on mobile, the wheel zooms about
-the pointer on desktop, and double-click / double-tap refits. The grid is rendered
+the pointer on desktop, and double-click / double-tap refits. Zooming all the way
+out — by wheel or pinch — snaps back to the fitted, centred view, so the minimum
+zoom can never leave the map showing empty space. The grid is rendered
 once per map revision into an offscreen canvas and drawn under the view transform, so
 paths and (one day) zones share the transform and the inverse is ready for hit-testing.
 The phase's other four items are untouched.
