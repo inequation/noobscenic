@@ -17,7 +17,7 @@ Status:
 - ☑️ ACK-correlated command queue (console and one-shot CLI),
 - ☑️ SQLite persistent storage with trace references,
 - ☑️ AES command encryption is configurable;
-- ☑️ a web UI to watch and pan/zoom the map and path and send the basic commands,
+- ☑️ a web UI to watch and pan/zoom the map and path, send the basic commands and steer the robot,
 - ⬜ the trace viewer, replay mode and TLS are deliberately postponed (see "Not yet implemented").
 
 ![Screenshot of the WIP web UI](doc/screenshot.png)

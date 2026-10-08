@@ -248,7 +248,7 @@ async fn catalog_commands_are_enqueued_and_unknown_names_rejected() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
         value["commands"],
-        json!(["smartClean", "pause", "continue", "stop", "findCharge"])
+        json!(["smartClean", "pause", "continue", "stop", "findCharge", "pauseReturn"])
     );
 
     let (status, value) =
@@ -273,6 +273,42 @@ async fn catalog_commands_are_enqueued_and_unknown_names_rejected() {
         .await
         .expect("count");
     assert_eq!(count, 1, "an unknown name must not reach the queue");
+
+    cleanup(state).await;
+}
+
+#[tokio::test]
+async fn the_control_endpoint_writes_realtime_steering_frames() {
+    let (state, app) = setup("control").await;
+    adopt(&state).await;
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+    state.registry.register(
+        SN,
+        noobscenic::channel_b::registry::handle("b-test", "127.0.0.1:1", tx),
+    );
+
+    let (status, value) = call_json(&app, post_form("/api/robot/Foo/control", "code=3005")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(value["code"], 3005);
+    let frame = rx.try_recv().expect("a steering frame was written");
+    assert_eq!(frame.frame["encrypt"], 0);
+    assert_eq!(frame.frame["data"]["infoType"], 21020);
+    assert_eq!(frame.frame["data"]["data"]["ctrlCode"], 3005);
+    assert!(
+        frame.command_id.is_none(),
+        "steering bypasses the queue: no row to point at"
+    );
+
+    // Only the documented steering and stop codes are accepted.
+    let (status, _) = call_json(&app, post_form("/api/robot/Foo/control", "code=3013")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(rx.try_recv().is_err(), "a refused code must not be written");
+
+    // An offline device is a conflict, not a silent drop.
+    state.registry.remove(SN, "b-test");
+    let (status, _) = call_json(&app, post_form("/api/robot/Foo/control", "code=4000")).await;
+    assert_eq!(status, StatusCode::CONFLICT);
 
     cleanup(state).await;
 }

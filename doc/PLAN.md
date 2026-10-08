@@ -805,7 +805,7 @@ gating and the charging skip are covered by `tests/web.rs`.
 - [x] pan and zoom for the map canvas, paths and zones included (§20.1)
 - [ ] spot clean button (§20.2)
 - [ ] "more" menu: specialised modes plus the consumables view (§20.3)
-- [ ] manual steering pad with the ≤300 ms repeat, the 4001 release and the 4000 watchdog (§20.4)
+- [x] manual steering pad with the ≤300 ms repeat, the 4001 release and the 4000 watchdog (§20.4)
 - [ ] zone editor: 21004 → edit → 21003 round-trip for no-go, no-mop and clean zones (§20.5)
 
 **Done when:** a phone can steer the robot, spot-clean it, pick a specialised mode
@@ -817,7 +817,13 @@ out — by wheel or pinch — snaps back to the fitted, centred view, so the min
 zoom can never leave the map showing empty space. The grid is rendered
 once per map revision into an offscreen canvas and drawn under the view transform, so
 paths and (one day) zones share the transform and the inverse is ready for hit-testing.
-The phase's other four items are untouched.
+Steering is in too: the drawer's `🕹️` opens a bottom sheet whose four buttons send
+realtime `21020` frames straight to the device writer (no queue, no rows), repeating
+every 250 ms while held, with `4001` on release and `4000` on close; the status poll
+speeds up to 300 ms while control frames flow and falls back to 1.5 s after they stop.
+The server-side watchdog from §20.4 is not implemented yet — the robot zeroes its own
+speed after 400 ms and leaves manual mode after 30 s, so a dead client cannot leave it
+driving. The phase's other three items are untouched.
 
 ---
 
@@ -897,14 +903,18 @@ DB row is the only place the id has to live):
 | `GET /api/robot/{id}/map` | base64 of the *decompressed* grid + frame (w, h, resolution, x_min, y_min, dock) |
 | `GET /api/robot/{id}/path` | stored points with the 2-bit type tags stripped |
 | `POST /api/robot/{id}/command` | form `name=<raw name>` from the catalog below → `insert_command` |
+| `POST /api/robot/{id}/control` | form `code=<ctrlCode>` → a realtime `21020` frame straight to the device writer, bypassing the queue (§20.4) |
 
 `web/index.html` is embedded at compile time (`include_str!`), so there is no static
 file serving and no runtime path lookup. Layout: top bar with a `☰` drawer toggle,
 the robot `<select>` and the status line; a `<canvas>` filling the viewport; a left
-drawer holding the raw command `<select>` and Send; and a centred bottom bar with
+drawer with a tools grid (`🕹️` Remote control) above the raw command `<select>` and
+Send; a bottom sheet with the steering pad (`↪️`/`⬆️`/`⬇️`/`↩️`, hold to move,
+`❌` to close); and a centred bottom bar with
 three buttons — `⚡` Charge, a stateful `▶️`/`⏸️`/`⏯️` button that follows the robot's
-`mode` (`charge`/`fullcharge` → smart clean, `sweep` → pause, stopped states →
-continue, anything else disabled), and a disabled `🗺️` zone-cleaning placeholder.
+`mode` (`charge`/`fullcharge`/`idle` → smart clean, `sweep` → pause the clean,
+`backcharge` → pause the return, paused/dormant/fault → continue, anything else
+disabled), and a disabled `🗺️` zone-cleaning placeholder.
 Changing the robot sets `location.search`, so `?id=` stays bookmarkable and the back
 button works. Rendering is client-side: base64 → `Uint8Array` → `ImageData` (0x00
 wall / 0x7F unknown / 0xFF free / other bytes = label hue, as in
@@ -1010,6 +1020,10 @@ left (+1.0 rad/s), 3008 rotate right (−1.0), 3013 free speed
 (`params.speed_v`/`speed_w`), 4001 zero speed, 4000 leave manual mode. No reply to
 21020 — the UI watches `mode: rfctrl` in the status instead, and steering frames are
 fire-and-forget.
+
+> The 3007/3008 directions in FUNC_COMMANDS §2.1 are *[inferred]*; a live check from
+> the pad showed they are the other way round, so the UI binds `↪️` → 3007 and
+> `↩️` → 3008 (FIELD_NOTES.md, 2026-10-08).
 
 Three facts shape the design:
 

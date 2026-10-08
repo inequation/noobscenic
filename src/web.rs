@@ -25,6 +25,7 @@ use tokio::sync::watch;
 
 use crate::AppState;
 use crate::channel_a::handlers;
+use crate::channel_b::codec;
 use crate::db::{now_ms, queries};
 use crate::error::Error;
 use crate::proto::info_type;
@@ -47,7 +48,13 @@ const CATALOG: &[(&str, i64, &str)] = &[
     ("continue", 21017, "{\"cmd\":\"continue\"}"),
     ("stop", 21017, "{\"cmd\":\"stop\"}"),
     ("findCharge", 21012, "{\"cmd\":\"start\"}"),
+    // Pausing the *return* is 21012, not the cleaning pause above (FUNC_COMMANDS §1.3).
+    ("pauseReturn", 21012, "{\"cmd\":\"pause\"}"),
 ];
+
+/// The realtime steering set: 3005–3008 move, 4000 leaves manual mode, 4001 zeroes
+/// the speed (FUNC_COMMANDS §2.1). Everything else is refused.
+const CONTROL_CODES: [i64; 6] = [3005, 3006, 3007, 3008, 4000, 4001];
 
 /// Which robots' APIs were touched recently enough to count as watched.
 #[derive(Default)]
@@ -278,6 +285,60 @@ pub async fn path(State(state): State<AppState>, Path(id): Path<String>) -> Resp
 #[derive(Deserialize)]
 pub struct CommandForm {
     name: String,
+}
+
+#[derive(Deserialize)]
+pub struct ControlForm {
+    code: i64,
+}
+
+/// `POST /api/robot/{id}/control` — one realtime `21020` frame for the steering pad.
+///
+/// This deliberately bypasses the commands queue (doc/PLAN.md §20.4): the robot
+/// zeroes its commanded speed after 400 ms without a fresh frame, so a one-second
+/// queue poll could never drive it. Frames go straight to the device's writer the
+/// way pongs do — no database row, no ACK to wait for (21020 has no reply).
+pub async fn control(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Form(form): Form<ControlForm>,
+) -> Response {
+    let Some(sn) = resolve(&state, &id).await else {
+        return unknown(&id);
+    };
+    state.watchers.touch(&sn);
+
+    if !CONTROL_CODES.contains(&form.code) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": format!("unsupported control code {}", form.code)})),
+        )
+            .into_response();
+    }
+    let Some(handle) = state.registry.get(&sn) else {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({"error": "device is offline"})),
+        )
+            .into_response();
+    };
+
+    let frame = codec::envelope(
+        0,
+        codec::message(21020, json!({"ctrlCode": form.code}), None),
+    );
+    match handle
+        .tx
+        .send(crate::channel_b::registry::Outbound::frame(frame))
+        .await
+    {
+        Ok(()) => Json(json!({"code": form.code})).into_response(),
+        Err(_) => (
+            StatusCode::CONFLICT,
+            Json(json!({"error": "connection is gone"})),
+        )
+            .into_response(),
+    }
 }
 
 /// `POST /api/robot/{id}/command` — one catalog name into the queue.

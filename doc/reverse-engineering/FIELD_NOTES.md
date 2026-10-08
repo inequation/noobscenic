@@ -137,6 +137,15 @@ along; only the firewall rule changed.
    `echo ap > /data/cfg/wifi_mode` to re-enter AP mode without a factory reset
    (`PAIRING_LOG_ANALYSIS.md` §6).
 
+## Steering directions for `21020` 3007/3008 (2026-10-08, [field])
+
+FUNC_COMMANDS §2.1 lists 3007 as "rotate left" and 3008 as "rotate right", both with
+the direction marked *[inferred]*. Driving the robot from the web UI's steering pad
+shows they are the other way round on this build: **3007 turns it clockwise (right)
+and 3008 counter-clockwise (left)**. The pad binds the glyphs accordingly — `↪️` →
+3007, `↩️` → 3008 — and the buttons then turn the robot the way the arrows point.
+Treat the §2.1 labels as swapped until someone re-checks them.
+
 ## Raw evidence
 
 * `/media/sf_reshell-shared/device-log.bin` — robot's `/tmp/WifiConfLog`, 2026-10-04
