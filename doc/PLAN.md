@@ -899,9 +899,13 @@ DB row is the only place the id has to live):
 | `POST /api/robot/{id}/command` | form `name=<raw name>` from the catalog below → `insert_command` |
 
 `web/index.html` is embedded at compile time (`include_str!`), so there is no static
-file serving and no runtime path lookup. Layout: top bar with the robot `<select>`,
-a `<canvas>` filling the viewport, bottom bar with the command `<select>` and Send;
-changing the robot sets `location.search`, so `?id=` stays bookmarkable and the back
+file serving and no runtime path lookup. Layout: top bar with a `☰` drawer toggle,
+the robot `<select>` and the status line; a `<canvas>` filling the viewport; a left
+drawer holding the raw command `<select>` and Send; and a centred bottom bar with
+three buttons — `⚡` Charge, a stateful `▶️`/`⏸️`/`⏯️` button that follows the robot's
+`mode` (`charge`/`fullcharge` → smart clean, `sweep` → pause, stopped states →
+continue, anything else disabled), and a disabled `🗺️` zone-cleaning placeholder.
+Changing the robot sets `location.search`, so `?id=` stays bookmarkable and the back
 button works. Rendering is client-side: base64 → `Uint8Array` → `ImageData` (0x00
 wall / 0x7F unknown / 0xFF free / other bytes = label hue, as in
 `tools/map2png.py`), `putImageData`, then CSS scaling with

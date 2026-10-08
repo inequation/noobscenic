@@ -13,6 +13,7 @@
   header, footer { display: flex; align-items: center; gap: 8px;
                    padding: 8px 10px; background: #1f2229; }
   header { flex-wrap: wrap; }
+  footer { justify-content: center; }
   #status { flex: 1 1 100%; min-width: 0; font-size: 13px; color: #9aa0aa;
             white-space: nowrap; overflow-x: auto; }
   main { flex: 1; position: relative; overflow: hidden; }
@@ -23,30 +24,51 @@
                    border: 1px solid #3a3f48; background: #262a32; color: inherit; }
   select { max-width: 65vw; }
   button { min-width: 88px; }
+  button.big { min-width: 64px; font-size: 22px; line-height: 1; padding: 10px 12px; }
+  button:disabled { opacity: 0.45; }
+  #menu-toggle { min-width: 0; font-size: 20px; line-height: 1; padding: 6px 10px; }
+  #menu { position: fixed; left: 0; bottom: 0; width: 15rem; z-index: 2;
+          background: #1f2229; border-right: 1px solid #2c313a; overflow-y: auto;
+          transform: translateX(-100%); transition: transform 150ms ease; }
+  #menu.open { transform: none; }
+  #menu .drawer { display: flex; flex-direction: column; gap: 8px; padding: 10px; }
   #sent { min-width: 0; font-size: 13px; color: #9aa0aa;
           white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 </style>
 </head>
 <body>
 <header>
+  <button id="menu-toggle" title="More…">☰</button>
   <label for="robot">Robot</label>
   <select id="robot"></select>
   <span id="status">loading…</span>
 </header>
+<aside id="menu">
+  <div class="drawer">
+    <select id="command"></select>
+    <button id="send">Send</button>
+    <span id="sent"></span>
+  </div>
+</aside>
 <main><canvas id="map" width="1" height="1"></canvas></main>
 <footer>
-  <select id="command"></select>
-  <button id="send">Send</button>
-  <span id="sent"></span>
+  <button id="charge" class="big" title="Charge">⚡</button>
+  <button id="primary" class="big" title="Unknown state" disabled>▶️</button>
+  <button id="zones" class="big" title="Zone cleaning" disabled>🗺️</button>
 </footer>
 <script>
 "use strict";
 const canvas = document.getElementById("map");
 const ctx = canvas.getContext("2d");
+const header = document.querySelector("header");
 const robotSelect = document.getElementById("robot");
 const commandSelect = document.getElementById("command");
 const statusLine = document.getElementById("status");
 const sentLine = document.getElementById("sent");
+const menu = document.getElementById("menu");
+const menuToggle = document.getElementById("menu-toggle");
+const chargeButton = document.getElementById("charge");
+const primaryButton = document.getElementById("primary");
 
 let robot = null;   // the {id} the API is addressed by
 let mapRev = null;  // "id:received_ms" of the drawn map
@@ -94,6 +116,15 @@ async function init() {
     commandSelect.append(option);
   }
   document.getElementById("send").onclick = send;
+  chargeButton.onclick = () => sendCommand("findCharge");
+  primaryButton.onclick = () => {
+    if (primaryButton.dataset.command) sendCommand(primaryButton.dataset.command);
+  };
+  menuToggle.onclick = () => {
+    const open = menu.classList.toggle("open");
+    menuToggle.textContent = open ? "⦀" : "☰";
+    if (open) menu.style.top = header.offsetHeight + "px";
+  };
 
   if (!robotSelect.value) {
     statusLine.textContent = "no robots seen yet";
@@ -111,6 +142,7 @@ async function tick() {
   try {
     const summary = await api("/summary");
     statusLine.textContent = describe(summary);
+    updateButtons(summary);
     const map = summary.map;
     if (map && map.map_id != null) {
       const rev = map.map_id + ":" + map.received_ms;
@@ -144,13 +176,50 @@ function describe(summary) {
 }
 
 async function send() {
+  await sendCommand(commandSelect.value);
+}
+
+async function sendCommand(name) {
   try {
-    const body = new URLSearchParams({ name: commandSelect.value });
+    const body = new URLSearchParams({ name });
     const reply = await api("/command", { method: "POST", body });
-    sentLine.textContent = "queued #" + reply.queued + " " + reply.name;
+    const note = "queued #" + reply.queued + " " + reply.name;
+    sentLine.textContent = note;
+    statusLine.textContent = note; // the next poll overwrites it
   } catch (error) {
     sentLine.textContent = "send failed: " + error.message;
   }
+}
+
+// Bottom bar: the stateful button follows the robot's `mode` (FUNC_STATUS §3.1).
+// Docked (charge/fullcharge) starts a clean, `sweep` pauses, and the stopped states
+// resume; anything else (returning, manual, fault) leaves it disabled with the raw
+// mode as its tooltip.
+const PRIMARY_STATES = {
+  charge: ["▶️", "Smart cleaning", "smartClean"],
+  fullcharge: ["▶️", "Smart cleaning", "smartClean"],
+  sweep: ["⏸️", "Pause", "pause"],
+  pause: ["⏯️", "Continue", "continue"],
+  idle: ["⏯️", "Continue", "continue"],
+  dormant: ["⏯️", "Continue", "continue"],
+  fault: ["⏯️", "Continue", "continue"],
+};
+
+function updateButtons(summary) {
+  const mode = (summary.status || {}).mode || "";
+  chargeButton.disabled = !(summary.online && mode);
+  const state = PRIMARY_STATES[mode];
+  if (!summary.online || !state) {
+    primaryButton.disabled = true;
+    primaryButton.textContent = "▶️";
+    primaryButton.title = mode || "Unknown state";
+    delete primaryButton.dataset.command;
+    return;
+  }
+  primaryButton.disabled = false;
+  primaryButton.textContent = state[0];
+  primaryButton.title = state[1];
+  primaryButton.dataset.command = state[2];
 }
 
 function draw() {
@@ -393,7 +462,10 @@ canvas.addEventListener(
 
 // Double-click / double-tap: back to the fitted view.
 canvas.addEventListener("dblclick", () => { if (grid) fit(); });
-window.addEventListener("resize", resize);
+window.addEventListener("resize", () => {
+  if (menu.classList.contains("open")) menu.style.top = header.offsetHeight + "px";
+  resize();
+});
 
 init().catch((error) => { statusLine.textContent = "error: " + error.message; });
 </script>
