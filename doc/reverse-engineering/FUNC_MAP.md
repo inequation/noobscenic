@@ -135,12 +135,14 @@ consecutive failures the pending change is marked as sent and dropped (the sent 
 `+0x68`/`+0x70`/`+0x78` is updated and the force flag is cleared). A server outage therefore
 **loses the pending map** until the map changes again or a new 20002/21014 request arrives.
 
-**Consequence [static]:** the "safe pong" in PROTOCOL.md (`{"infoType":21006,"data":{}}`) keeps
-the link alive, **but the robot will never upload maps**. To get maps, pong with:
+**Consequence [static]:** a flat or unenveloped pong keeps the link alive, **but the robot will
+never upload maps**. To get maps, pong with the fully enveloped form (corrected 2026-10-07,
+`CHANNEL_B_INBOUND.md`):
 ```
-{"infoType":21006,"encrypt":0,"data":{"isExistConnect":true}}#\t#
+{"encrypt":0,"data":{"infoType":21006,"data":{"isExistConnect":true}}}#\t#
 ```
-The integer `encrypt` field is needed to pass the inbound gate described in PROTOCOL.md §B.
+Both the outer `encrypt`/`data` envelope and the *inner* integer `infoType` are required — the
+robot dispatches the contents of the outer `data`.
 
 ### 2.3 Raster content and coordinates (extends MAP.md)
 - **Source [static]:** `MapDataReal` `FUN_00438fa0` reads the ShowMap shm, then calls
@@ -245,8 +247,9 @@ tagged otherwise.
 
 ## 3. Cleaning path (trace) — corrects MAP.md §21011
 
-- **Request/response, not a stream [static].** The cloud sends
-  `{"infoType":21011,"encrypt":0,"data":{"startPos":<int>,"mask":<int>},"dInfo":{"ts":..,"userId":..}}`.
+- **Request/response, not a stream [static].** The cloud sends (enveloped; corrected 2026-10-07,
+  `CHANNEL_B_INBOUND.md`)
+  `{"encrypt":0,"data":{"infoType":21011,"data":{"startPos":<int>,"mask":<int>},"dInfo":{"ts":…,"userId":…}}}`.
   Handler `FUN_0046ee48` starts PathSend (`FUN_0045dea0`) from `startPos`. The robot answers over
   **HTTP** `POST cleanPack/response` (URL table `+0x68`) with body
   `sn=%s&infoType=21011&ts=%s&userId=%s&data=`:
@@ -384,7 +387,7 @@ Persisted file: `/tmp/Run/LastRecord/AreaSetting` = `{"mapId":<int>,"value":[reg
 
 ### 5.1 Set the whole list — `21003` SetAreaTactics (cloud → robot)
 ```
-{"infoType":21003,"encrypt":0,"data":{"mapId":<int>,"value":[region,...]}}
+{"encrypt":0,"data":{"infoType":21003,"data":{"mapId":<int>,"value":[region,...]},"dInfo":{"ts":"…","userId":"…"}}}
 ```
 - `FUN_00471758` → `FUN_00410f50` → `AreaProcess::SetAreaData`. This **replaces** the whole
   list, rewrites `AreaSetting`, and posts `EID_I_APP_SET_FORBID_AREA`(1050) and
@@ -403,7 +406,7 @@ Persisted file: `/tmp/Run/LastRecord/AreaSetting` = `{"mapId":<int>,"value":[reg
   Always fetch with 21004, edit, and send back.
 
 ### 5.2 Read the list — `21004` GetAreaTactics
-- `{"infoType":21004,"encrypt":0,"data":{}}` → the reply `data` is the `AreaSetting` JSON
+- `{"encrypt":0,"data":{"infoType":21004,"data":{}}}` → the reply `data` is the `AreaSetting` JSON
   (`FUN_00471e28` / `FUN_00411088`) [static].
 - The reply is the **stored JSON verbatim** — it echoes exactly what was last posted, unsnapped
   vertices, unknown fields and over-long strings included.
@@ -415,10 +418,11 @@ Persisted file: `/tmp/Run/LastRecord/AreaSetting` = `{"mapId":<int>,"value":[reg
 
 ### 6.1 `21023` ActiveRegions (`FUN_00471bc0` → `FUN_0041bdf8`) [static]
 ```
-{"infoType":21023,"encrypt":0,"data":{
+{"encrypt":0,"data":{"infoType":21023,"data":{
    "cleanId":[<int>,...],          // REQUIRED, otherwise "ActiveRegions no cleanId" → fail
    "extraAreas":[region,...],      // optional ad-hoc regions (§4 schema)
-   "segmentId":[<label>,...] }}    // optional auto-segmented rooms
+   "segmentId":[<label>,...] },    // optional auto-segmented rooms
+   "dInfo":{"ts":"…","userId":"…"}}}
 ```
 `cleanId` values:
 
@@ -441,14 +445,18 @@ Persisted file: `/tmp/Run/LastRecord/AreaSetting` = `{"mapId":<int>,"value":[reg
 - Practical use: including `-3` alongside the targets keeps stored no-go zones active —
   **recommendation only; no firmware requirement or observed behaviour behind it [inferred]**.
 
-### 6.2 Does 21023 start the job? — unknown
-- `network_proxy` posts only 1051, never the start event 1043 [static].
-- `task_manager` reacts to 1051 through a virtual call with argument 2 when idle and 4 when
-  working (`tm_all.c` around line 14086 and 14726). While working it posts
-  `EID_I_ACTIVE_REGIONS_AT_WORK`.
-- It is **not established** whether an idle robot starts cleaning on 21023 alone, or whether a
-  start command is also needed (21005 `{"mode":"smartClean"}`, see `FUNC_COMMANDS.md`). Test on
-  hardware.
+### 6.2 Does 21023 start the job? — resolved 2026-10-09 (`ZONE_CLEAN.md`)
+- The 21023 handler posts only 0x41b, never a start event [static] (the start events
+  0x410/0x411/0x413 come from the 21005 handlers). `task_manager` handles 0x41b only in the
+  sweep (arg 2) and CPS-4/0xb (arg 4) states, via `TaskManager+0x110` (`FUN_00417608`): push
+  the shm region set (`0x1389`; sweep additionally pauses/resumes the navigator via `0x7d6`) —
+  a **live update of a running job**. On an idle/docked robot the event is dropped: **21023
+  alone never starts**.
+- **Start with `21005 {"mode":"appointClean"}`** (EID 0x410, no payload): `task_manager` starts
+  `clean_task` from the shm region set 21023 wrote (`-t <CleanSubModeStr>`); `reAppointClean`
+  (0x411) is equivalent. **Do not use `smartClean`/`depthTotalClean` for a zone clean** — they
+  synthesize a whole-map total region and **overwrite the shm**, wiping the selection (log
+  "App start total clean"). Full sequence, state coverage and evidence: `ZONE_CLEAN.md`.
 
 ### 6.3 Spot clean at the current position [static]
 - On the **cloud/Channel-B path**, `21020 {"data":{"ctrlCode":3001}}` → `EID_I_APP_POINT_CLEAN`(1039)
@@ -472,7 +480,7 @@ No "go to point without cleaning" command was found.
 ## 7. Room segmentation editing — `21030` SetAutoAreaMap (`FUN_00473528`) [static]
 
 ```
-{"infoType":21030,"encrypt":0,"data":{"autoAreaId":<int>,"operate":"<op>","extra":{...}}}
+{"encrypt":0,"data":{"infoType":21030,"data":{"autoAreaId":<int>,"operate":"<op>","extra":{...}},"dInfo":{"ts":"…","userId":"…"}}}
 ```
 
 | operate | extra | effect |

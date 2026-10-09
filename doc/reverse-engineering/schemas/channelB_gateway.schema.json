@@ -2,19 +2,45 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "proscenic-m7pro/channelB_gateway.schema.json",
   "title": "Channel B — push gateway (persistent TCP, framed JSON)",
-  "description": "Realtime control/telemetry over a raw TCP socket to the getSockAddr ip:port. WIRE FRAMING (not expressible in JSON Schema): each message is UTF-8 JSON text followed by the 3-byte delimiter 0x23 0x09 0x23 ('#\\t#') IN BOTH DIRECTIONS — the server MUST also terminate its frames with '#\\t#' (no length prefix). CLOUD->DEVICE COMMANDS REQUIRE AN INTEGER 'encrypt' FIELD (see cloudCommand $def): encrypt:0 => data is a plaintext JSON object (no AES needed); encrypt:1 => data is base64(AES-128-ECB(json, session[:16])). A command with no 'encrypt' field is silently DROPPED. DEVICE->CLOUD 'data' is always PLAINTEXT JSON (device never encrypts). AES key = first 16 bytes of data.session from cleanPack/register. KEEPALIVE: device sends 21006 Ping; the server MUST pong (see ping_21006).",
-  "type": "object",
-  "required": ["infoType"],
-  "properties": {
-    "infoType": {"type": "integer", "description": "cloud message type code (distinct from EID_* bus ids)"},
-    "connectionType": {"type": "integer", "description": "only value emitted by firmware is 1 (primary control connection)"},
-    "encrypt": {"type": "integer", "description": "MANDATORY on cloud->device commands. 0 = data is a plaintext JSON object; 1 = data is base64(AES-128-ECB(json, session[:16])). Missing => frame dropped (msg['encrypt'].isInt() gate in FUN_00457f08)."},
-    "message": {"enum": ["ok","fail"]},
-    "reason": {"type": "string", "description": "present on failures, e.g. 'invalid json format !!'"},
-    "data": {"type": ["object","string"], "description": "device->cloud: plaintext JSON object. cloud->device command: object when encrypt:0, base64-AES string when encrypt:1."}
-  },
-  "$comment": "Per-infoType data shapes below (as $defs). Match on infoType then validate data.",
+  "description": "Realtime control/telemetry over a raw TCP socket to the getSockAddr ip:port. WIRE FRAMING (not expressible in JSON Schema): each frame is UTF-8 JSON text followed by the 3-byte delimiter 0x23 0x09 0x23 ('#\\t#') IN BOTH DIRECTIONS — the server MUST also terminate its frames with '#\\t#' (no length prefix). DIRECTION ASYMMETRY (corrected 2026-10-07, see ../CHANNEL_B_INBOUND.md): DEVICE->CLOUD frames are the plaintext message object itself (top-level 'infoType'+'data'; the device never encrypts). CLOUD->DEVICE frames are DOUBLE-NESTED: {\"encrypt\":0|1,\"data\":<MESSAGE>} where MESSAGE = {\"infoType\":N,\"data\":{...},\"dInfo\":{\"ts\":\"...\",\"userId\":\"...\"}} — the robot dispatches the CONTENTS of the outer 'data'. 'encrypt' must be an integer (0 = outer data is the plaintext MESSAGE; 1 = outer data is base64(AES-128-ECB(jsoncpp(MESSAGE), session[:16]))); a frame without 'encrypt' is silently dropped, and a MESSAGE without an integer 'infoType' is dropped one step later (log-only 'WTF!!! Recv Json'). 'dInfo.ts'/'dInfo.userId' must be STRINGS for any command whose handler replies (FUN_00459100 refuses otherwise). AES key = first 16 bytes of data.session from cleanPack/register. KEEPALIVE: device sends 21006 Ping; the server MUST pong with the enveloped form (see pong_21006_cloudToDevice).",
+  "oneOf": [
+    {"$ref": "#/$defs/deviceFrame"},
+    {"$ref": "#/$defs/cloudFrame"}
+  ],
+  "$comment": "Per-infoType MESSAGE shapes below (as $defs). For device->cloud frames, match on the frame's infoType directly. For cloud->device frames, unwrap the outer 'data' (the MESSAGE) and match on ITS infoType.",
   "$defs": {
+    "deviceFrame": {
+      "type": "object",
+      "required": ["infoType"],
+      "properties": {
+        "infoType": {"type": "integer", "description": "message type code (distinct from EID_* bus ids)"},
+        "connectionType": {"type": "integer", "description": "only value emitted by firmware is 1 (primary control connection)"},
+        "message": {"enum": ["ok","fail"]},
+        "reason": {"type": "string", "description": "present on failures, e.g. 'invalid json format !!'"},
+        "data": {"type": ["object","string"], "description": "device->cloud: plaintext JSON object"}
+      }
+    },
+    "cloudFrame": {
+      "type": "object",
+      "required": ["encrypt","data"],
+      "properties": {
+        "encrypt": {"type": "integer", "description": "MANDATORY integer. 0 = outer data is the plaintext MESSAGE object; any other value (use 1) = outer data is base64(AES-128-ECB(jsoncpp(MESSAGE), session[:16])). Missing => frame silently dropped (msg['encrypt'].isInt() gate in FUN_00457f08)."},
+        "data": {"type": ["object","string"], "description": "the MESSAGE object when encrypt:0; the base64-AES string when encrypt:1. The robot dispatches the CONTENTS of this member — it must contain an integer infoType (see cloudMessage)."}
+      }
+    },
+    "cloudMessage": {
+      "type": "object",
+      "description": "The nested MESSAGE the robot dispatches (contents of the cloud frame's outer 'data'). Same shape the device itself emits, plus 'dInfo'.",
+      "required": ["infoType"],
+      "properties": {
+        "infoType": {"type": "integer", "description": "MESSAGE-level type — this is what FUN_00470b28 matches (must be an integer)"},
+        "data": {"type": "object", "description": "handler payload"},
+        "dInfo": {"type": "object", "required": ["ts","userId"],
+          "properties": {"ts": {"type": "string"}, "userId": {"type": "string"}},
+          "description": "reply correlation echoed in the HTTP reply (sn&infoType&ts&userId&data); ts/userId must be STRINGS whenever the handler replies, else the reply is never POSTed"}
+      }
+    },
+    "cloudCommand": {"$ref": "#/$defs/cloudFrame", "description": "Alias of cloudFrame (an enveloped cloud->device command)."},
     "handshake_10001": {
       "type": "object",
       "properties": {
@@ -25,24 +51,20 @@
       }
     },
     "ping_21006_deviceToCloud": {
-      "description": "KEEPALIVE Ping from the device: {\"infoType\":21006,\"data\":{}}. The server MUST pong or the device reconnects (heart_online_ld.cpp).",
+      "description": "KEEPALIVE Ping from the device: {\"infoType\":21006,\"data\":{}}. The server MUST pong (enveloped — see pong_21006_cloudToDevice) or the device reconnects (heart_online_ld.cpp; watchdog = last activity + 15 s, checked 1/s).",
       "type": "object",
       "properties": {"infoType": {"const": 21006}, "data": {"type": "object"}}
     },
     "pong_21006_cloudToDevice": {
-      "description": "Server's pong reply. Receipt alone marks the device online (RecvPong/FUN_00457b30). Safe form: {\"infoType\":21006,\"data\":{}}; optional boolean 'isExistConnect' (app-online reflection). Confirm the pong infoType demux against one capture.",
+      "description": "Server's pong — enveloped: {\"encrypt\":0,\"data\":{\"infoType\":21006,\"data\":{}}}. Receipt marks the device online (RecvPong, via the 21006 handler FUN_00457b30); a boolean 'isExistConnect' inside the INNER data also sets the app-online flag (what enables status pushes and map uploads). A flat/unenveloped pong only refreshes the link timer and never reaches the handler.",
       "type": "object",
-      "properties": {"infoType": {"const": 21006},
-        "data": {"type": "object", "properties": {"isExistConnect": {"type": "boolean"}}}}
-    },
-    "cloudCommand": {
-      "description": "Any cloud->device command MUST include integer 'encrypt'. Absence => dropped (FUN_00457f08 gate).",
-      "type": "object",
-      "required": ["infoType","encrypt","data"],
+      "required": ["encrypt","data"],
       "properties": {
-        "infoType": {"type": "integer"},
-        "encrypt": {"type": "integer", "description": "1 = data is base64(AES-128-ECB(json,session[:16])); ANY other integer (use 0) = data is a plaintext JSON object. Must be an integer or the frame is dropped."},
-        "data": {"type": ["object","string"], "description": "plaintext object when encrypt!=1; base64-AES string when encrypt==1"}
+        "encrypt": {"const": 0},
+        "data": {"type": "object", "required": ["infoType"],
+          "properties": {"infoType": {"const": 21006},
+            "data": {"type": "object", "description": "inner payload; put {\"isExistConnect\":true} here for app-online",
+              "properties": {"isExistConnect": {"type": "boolean"}}}}}
       }
     },
     "mapUpload_20002": {
@@ -69,22 +91,27 @@
     },
     "region": {
       "type": "object",
-      "description": "a room or forbidden zone; appears in map 'area[]' and in SetAreaTactics(21003)",
+      "description": "a room or forbidden zone; appears in map 'area[]' and in SetAreaTactics(21003). name/tag/mode are copied into fixed 32-byte buffers without a length check — keep name/tag <=31 and mode <=30 UTF-8 bytes (FUNC_MAP.md §4).",
       "properties": {
+        "vertexs": {"type": "array", "items": {"type": "array", "items": {"type": "integer"}}, "description": "[x,y] pairs, mm"},
         "id": {"type": "integer", "description": "area id"},
-        "name": {"type": "string", "description": "user room name"},
+        "name": {"type": "string", "description": "user room name (<=31 UTF-8 bytes)"},
         "tag": {"type": "string"},
-        "active": {"type": "string"},
-        "mode": {"type": "string", "description": "per-room clean mode"},
-        "forbidType": {"type": "string", "description": "non-empty => forbidden/no-go zone rather than a room"}
+        "active": {"type": "string", "description": "region state; a no-go/virtual-wall zone is active:\"forbid\""},
+        "mode": {"type": "string", "description": "region kind (FUNC_MAP.md §4)"},
+        "forbidType": {"type": "string", "description": "used only when active == \"forbid\" (it is always present in the robot's output)"}
       }
     },
     "setAreaTactics_21003": {
+      "description": "MESSAGE object (wrap it in the cloud envelope to send). Replaces the whole region list; a read-modify-write must start from the 21004 reply, not from the 20002 area[] (FUNC_MAP.md §4/§5.1).",
       "type": "object",
       "properties": {"infoType": {"const": 21003},
-        "data": {"type": "object", "properties": {"area": {"type": "array", "items": {"$ref": "#/$defs/region"}}}}}
+        "data": {"type": "object", "properties": {
+          "mapId": {"type": "integer"},
+          "value": {"type": "array", "items": {"$ref": "#/$defs/region"}}}}}
     },
     "cleanPath_21011": {
+      "description": "The robot's 21011 reply object, POSTed as the data= value of the HTTP cleanPack/response body (sn=%s&infoType=21011&ts=%s&userId=%s&data=...) — NOT a Channel-B TCP frame.",
       "type": "object",
       "properties": {
         "message": {"const": "ok"},
@@ -96,15 +123,16 @@
             "pathID": {"type": "integer"},
             "startPos": {"type": "integer", "description": "index of first point in this chunk"},
             "totalPoints": {"type": "integer"},
-            "posArray": {"type": "array", "items": {"type": "number"},
-              "description": "flat [x0,y0,x1,y1,...] traversed path"}
-          }}
+            "posArray": {"type": "array", "items": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2},
+              "description": "[[x,y], ...] pairs in mm (FUNC_MAP.md §3)"}
+          }},
+        "dInfo": {"type": "object", "properties": {"ts": {"type": "string"}, "userId": {"type": "string"}}}
       }
     },
     "rc_21020_cloudToDevice": {
-      "description": "REMOTE CONTROL command (cloud->device). data.ctrlCode selects the action (3001..3013; FUNC_COMMANDS.md §3); optional data.params (e.g. {speed_v,speed_w} for 3013). The robot sends NO reply on Channel B — confirm via the status 'mode' echo. The packId/'rfctrl' ack belongs to the separate LAN UDP remote-control handler (FUN_00414140), not this channel.",
+      "description": "REMOTE CONTROL, as the MESSAGE object (wrap in the cloud envelope): {\"encrypt\":0,\"data\":{\"infoType\":21020,\"data\":{\"ctrlCode\":...}}}. data.ctrlCode selects the action (3001..3013; FUNC_COMMANDS.md §3); optional data.params (e.g. {speed_v,speed_w} for 3013). The robot sends NO reply on Channel B — confirm via the status 'mode' echo. The packId/'rfctrl' ack belongs to the separate LAN UDP remote-control handler (FUN_00414140), not this channel.",
       "type": "object",
-      "properties": {"infoType": {"const": 21020}, "encrypt": {"const": 0},
+      "properties": {"infoType": {"const": 21020},
         "data": {"type": "object", "required": ["ctrlCode"],
           "properties": {"ctrlCode": {"type": "integer"}, "params": {"type": "object"}}}}
     }

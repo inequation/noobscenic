@@ -88,7 +88,9 @@ Body = the `ImMessage` JSON:
   command selector; the parameters are other `value.*` fields (`mode`, `fan`,
   `waterTank`, `clearArea`, `forbiddenArea`, …). See `COMMANDS.md`.
 - The cloud translates this Channel-A `ImMessage`/`transitCmd` into a Channel-B
-  `{"infoType":N,"data":{…}}` for the robot. **That app-numeric ↔ robot-Channel-B
+  message for the robot, wrapped on the wire as `{"encrypt":…,"data":<message>}` with
+  the message nested inside (double nesting; `PROTOCOL.md` §B, `CHANNEL_B_INBOUND.md`).
+  **That app-numeric ↔ robot-Channel-B
   mapping crosses Proscenic's cloud and is not fully recoverable from the client; a
   replacement server drives the robot in Channel-B terms directly (COMMANDS.md).**
 

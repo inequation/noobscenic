@@ -172,10 +172,16 @@ Treat the §2.1 labels as swapped until someone re-checks them.
   `extraAreas:[{vertexs:…,"mode":"area"}]` at a deliberately different spot (west of
   the dock, x≈−6.4 m) — neither spot was visited. In all three runs the robot behaved
   as if starting an ordinary whole-home clean from the dock, and `21023` itself is
-  always ACKed without starting anything. `21023` is "Index only" in FUNC_COMMANDS, so
-  the mechanism is unrecovered: see `RE_REQUEST_ZONE_CLEAN.md` for the question passed
-  to the RE agent. Until then the web UI's ▶️ must be treated as "request a clean",
-  not "clean exactly this zone".
+  always ACKed without starting anything. See `RE_REQUEST_ZONE_CLEAN.md` for the
+  question passed to the RE agent.
+
+  **Resolved 2026-10-09 (RE side):** the correct sequence is `21023 {"cleanId":[…]}`
+  followed by **`21005 {"mode":"appointClean"}`** (EID 0x410) — `smartClean` synthesizes
+  a whole-map total region and *overwrites* the clean-area selection before the job
+  starts, so it can never honour zones; `21023` alone only ever live-updates a *running*
+  job and is a no-op when idle. The web UI's ▶️ should therefore send `appointClean`
+  for a zone clean. Evidence, test matrix and state coverage: `ZONE_CLEAN.md` (see also
+  `FUNC_MAP.md` §6.2).
 
 ## Raw evidence
 

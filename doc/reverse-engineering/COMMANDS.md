@@ -11,8 +11,9 @@ A control command passes through three representations:
    `TRANSIT(250)` frame (`WIRE_PROTOCOL.md`). The command selector is the
    **numeric string `value.transitCmd`** (e.g. `"110"`, `"145"`); params are other
    `value.*` fields.
-2. **Cloud → robot (Channel B)** — the robot receives
-   `{"infoType":<N>,"encrypt":0|1,"data":{…}}` (`#\t#`-framed; `PROTOCOL.md` §B).
+2. **Cloud → robot (Channel B)** — the robot receives an enveloped frame
+   `{"encrypt":0|1,"data":{"infoType":N,"data":{…},"dInfo":{…}}}` (`#\t#`-framed;
+   `PROTOCOL.md` §B, `CHANNEL_B_INBOUND.md` — **double nesting**, corrected 2026-10-07).
    **This is the only channel your rehome server speaks to the robot.**
 3. **Firmware-internal handler names** — inside Channel-B `data`, the robot dispatches
    on a **command-name string** (`setVolume`, `cleanMode`, `reboot`, …) plus an int
@@ -117,8 +118,9 @@ Once the robot is pointed at your server (`ip_port.json`), the real cloud never 
 it commands again — so you **cannot capture** a cloud→device command from the live
 device; you must **synthesize** it in Channel-B form. What is proven:
 
-- Transport/format: `{"infoType":<N>,"encrypt":0,"data":{…}}#\t#` (`PROTOCOL.md` §B;
-  `encrypt:0` skips AES).
+- Transport/format: `{"encrypt":0,"data":{"infoType":N,"data":{…},"dInfo":{…}}}#\t#`
+  (`PROTOCOL.md` §B, `CHANNEL_B_INBOUND.md`; `encrypt:0` skips AES; `dInfo` needs string
+  `ts`/`userId` for commands that reply).
 - Inside `data`, the robot dispatches on a **command-name string** (list above) + an
   int value (e.g. `setVolume` value 0..10).
 

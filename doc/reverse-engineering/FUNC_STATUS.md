@@ -229,7 +229,8 @@ cloud singleton's URL member `+0x68` = `cleanPack/response` (`np_all.c` ~77451).
 template is in `FUNC_MAP.md` §3 and `FUNC_COMMANDS.md` §0. Replies do **not** come back on the
 TCP socket.
 
-Request form: `{"infoType":20001,"encrypt":0,"data":{}}#\t#`. The integer `encrypt` field is
+Request form: `{"encrypt":0,"data":{"infoType":20001,"data":{}}}#\t#` (enveloped; corrected
+2026-10-07 — the robot dispatches the outer `data`'s contents, `CHANNEL_B_INBOUND.md`). The integer `encrypt` field is
 mandatory (`PROTOCOL.md` §B).
 
 ### 2.3 R: app-online gate (extends `PROTOCOL.md` "Pong contract") [static]
@@ -241,21 +242,20 @@ The pong must pass the inbound gate in `FUN_00457f08` (integer `encrypt`, `data`
 **or the handler never runs**. The required pong is:
 
 ```
-{"infoType":21006,"encrypt":0,"data":{"isExistConnect":true}}#\t#
+{"encrypt":0,"data":{"infoType":21006,"data":{"isExistConnect":true}}}#\t#
 ```
 
 This is consistent with `FUNC_MAP.md` §2.2.
 
-**Correction to existing documents.** All of these give `{"infoType":21006,"data":{}}` as the
-safe pong, with `isExistConnect` optional and no `encrypt`:
+**Correction to existing documents (2026-10-07, second revision).** An earlier correction kept
+the pong flat (`{"infoType":21006,"encrypt":0,"data":{…}}`) — that is still wrong: the robot
+dispatches the contents of the outer `data`, so the pong must be enveloped as shown above.
+`PROTOCOL.md`, `schemas/README.md` and `schemas/channelB_gateway.schema.json` were updated the
+same day (`CHANNEL_B_INBOUND.md`).
 
-* `PROTOCOL.md` "Pong contract" (around lines 255–258)
-* `schemas/README.md` (around lines 25–27)
-* `schemas/channelB_gateway.schema.json` `pong_21006_cloudToDevice` (its properties lack `encrypt`)
-
-Such a pong keeps the link alive, because any complete frame refreshes the online timer. But it
-is dropped before the pong handler runs, so the robot **never sends status pushes**. Use the
-form above.
+A flat or unenveloped pong still keeps the link alive, because any complete frame refreshes
+the online timer before the gate. But it is dropped at the dispatcher, so the pong handler
+never runs and the robot **never sends status pushes**. Use the form above.
 
 * `isExistConnect:false` turns the push off.
 * Leaving the field out skips `SetIsAppOnline`, so the flag **keeps its previous value**.
@@ -651,7 +651,7 @@ job's time and A = its area:
 * **21016 `SetGoodsStatistics`** (`FUN_00411a70`) takes any of `battery`, `filter`,
   `mainBrush`, `sideBrush`, `sensors` and `mop` given as a **uint**. It writes that absolute
   value (log `"set mainBrush, %u"`) and saves the file.
-  * **Reset = 0**, e.g. `{"infoType":21016,"encrypt":0,"data":{"sideBrush":0}}`.
+  * **Reset = 0**, e.g. `{"encrypt":0,"data":{"infoType":21016,"data":{"sideBrush":0}}}`.
   * The reply is always `"message":"ok"` (§6). Verify with 21015.
   * `motor` and `dustBox` cannot be reset.
   * Command catalog entry: `FUNC_COMMANDS.md` §8. That section defers to this one for the details.
@@ -674,7 +674,7 @@ high, based mainly on the strings.
 ## 8. R: what the robot needs from a server
 
 1. Reply `{"code":0}` to every `uploadEvents` POST. Parse both body templates leniently (§2.1, §4.2).
-2. Pong with `{"infoType":21006,"encrypt":0,"data":{"isExistConnect":true}}#\t#` to enable status
+2. Pong with `{"encrypt":0,"data":{"infoType":21006,"data":{"isExistConnect":true}}}#\t#` to enable status
    pushes (§2.3). Otherwise poll 20001 (§2.2).
 3. Implement `cleanPack/response` and reply **2xx with `{"code":0}`** — a non-2xx or empty body
    re-queues and resends the reply, and `code` **102** re-queues and forces a re-register

@@ -179,9 +179,12 @@ were verified by decompilation unless marked otherwise.
   reader splits the stream on those bytes (`cmp #0x23`/`ccmp #0x9`). **The server MUST
   also terminate every frame it sends with `#\t#`** — the device's inbound splitter
   requires it (there is **no** length prefix; "length-framed" would be wrong).
-* **Message object:** `{"infoType":<int>, "data":{…}}`. Server→device replies and
-  device push-acks also use `"message":"ok"|"fail"`, `"reason":"<str>"` (on errors),
-  and `"packId":<int>` for chunked transfers.
+* **Message object:** `{"infoType":<int>, "data":{…}, "dInfo":{…}}` — this is both the
+  object the robot dispatches and the shape it emits. **Cloud→device frames wrap it in an
+  envelope: `{"encrypt":<int>,"data":<message object>}`** (double nesting — see "Payload
+  crypto" below and `CHANNEL_B_INBOUND.md`). Messages can also carry `"message":"ok"|"fail"`
+  and `"reason":"<str>"` (on errors). (`"packId"` belongs to the separate LAN-UDP
+  remote-control handler, not this channel — §C.)
 
 ### Handshake **[proven]**
 On connect the device sends (then `#\t#`):
@@ -203,26 +206,35 @@ robot's AES key is the register `session`, below, not any 70001 token.)
   reporters (`map_send.cpp`, `msg_report.cpp` `DealNewEvent`, `msg_report_ld.cpp`
   `ReportPush`, `backup_map.cpp` `PushMessage`) `sprintf` plaintext straight into
   `data`. **A server never has to decrypt what the robot sends.**
-* **cloud → device** command: the message object **MUST carry an integer `encrypt`
-  field alongside `data`** — this is a hard gate. Inbound callback `FUN_00457f08`
+* **cloud → device** command: the frame **MUST carry an integer `encrypt` field alongside
+  `data`** — this is a hard gate — and the robot then dispatches **the contents of `data`**
+  (corrected 2026-10-07; see `CHANNEL_B_INBOUND.md`). Inbound callback `FUN_00457f08`
   (`interface_obj.cpp`, the connection onMessage) does, in order (all verified):
   1. `msg["encrypt"].isInt()` — **if not an integer, the frame is dropped** (member
      string `"encrypt"` @ `0x490950`).
   2. `msg.isMember("data")` — **if `data` is absent, dropped** (`"data"` @ `0x488658`).
-  3. `e = msg["encrypt"].asInt()`. **`e != 1` ⇒ `data` is used as a plaintext JSON
-     object** directly; **`e == 1` ⇒ `data` is a string** =
-     `base64( AES-128-ECB( json, key = SESSION[0:16] ) )` and is decrypted
+  3. `e = msg["encrypt"].asInt()`. **`e != 1` ⇒ `data` is taken as a plaintext JSON
+     object**; **`e == 1` ⇒ `data` is a string** =
+     `base64( AES-128-ECB( json, key = SESSION[0:16] ) )`, decrypted and parsed
      (`FUN_00457da0` → `FUN_004789a8`: `EVP_aes_128_ecb`, **padding disabled**
      `EVP_CIPHER_CTX_set_padding(ctx,0)`, key size `0x10` = 16 bytes; on failure:
      `"decrypt data failed. try register again!"`).
+  4. **Only that `data` object is forwarded** (`toStyledString`, disasm
+     `0x458058–0x458070`) to `ProtocolLd::OnNewData` (`FUN_00471208`) and the dispatcher
+     `FUN_00470b28`, which require **its own integer `infoType`** plus its `data`/`dInfo`
+     members. A frame whose outer `data` lacks an integer `infoType` is dropped one step
+     later with a log-only `WTF!!! Recv Json is %s` — silence on the wire.
 
-  So there are **two valid server→device command forms**:
+  So there are **two valid server→device command forms** — note the **double nesting**
+  (`<MESSAGE>` = `{"infoType":<N>,"data":{ …handler payload… },"dInfo":{"ts":"<str>","userId":"<str>"}}`):
   ```
-  {"infoType":<N>,"encrypt":0,"data":{ …plaintext JSON object… }}      # no crypto needed
-  {"infoType":<N>,"encrypt":1,"data":"<base64(AES-128-ECB(json,SESSION[:16]))>"}
+  {"encrypt":0,"data":<MESSAGE>}                                       # no crypto needed
+  {"encrypt":1,"data":"<base64(AES-128-ECB(jsoncpp_text(<MESSAGE>),SESSION[:16]))>"}
   ```
   **`encrypt:0` lets a replacement server skip AES entirely** — the simplest correct
-  path. A command with no `encrypt` field is silently dropped.
+  path. A command with no `encrypt` field is silently dropped; `dInfo.ts`/`dInfo.userId`
+  must be **strings** for any command whose handler replies, or the reply is built but
+  never POSTed (`Check Your Code, the dInfoJson is %s, retJson is %s`).
   The device itself **never encrypts** (the ECB-encrypt wrapper `FUN_00478ac8` has
   **0 callers**); a CBC variant `FUN_00478c50` exists but is unused on this path.
   Matches the RE-repo `decryptor/` (`AES-128-ECB`; its "token" = our `session`).
@@ -284,24 +296,27 @@ it will not "stay connected."** The server MUST reply to each `21006` Ping.
 `10001` handshake, then one every **~6 s** (matching the ~6-7 s heartbeat-loop cadence
 in `FUN_00455090`), and the link stayed up for the whole session once the server ponged.
 
-**Pong contract (recovered statically):** the pong handler `FUN_00457b30` calls
-`RecvPong` (`FUN_00454880`), which **marks the device online on receipt alone**
-(sets the online flag and stores `GetCurrentTickSec`). It then optionally reads a
-boolean member **`isExistConnect`** (`@0x490910`) and stores it (app-online reflection);
-if absent it just logs `"on new ping pong msg..."`. So a safe pong is:
+**Pong contract (recovered statically; pong shape corrected 2026-10-07):** the pong handler
+`FUN_00457b30` calls `RecvPong` (`FUN_00454880`), which **marks the device online on receipt
+alone** (sets the online flag and stores `GetCurrentTickSec`). It then optionally reads a
+boolean member **`isExistConnect`** (`@0x490910`) from the message payload and stores it
+(app-online reflection); if absent it just logs `"on new ping pong msg..."`. The pong is
+dispatched like every other message, so it must use the full envelope
+(`CHANNEL_B_INBOUND.md`, double nesting included):
 ```
-{"infoType":21006,"data":{}}            # or add "isExistConnect":true
+{"encrypt":0,"data":{"infoType":21006,"data":{}}}                      # marks device online
+{"encrypt":0,"data":{"infoType":21006,"data":{"isExistConnect":true}}} # + app-online flag
 ```
 **Why any reply keeps it alive (verified):** the inbound callback `FUN_00457f08`
 (onMessage) calls `FUN_00454928(conn, 0)` as its **first** statement — before the
 `encrypt` gate and before the infoType dispatch — and that call refreshes the same
 online flag (+0xc) and last-activity tick (+0x30) that `RecvPong` writes. So **any
 complete `#\t#`-terminated frame the server sends refreshes the online timer**, even a
-bare `{"infoType":21006,"data":{}}` that (having no integer `encrypt` field) would be
-dropped before reaching the dedicated pong handler `FUN_00457b30`. Practical upshot:
-the "reply to every `21006`" rule is correct and sufficient; the specific pong-handler
-routing (`response_handle`, an `std::map<int,std::function>` logging
-`"Error : Unknown infoType %d"`) is not what keeps the link up.
+flat `{"infoType":21006,"data":{}}` that never reaches the dedicated pong handler
+`FUN_00457b30` (it dies at the dispatcher's integer-`infoType` requirement). Practical
+upshot: answering every `21006` keeps the link up; to also set the **app-online** flag
+(the thing that enables status pushes), send the enveloped pong above. The watchdog is
+`FUN_00455090`: reconnect when `now > last + 15 s`, checked once per second.
 
 **Timing:** the ping period and drop timeout are runtime variables
 (`"…send interval:%d"`, `nanosleep` loop) with no compiled-in constant; **pong every
@@ -561,7 +576,7 @@ only**; you talk to the robot directly._
 | Endpoint | `bl-im-<region>.robotbona.com:20008` (hardcoded in app, CN default `bl-im.robotbona.com`) | ip:port from `/data/bin/Run/Config/ip_port.json` (Proscenic push gateway, `proscenic.cn`) |
 | Framing | 20-byte LE header + JSON (`WIRE_PROTOCOL.md`) | `<JSON>` + 3-byte delimiter `#\t#` (`23 09 23`), §B |
 | Login | cmd 16, `{appId,clientType,token,userId,uuid,userType}` | `{"infoType":10001,"connectionType":1,"data":{"token":"","sn":"<SN>"}}` |
-| Commands | TRANSIT (250) wrapping `ImMessage` | `{"infoType":N,"encrypt":0|1,"data":{…}}` |
+| Commands | TRANSIT (250) wrapping `ImMessage` | `{"encrypt":0|1,"data":<MESSAGE>}` — `<MESSAGE>` = `{"infoType":N,"data":{…},"dInfo":{…}}` (double nesting, `CHANNEL_B_INBOUND.md`) |
 | Who connects here | the phone app | **the robot** |
 
 The robot never opens a Channel-A/imsocket connection (the firmware contains no
@@ -633,10 +648,15 @@ base (file unreadable) is the vendor `https://mobile.proscenic.cn/`.
    - on the `{"infoType":10001,…}` handshake, record the `sn`;
    - if the robot registers over HTTP, mint `data.session` (≥16 bytes → your AES key)
      and any `data.cookies`; `sig`/RSA can be a no-op (the robot only sends `sig`);
-   - **pong every `{"infoType":21006}` immediately** with a `#\t#`-terminated frame,
-     or the robot loops connect→drop→reconnect;
-   - send commands as `{"infoType":N,"encrypt":0,"data":{…}}#\t#` (use `encrypt:0` to
-     skip AES entirely).
+   - **pong every `{"infoType":21006}` immediately** with an enveloped `#\t#`-terminated
+     frame — `{"encrypt":0,"data":{"infoType":21006,"data":{}}}#\t#` — or the robot loops
+     connect→drop→reconnect (a flat pong only refreshes the timer; the nested one also
+     enables status pushes — `CHANNEL_B_INBOUND.md`);
+   - send commands as `{"encrypt":0,"data":{"infoType":N,"data":{…},"dInfo":{"ts":"…","userId":"…"}}}#\t#`
+     — **double nesting**: the robot dispatches the contents of the outer `data`, and
+     *that* object must carry the integer `infoType` (`CHANNEL_B_INBOUND.md`; use
+     `encrypt:0` to skip AES entirely; `dInfo.ts`/`dInfo.userId` must be strings for any
+     command that should reply).
 3. Send **`setID`** (`{"id":…,"deviceSN":"<SN>"}`) to arm the bind and watch your B server
    for the `10001` handshake. Pairing ends only after the full chain succeeds
    (B handshake + `21006` pongs → Channel-A preBind `code:0` → EID `0x460`). **Do not send

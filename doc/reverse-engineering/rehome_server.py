@@ -8,16 +8,23 @@ From RE of firmware `network_proxy` (see PROTOCOL.md section B):
   * Framing: each message is  <UTF-8 JSON>  followed by the 3-byte delimiter
     b'#\\t#' == b'\\x23\\x09\\x23'.  NO length prefix. The server MUST terminate
     every frame it sends with '#\\t#' too, or the robot's splitter never completes.
-  * Message object: {"infoType":<int>, "data":{...}} (+ "message"/"reason"/"packId").
+  * Message object (the thing the robot dispatches): {"infoType":<int>, "data":{...},
+    "dInfo":{"ts":"<str>","userId":"<str>"}}.  dInfo is REQUIRED (string ts/userId) for
+    any command whose handler should reply, or the reply is never POSTed.
   * Device -> server (plaintext, never encrypted): 10001 handshake, 21006 ping,
     20002 map upload, 21011 clean-path.  (21020 is NOT a device report: it is the
     server->robot remote-control command, no reply — FUNC_COMMANDS.md §2.1.)
-  * Server -> device command: {"infoType":N,"encrypt":0,"data":{...}}  (encrypt MUST
-    be an integer or the frame is DROPPED; encrypt:0 => data is a plaintext object,
-    the simplest correct path; encrypt:1 => data is base64(AES-128-ECB(json,
-    session[:16]), padding disabled)).
+  * Server -> device command — DOUBLE-NESTED envelope (corrected 2026-10-07; the robot
+    dispatches the CONTENTS of the outer "data" — CHANNEL_B_INBOUND.md):
+        {"encrypt":0,"data":{"infoType":N,"data":{...},"dInfo":{"ts":"..","userId":".."}}}
+    (encrypt MUST be an integer or the frame is DROPPED; encrypt:0 => outer data is the
+    plaintext message object, the simplest correct path; encrypt:1 => outer data is
+    base64(AES-128-ECB(json-of-message-object, session[:16]), padding disabled)).
   * Keepalive: the robot sends {"infoType":21006,"data":{}} periodically and drops +
-    reconnects if not ponged. Pong immediately.
+    reconnects if not ponged. Pong immediately with the enveloped form:
+        {"encrypt":0,"data":{"infoType":21006,"data":{}}}
+    (add "isExistConnect":true inside the inner data to also set the app-online flag —
+    that is what enables status pushes and map uploads).
 
 Usage (order matters — see PAIRING_LOG_ANALYSIS.md §8):
   1) start this server FIRST:  python3 rehome_server.py <port>
@@ -49,14 +56,26 @@ def aes_ecb_encrypt_b64(plaintext: bytes, key16: bytes) -> str:
 def frame(obj: dict) -> bytes:
     return json.dumps(obj, separators=(',', ':')).encode() + DELIM
 
-def send_command(conn, info_type: int, data: dict, encrypt=0, key16=None):
-    """Send a cloud->device command. encrypt=0 keeps data plaintext (recommended)."""
+def send_command(conn, info_type: int, data: dict, encrypt=0, key16=None, dInfo=None):
+    """Send a cloud->device command.
+
+    Wire shape (double nesting): {"encrypt":e,"data":<MESSAGE>} with
+    MESSAGE = {"infoType":N,"data":data,"dInfo":{"ts":..,"userId":..}}.
+    dInfo needs STRING ts/userId whenever the handler should reply
+    (FUN_00459100 refuses otherwise). encrypt=0 keeps the message plaintext
+    (recommended); encrypt=1 AESes the MESSAGE object with key16 = session[:16].
+    """
+    if dInfo is None:
+        import time
+        dInfo = {"ts": str(int(time.time() * 1000)), "userId": "rehome"}
+    message = {"infoType": info_type, "data": data, "dInfo": dInfo}
     if encrypt == 1:
         assert key16, "encrypt=1 needs the 16-byte session key"
-        payload = aes_ecb_encrypt_b64(json.dumps(data, separators=(',', ':')).encode(), key16)
-        conn.sendall(frame({"infoType": info_type, "encrypt": 1, "data": payload}))
+        payload = aes_ecb_encrypt_b64(
+            json.dumps(message, separators=(',', ':')).encode(), key16)
+        conn.sendall(frame({"encrypt": 1, "data": payload}))
     else:
-        conn.sendall(frame({"infoType": info_type, "encrypt": 0, "data": data}))
+        conn.sendall(frame({"encrypt": 0, "data": message}))
 
 def handle(conn, addr):
     print('[+] robot connected', addr, flush=True)
@@ -82,14 +101,17 @@ def handle(conn, addr):
                 if it == 10001:                       # handshake
                     sn = (msg.get('data') or {}).get('sn')
                     print('    handshake sn=', sn, flush=True)
-                    # ack (harmless); the robot marks online on connect
-                    conn.sendall(frame({"infoType": 10001, "data": {"message": "ok"}}))
+                    # no ack needed: inbound 10001 has no handler on the robot
                 elif it == 21006:                     # keepalive ping -> MUST pong
-                    conn.sendall(frame({"infoType": 21006, "data": {}}))
-                elif it in (20002, 21011, 21020):     # device->cloud data (plaintext)
-                    conn.sendall(frame({"infoType": it, "data": {"message": "ok"}}))
+                    # enveloped pong; put {"isExistConnect":True} inside the inner
+                    # "data" to set the app-online flag (enables pushes/uploads)
+                    conn.sendall(frame({"encrypt": 0, "data": {
+                        "infoType": 21006, "data": {}}}))
                 else:
-                    conn.sendall(frame({"infoType": it, "data": {"message": "ok"}}))
+                    # Device->cloud data (20001/20002/21011 reports etc.). Replies to
+                    # those belong on HTTP cleanPack/response, not this socket
+                    # (PROTOCOL.md §B); this skeleton only logs them.
+                    pass
     except Exception as e:
         print('[!]', addr, e, flush=True)
     finally:

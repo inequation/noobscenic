@@ -45,7 +45,12 @@ the evidence, with confidence stated.
 
 ## 0. Feature checklist
 
-Robot messages are Channel-B `{"infoType":N,"encrypt":0,"data":{…}}` (`PROTOCOL.md` §B). "rc N"
+Robot messages are Channel-B frames with a **doubly-nested envelope** (corrected 2026-10-07,
+`CHANNEL_B_INBOUND.md`): the wire frame is `{"encrypt":0,"data":<MESSAGE>}` and `<MESSAGE>` =
+`{"infoType":N,"data":{…},"dInfo":{"ts":"<str>","userId":"<str>"}}` — the robot dispatches the
+**contents of the outer `data`**. Examples below show `<MESSAGE>`; wrap it in the outer
+`{"encrypt":0,"data":…}` frame. `dInfo` must be present with **string** `ts`/`userId` for any
+command whose handler replies (otherwise no reply is POSTed). "rc N"
 means `infoType 21020` with `data.ctrlCode = N` (§3).
 
 **Replies.** Most command handlers answer with `{"message":"ok"|"fail","infoType":N,…}`
@@ -68,7 +73,10 @@ the invoker at `0x459a50`, which tail-calls `FUN_00459100`. That builds
 worker `FUN_0045ee18` POSTs it to the cloud singleton's URL member `+0x68`). This confirms the
 transport for 20001/21015/21019 (`FUNC_STATUS.md` §2.2, formerly its Open question 5) and agrees
 with `FUNC_MAP.md` §3. Replies do **not** come back on the TCP socket; a replacement server reads
-them from `cleanPack/response`.
+them from `cleanPack/response`. `FUN_00459100` requires **string** members `dInfo.ts` and
+`dInfo.userId` in the dispatched message (keys `0x48e0d0`, `0x490a08`); without them it logs
+`Check Your Code, the dInfoJson is %s, retJson is %s` and never queues the POST — include `dInfo`
+on every command that should reply.
 
 | Feature | App transitCmd | Robot message | Covered where | Status |
 |---|---|---|---|---|
@@ -80,7 +88,7 @@ them from `cleanPack/response`.
 | Scheduled clean firing | (schedule fires on robot) | nothing: the robot starts itself (EID `0x420`) | §7.3 | Known [static] |
 | App-requested appointment clean, re-run | — | 21005 `mode:"appointClean"/"reAppointClean"` | §1.1 | Known [static]. Exact use [inferred] |
 | Smart room clean | — | 21005 `mode:"smartAreaClean"` | `FUNC_MAP.md` §6.4 | Index only |
-| Zone / room / point target clean | 164 (+`cleanArea`) | 21023 | `FUNC_MAP.md` §6.1 | Index only |
+| Zone / room / point target clean | 164 (+`cleanArea`) | 21023 + 21005 `appointClean` | `FUNC_MAP.md` §6.1–6.2, `ZONE_CLEAN.md` | Robot-side sequence known [static]; app 164→21023 mapping [inferred] |
 | Spot clean at current position | — | rc 3001 | `FUNC_MAP.md` §6.3 | Index only |
 | No-go / no-mop zones, room list | 166 (+`forbiddenArea`) | 21003 / 21004 | `FUNC_MAP.md` §5 | Index only |
 | Room segmentation edit (merge/split/reset) | — | 21030 | `FUNC_MAP.md` §7 | Index only |
@@ -135,20 +143,21 @@ fail on `smartClean` does not mean the request was malformed.
 
 | `data.mode` | Robot action | Extra fields |
 |---|---|---|
-| `"smartClean"` | whole-home automatic clean (`FUN_0041b6f8`, StartClean) | The whole `data` object is passed on, so optional `pathType` is honoured. `"pathType":"y_word"` = Y-shaped mopping (§4.4) |
-| `"depthTotalClean"` | deep whole-home clean | The handler builds a new object `{"cover_mode":1}` and copies `pathType` into it if it is a string. `cover_mode` 1 indexes `CoverModeStr` = `depth` (`FUNC_STATUS.md` §3.4) [static, medium confidence on the key order] |
-| `"appointClean"` | scheduled clean (`FUN_00411150`) | none read |
-| `"reAppointClean"` | repeat or resume a scheduled clean (`FUN_004111d8`) | none read. Label [inferred, low] |
+| `"smartClean"` | **whole-home total clean** (`FUN_0041b6f8`) — synthesizes a whole-map total region into the CleanArea shm (**overwrites any 21023 selection**) and posts EID 0x413 | The whole `data` object is passed on, so optional `pathType` is honoured. `"pathType":"y_word"` = Y-shaped mopping (§4.4) |
+| `"depthTotalClean"` | deep whole-home clean (same total-region path) | The handler builds a new object `{"cover_mode":1}` and copies `pathType` into it if it is a string. `cover_mode` 1 indexes `CoverModeStr` = `depth` (`FUNC_STATUS.md` §3.4) [static, medium confidence on the key order] |
+| `"appointClean"` | **start a clean from the current CleanArea region set** (`FUN_00411150`, EID 0x410, no payload) — the zone-clean starter after 21023 (`ZONE_CLEAN.md`); works while idle or docked/charging | none read |
+| `"reAppointClean"` | same start block via EID 0x411 (`FUN_004111d8`) | none read |
 | `"smartAreaClean"` | smart room clean (`FUN_0041afb0`) | see `FUNC_MAP.md` §6.4 |
 
-Minimal example: `{"infoType":21005,"encrypt":0,"data":{"mode":"smartClean"}}`.
+Minimal message: `{"infoType":21005,"data":{"mode":"smartClean"}}` (wire frame: see §0).
 
 App side [static]: `MapLaserActivity` start button sends `transitCmd "100"` with no parameters.
 The app refuses when `workState` is `"5"` (charging) or `"6"`, unless the command is 100, and shows
 an error dialog for `workState` `"0"`, `"30"`, `"31"`, `"32"`. A replacement UI can reuse the same
 gating with the robot `mode` strings (`FUNC_STATUS.md` §3.1, §5.4).
 
-App→robot mapping [inferred, high]: 100 → 21005 `smartClean`.
+App→robot mapping [inferred, high]: 100 → 21005 `smartClean` **for a whole-home start**; when
+zones were selected beforehand the cloud must start via `appointClean` instead (`ZONE_CLEAN.md`).
 
 ### 1.2 Pause, resume, end — `infoType 21017` (`FUN_0046fd48`/`FUN_00470768`) [static]
 
@@ -160,7 +169,7 @@ App→robot mapping [inferred, high]: 100 → 21005 `smartClean`.
 | `"continue"` | resume a paused job (`FUN_00412268`) |
 | `"stop"` | end the job (`FUN_00413970`) |
 
-Example: `{"infoType":21017,"encrypt":0,"data":{"cmd":"pause"}}`.
+Example message: `{"infoType":21017,"data":{"cmd":"pause"},"dInfo":{"ts":"…","userId":"…"}}` (it replies, so `dInfo` is required; wire frame: §0).
 Replies [static]: ok via `FUN_0046fba0`, fail via `FUN_0046f9f8`. Fail when `cmd` is missing, not a
 string or unknown, or when the action function returns non-zero (for example nothing to pause).
 
@@ -219,9 +228,9 @@ magnitudes and the `speed_v`/`speed_w` names:
 | 4000 | stop the remote-control task (leave manual mode) | — |
 | 3009 | accepted, no action | — |
 
-Example (forward): `{"infoType":21020,"encrypt":0,"data":{"ctrlCode":3005}}`. The robot sends **no
+Example (forward) message: `{"infoType":21020,"data":{"ctrlCode":3005}}`. The robot sends **no
 reply** to 21020 (§0 "Replies"); watch `mode` = `rfctrl` in the status instead.
-Example (arc): `{"infoType":21020,"encrypt":0,"data":{"ctrlCode":3013,"params":{"speed_v":0.2,"speed_w":0.5}}}`.
+Example (arc) message: `{"infoType":21020,"data":{"ctrlCode":3013,"params":{"speed_v":0.2,"speed_w":0.5}}}`.
 Integers are accepted as well as decimals: `network_proxy` imports `Json::Value::isDouble` from
 `libcpc.so` (`0x42cd8`), and that build returns true for int, uint and real values [static].
 
@@ -323,7 +332,7 @@ For reference, every `ctrlCode` the robot accepts. Unknown codes are logged
 `data.cmd` (string) = a `WorkFanLevelStr` value: `"quiet"`, `"auto"`, `"strong"`, `"max"` (the
 table also holds `"mop"`, presumably the mop-only fan setting). It is stored as node config
 `FanLevel` and echoed as the status field `workNoisy` (`FUNC_STATUS.md` §3.4).
-Example: `{"infoType":21022,"encrypt":0,"data":{"cmd":"strong"}}`.
+Example message: `{"infoType":21022,"data":{"cmd":"strong"}}` (add `dInfo` — it replies).
 `network_proxy` does not validate the string: `SetWorkMode` (`FUN_00412738`, `dec3.c`) forwards
 any non-empty string as `FanLevel` (an empty string gives −1). It sends it to the config node with
 `SendEventAndWaitReply` (EID `0x45c`, 500 ms timeout); if that node does not answer, the result is
@@ -339,7 +348,7 @@ levels directly.
 
 ### 4.3 Mop water level — `infoType 21024` `setWaterPump` [static]
 
-`{"infoType":21024,"encrypt":0,"data":{"cmd":"setWaterPump","value":N}}` → `SetWaterPump(N)`
+`{"infoType":21024,"data":{"cmd":"setWaterPump","value":N}}` → `SetWaterPump(N)`
 (`FUN_00413100`), stored as node config `WaterLevel` (log `the water leve is %d`). Only
 **1..4** is accepted: `SetWaterPump` returns −1 when `value − 1 > 3` (unsigned compare at
 `0x413174`–`0x41317c`), before contacting the config node, and 21024 then replies fail. A missing
@@ -456,7 +465,7 @@ Re-derived from `time_server_tactics` (`tt.c`, `ttseq.txt`; reviewer disassembly
   * `value` (optional): the tactics list, a JSON array, validated per entry (`FUN_004078f8`) and
     saved to `/tmp/Run/Config/time_setting.json`. It **replaces the whole list**.
   * Neither key causes a failure when missing.
-  Shape: `{"infoType":21001,"encrypt":0,"data":{"timeZone":<int hours>,"value":[entry, …]}}`.
+  Shape: `{"infoType":21001,"data":{"timeZone":<int hours>,"value":[entry, …]}}` (+ `dInfo` — it replies).
 * **21002** (`FUN_00471c68`/`FUN_00474740` → `GetTimeTacticsWithTimeSec`, `FUN_00410c48`) replies
   `{"data":{"timeZone":…,"timeZoneSec":…,"value":[…]},"message":"ok","infoType":21002}`. It shows
   the stored list, including rewrites the robot made (see one-shot entries below).
