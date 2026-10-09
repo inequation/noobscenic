@@ -883,6 +883,40 @@ RSA-1024 key, so this needs the device-side key replacement described in `REPORT
 §6.3 and stays firmly optional); support for other LDRobot-platform vacuums, which
 the channel abstraction already anticipates.
 
+### Embedded target: binary footprint (idea, not scheduled — 2026-10-09)
+
+The server is eventually meant to run on a small always-on box with little RAM to
+spare, so the **binary's** footprint matters more than the LAN's. The idea: ship
+`web/index.html` gzip-compressed at build time (39 451 → 11 744 bytes at level 9,
+measured) and serve the blob **verbatim** with `Content-Encoding: gzip` — the server
+never inflates it, so the binary carries no gzip decoder at all. That is exactly why
+the client that does not advertise gzip gets `406 Not Acceptable` (with a one-line
+plaintext body) rather than a fallback: there is no plaintext copy in the binary to
+fall back to, and refusing is what buys the absent decompressor. Every browser that
+can run this page advertises gzip, so the 406 only ever answers tools.
+
+Shape when we take it on:
+
+* `[build-dependencies] flate2` (host-only — build-dependency code is never linked
+  into the shipped binary) plus a `build.rs` step that writes `OUT_DIR/index.html.gz`;
+  `include_bytes!(concat!(env!("OUT_DIR"), "/index.html.gz"))` replaces `include_str!`,
+  so the plaintext never enters `.rodata`.
+* Serve with `Content-Encoding: gzip`, `Vary: Accept-Encoding` and `Content-Length` of
+  the compressed size; `406` for anything without `Accept-Encoding: gzip`.
+* The `?version=`/`?sn=` OTA branch is a different handler and stays plain JSON, so the
+  robot is unaffected.
+* Operator probes change: `curl --compressed http://host:8080/` prints the page, while a
+  bare `curl` gets the 406 — which still proves the server is up and the UI path is
+  served. Note that in the README when this lands.
+* Same pattern for any future static asset.
+
+Weigh before doing it: it saves ≈27 KB of `.rodata` with no runtime cost and no runtime
+dependency, but the page is the *smallest* thing in a binary dominated by `sqlx`,
+`tokio` and `tracing`; the alternative for a size- or RAM-constrained box is to stop
+embedding altogether and serve `index.html` from disk (0 bytes of `.rodata`, page-cache
+managed). Decision for now: not implemented — revisit with `cargo bloat`/size numbers
+from the actual target so the effort goes to the largest object.
+
 ---
 
 ## 19. Web UI (phase 7)
