@@ -156,8 +156,9 @@ pub async fn index(
     ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], INDEX).into_response()
 }
 
-/// `GET /api/robots` — the dropdown's data. `id` is the `setID` id (`bind_user`)
-/// with the serial number as fallback.
+/// `GET /api/robots` — the dropdown's data. `id` is the serial number (stable in a
+/// bookmark); `label` is what the user sees and can rename. The cloud account the
+/// robot is bound to (`bind_user`) is deliberately not exposed.
 pub async fn robots(State(state): State<AppState>) -> Response {
     let rows = match queries::list_robots(&state.db).await {
         Ok(rows) => rows,
@@ -165,11 +166,12 @@ pub async fn robots(State(state): State<AppState>) -> Response {
     };
     let robots: Vec<Value> = rows
         .into_iter()
-        .map(|(sn, bind_user, bind_state, last_seen_ms)| {
+        .map(|(sn, label, _bind_user, bind_state, last_seen_ms)| {
             let online = state.registry.is_online(&sn);
-            let id = bind_user.unwrap_or_else(|| sn.clone());
+            let label = label.unwrap_or_else(|| sn.clone());
             json!({
-                "id": id,
+                "id": sn,
+                "label": label,
                 "sn": sn,
                 "online": online,
                 "bind_state": bind_state,
@@ -178,6 +180,41 @@ pub async fn robots(State(state): State<AppState>) -> Response {
         })
         .collect();
     Json(json!({"robots": robots})).into_response()
+}
+
+#[derive(Deserialize)]
+pub struct SettingsForm {
+    label: String,
+}
+
+/// `PUT /api/robot/{id}/settings` — the user-visible settings. For now that is only
+/// the label: a name for the robot in this UI, unrelated to the cloud account it is
+/// bound to (operator decision, 2026-10-09).
+pub async fn settings(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(form): Json<SettingsForm>,
+) -> Response {
+    let Some(sn) = resolve(&state, &id).await else {
+        return unknown(&id);
+    };
+    state.watchers.touch(&sn);
+
+    let label = form.label.trim();
+    if label.is_empty() {
+        return bad_request("the label cannot be empty (it defaults to the serial number)");
+    }
+    if label.len() > 64 {
+        return bad_request("the label is over 64 bytes");
+    }
+    match queries::set_device_label(&state.db, &sn, label).await {
+        Ok(true) => {
+            tracing::info!(sn = %sn, label, "device label set");
+            Json(json!({"label": label})).into_response()
+        }
+        Ok(false) => unknown(&id),
+        Err(error) => internal(error),
+    }
 }
 
 /// `GET /api/commands` — the catalog's raw names, so page and server agree.

@@ -55,6 +55,14 @@
                 background: #1f2229; border-bottom: 1px solid #2c313a; }
   #zone-hint { min-width: 0; font-size: 12px; color: #9aa0aa; overflow: hidden;
                white-space: nowrap; text-overflow: ellipsis; }
+  #settings { position: fixed; inset: 0; z-index: 6; display: flex;
+              flex-direction: column; padding: 14px; background: #16181d; }
+  #settings h2 { margin: 0 0 14px; font-size: 18px; }
+  #settings label { font-size: 13px; color: #9aa0aa; }
+  #settings input { font: inherit; padding: 10px; border-radius: 6px;
+                    border: 1px solid #3a3f48; background: #262a32; color: inherit; }
+  #settings .actions { margin-top: auto; display: flex; justify-content: flex-end;
+                       gap: 8px; }
   #sent { min-width: 0; font-size: 13px; color: #9aa0aa;
           white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 </style>
@@ -70,6 +78,7 @@
   <div class="drawer">
     <div class="tools">
       <button id="remote-open" title="Remote control">🕹️</button>
+      <button id="settings-open" title="Settings">⚙️</button>
     </div>
     <select id="command"></select>
     <button id="send">Send</button>
@@ -83,6 +92,15 @@
     <button id="rc-back" title="Backward">⬇️</button>
     <button id="rc-right" title="Rotate right">↪️</button>
     <button id="rc-left" title="Rotate left">↩️</button>
+  </div>
+</section>
+<section id="settings" hidden>
+  <h2>Settings</h2>
+  <label for="settings-label">Label</label>
+  <input id="settings-label" maxlength="64" autocomplete="off" spellcheck="false">
+  <div class="actions">
+    <button id="settings-cancel" type="button">Cancel</button>
+    <button id="settings-save" type="button">Save</button>
   </div>
 </section>
 <div id="zone-types" hidden>
@@ -128,8 +146,11 @@ const menuToggle = document.getElementById("menu-toggle");
 const chargeButton = document.getElementById("charge");
 const primaryButton = document.getElementById("primary");
 const remoteSheet = document.getElementById("remote");
+const settingsPane = document.getElementById("settings");
+const settingsLabel = document.getElementById("settings-label");
 
 let robot = null;   // the {id} the API is addressed by
+let robotEntries = []; // the dropdown's data, latest from /api/robots
 let mapRev = null;  // "id:received_ms" of the drawn map
 let pathRev = null; // "id:span" of the drawn path
 let base = null;    // the fetched map frame
@@ -204,16 +225,20 @@ function api(suffix, options) {
 
 async function init() {
   const robots = await json("/api/robots");
+  robotEntries = robots.robots;
   robotSelect.innerHTML = "";
   for (const entry of robots.robots) {
     const option = document.createElement("option");
     option.value = entry.id;
-    option.textContent = entry.id === entry.sn ? entry.sn : entry.id + " (" + entry.sn + ")";
+    option.textContent = entry.label || entry.id;
     robotSelect.append(option);
   }
   const wanted = new URLSearchParams(location.search).get("id");
-  if (wanted && robots.robots.some((entry) => entry.id === wanted)) {
-    robotSelect.value = wanted;
+  if (wanted) {
+    const match = robots.robots.find(
+      (entry) => entry.id === wanted || entry.label === wanted || entry.sn === wanted,
+    );
+    if (match) robotSelect.value = match.id;
   }
   robotSelect.onchange = () => {
     location.search = "?id=" + encodeURIComponent(robotSelect.value);
@@ -250,6 +275,9 @@ async function init() {
     if (open) menu.style.top = header.offsetHeight + "px";
   };
   document.getElementById("zones").onclick = openZones;
+  document.getElementById("settings-open").onclick = openSettings;
+  document.getElementById("settings-cancel").onclick = closeSettings;
+  document.getElementById("settings-save").onclick = saveSettings;
   document.getElementById("zone-exit").onclick = closeZones;
   document.getElementById("zone-edit").onclick = startEdit;
   document.getElementById("edit-cancel").onclick = cancelEdit;
@@ -344,6 +372,44 @@ async function sendCommand(name) {
 function openRemote() {
   remoteSheet.classList.add("open");
   tick(); // fresh status as the pad opens
+}
+
+// Settings: a full-screen form over everything. Only the label is editable for now.
+function openSettings() {
+  menu.classList.remove("open");
+  menuToggle.textContent = "☰";
+  const entry = robotEntries.find((candidate) => candidate.id === robot);
+  settingsLabel.value = (entry && entry.label) || (entry && entry.sn) || "";
+  settingsPane.hidden = false;
+  settingsLabel.focus();
+  settingsLabel.select();
+}
+
+function closeSettings() {
+  settingsPane.hidden = true;
+}
+
+async function saveSettings() {
+  const label = settingsLabel.value.trim();
+  if (!label) {
+    statusLine.textContent = "the label cannot be empty";
+    return;
+  }
+  try {
+    const reply = await json("/api/robot/" + encodeURIComponent(robot) + "/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ label }),
+    });
+    const entry = robotEntries.find((candidate) => candidate.id === robot);
+    if (entry) entry.label = reply.label;
+    const option = [...robotSelect.options].find((candidate) => candidate.value === robot);
+    if (option) option.textContent = reply.label;
+    statusLine.textContent = "label saved: " + reply.label;
+    closeSettings();
+  } catch (error) {
+    statusLine.textContent = "label not saved: " + error.message;
+  }
 }
 
 function closeRemote() {

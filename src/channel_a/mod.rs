@@ -23,7 +23,7 @@ use axum::extract::{ConnectInfo, Request, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use serde_json::{Map, Value, json};
 use tokio::net::TcpListener;
 
@@ -67,6 +67,7 @@ pub fn router(state: AppState) -> Router {
             post(crate::web::zones_refresh),
         )
         .route("/api/robot/{id}/zones/clean", post(crate::web::zones_clean))
+        .route("/api/robot/{id}/settings", put(crate::web::settings))
         .route("/cleanPack/register", post(handlers::register::register))
         .route(
             "/cleanPack/getSockAddr",

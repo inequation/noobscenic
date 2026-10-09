@@ -18,14 +18,15 @@ pub async fn device_exists(pool: &SqlitePool, sn: &str) -> Result<bool> {
 pub async fn upsert_device_seen(pool: &SqlitePool, sn: &str, ld_sn: Option<&str>) -> Result<()> {
     let now = now_ms();
     sqlx::query(
-        "INSERT INTO devices (sn, ld_sn, bind_state, first_seen_ms, last_seen_ms)
-         VALUES (?, ?, 'unbound', ?, ?)
+        "INSERT INTO devices (sn, ld_sn, label, bind_state, first_seen_ms, last_seen_ms)
+         VALUES (?, ?, ?, 'unbound', ?, ?)
          ON CONFLICT(sn) DO UPDATE SET
              ld_sn = COALESCE(excluded.ld_sn, devices.ld_sn),
              last_seen_ms = excluded.last_seen_ms",
     )
     .bind(sn)
     .bind(ld_sn)
+    .bind(sn) // the visible label starts as the serial number
     .bind(now)
     .bind(now)
     .execute(pool)
@@ -48,8 +49,8 @@ pub async fn upsert_device_sync(
     let now = now_ms();
     sqlx::query(
         "INSERT INTO devices (sn, company_id, mcu_ver, app_version, version_code, git_sha, cloud,
-                              bind_state, first_seen_ms, last_seen_ms)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 'unbound', ?, ?)
+                              label, bind_state, first_seen_ms, last_seen_ms)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'unbound', ?, ?)
          ON CONFLICT(sn) DO UPDATE SET
              company_id   = COALESCE(excluded.company_id, devices.company_id),
              mcu_ver      = COALESCE(excluded.mcu_ver, devices.mcu_ver),
@@ -66,6 +67,7 @@ pub async fn upsert_device_sync(
     .bind(version_code)
     .bind(git_sha)
     .bind(cloud)
+    .bind(sn) // the visible label starts as the serial number
     .bind(now)
     .bind(now)
     .execute(pool)
@@ -463,34 +465,56 @@ pub async fn ack_command(
 
 // ── Phase 7: the web UI's API (doc/PLAN.md §19) ────────────────────────────────
 
-/// `(sn, bind_user, bind_state, last_seen_ms)` for the robot dropdown.
-pub async fn list_robots(pool: &SqlitePool) -> Result<Vec<(String, Option<String>, String, i64)>> {
+/// `(sn, label, bind_user, bind_state, last_seen_ms)` for the robot dropdown.
+pub async fn list_robots(
+    pool: &SqlitePool,
+) -> Result<Vec<(String, Option<String>, Option<String>, String, i64)>> {
     Ok(sqlx::query_as(
-        "SELECT sn, bind_user, bind_state, last_seen_ms
+        "SELECT sn, label, bind_user, bind_state, last_seen_ms
          FROM devices ORDER BY last_seen_ms DESC",
     )
     .fetch_all(pool)
     .await?)
 }
 
-/// Resolve the UI's `{id}` — the `setID` id (recorded as `bind_user`) first, the
-/// serial number second.
+/// Resolve the UI's `{id}`: the editable label first, then the serial number, and the
+/// `bind_user` only as a legacy fallback so bookmarks made while the UI used the cloud
+/// account id still land somewhere. That id is the account the robot is bound to, not
+/// a name for the robot, and is never displayed (operator decision, 2026-10-09).
 pub async fn device_sn_by_id(pool: &SqlitePool, id: &str) -> Result<Option<String>> {
+    let by_label: Option<String> = sqlx::query_scalar(
+        "SELECT sn FROM devices WHERE label = ? ORDER BY last_seen_ms DESC LIMIT 1",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await?;
+    if by_label.is_some() {
+        return Ok(by_label);
+    }
+    let by_sn: Option<String> = sqlx::query_scalar("SELECT sn FROM devices WHERE sn = ? LIMIT 1")
+        .bind(id)
+        .fetch_optional(pool)
+        .await?;
+    if by_sn.is_some() {
+        return Ok(by_sn);
+    }
     let by_user: Option<String> = sqlx::query_scalar(
         "SELECT sn FROM devices WHERE bind_user = ? ORDER BY last_seen_ms DESC LIMIT 1",
     )
     .bind(id)
     .fetch_optional(pool)
     .await?;
-    if by_user.is_some() {
-        return Ok(by_user);
-    }
-    Ok(
-        sqlx::query_scalar("SELECT sn FROM devices WHERE sn = ? LIMIT 1")
-            .bind(id)
-            .fetch_optional(pool)
-            .await?,
-    )
+    Ok(by_user)
+}
+
+/// The user-visible label. Returns whether a device with that serial exists.
+pub async fn set_device_label(pool: &SqlitePool, sn: &str, label: &str) -> Result<bool> {
+    let result = sqlx::query("UPDATE devices SET label = ? WHERE sn = ?")
+        .bind(label)
+        .bind(sn)
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected() == 1)
 }
 
 /// Devices whose `setID` id was never recorded — the candidates for recovering it

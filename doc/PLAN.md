@@ -894,10 +894,11 @@ authentication in the MVP**: anyone who can reach port 8080 can drive the robot.
 That is the accepted threat model, and it is stated here so nobody mistakes it for an
 oversight.
 
-Surface (all on 8080; `{id}` is `devices.bind_user` — the id `setID` set — with the
-`sn` as fallback. A robot that bound before the binding handler existed has its id
-recovered once at startup from the stored preBind, `web::recover_bind_ids`, so the
-DB row is the only place the id has to live):
+Surface (all on 8080). `{id}` is the editable **label** first, the serial number
+second, and — only so old bookmarks still land — the cloud account id the robot bound
+with (`bind_user`) last: that id names the *account*, not the robot, so it is recorded
+but never displayed (operator decision, 2026-10-09). The label starts as the serial
+number and is the only user-editable setting for now.
 
 | Route | Purpose |
 |---|---|
@@ -908,13 +909,16 @@ DB row is the only place the id has to live):
 | `GET /api/robot/{id}/path` | stored points with the 2-bit type tags stripped |
 | `POST /api/robot/{id}/command` | form `name=<raw name>` from the catalog below → `insert_command` |
 | `POST /api/robot/{id}/control` | form `code=<ctrlCode>` → a realtime `21020` frame straight to the device writer, bypassing the queue (§20.4) |
+| `PUT /api/robot/{id}/settings` | JSON `label` → the robot's user-visible name (empty or >64 bytes refused) |
 
 `web/index.html` is embedded at compile time (`include_str!`), so there is no static
 file serving and no runtime path lookup. Layout: top bar with a `☰` drawer toggle,
-the robot `<select>` and the status line; a `<canvas>` filling the viewport; a left
-drawer with a tools grid (`🕹️` Remote control) above the raw command `<select>` and
-Send; a bottom sheet with the steering pad (`↪️`/`⬆️`/`⬇️`/`↩️`, hold to move,
-`❌` to close); and a centred bottom bar with
+the robot `<select>` (showing each robot's label) and the status line; a `<canvas>`
+filling the viewport; a left drawer with a tools grid (`🕹️` Remote control,
+`⚙️` Settings) above the raw command `<select>` and Send; a full-screen Settings form
+whose Save/Cancel sit bottom-right (the label is its only field for now); a bottom
+sheet with the steering pad (`↪️`/`⬆️`/`⬇️`/`↩️`, hold to move, `❌` to close); and a
+centred bottom bar with
 three buttons — `⚡` Charge, a stateful `▶️`/`⏸️`/`⏯️` button that follows the robot's
 `mode` (`charge`/`fullcharge`/`idle` → smart clean, `sweep` → pause the clean,
 `backcharge` → pause the return, paused/dormant/fault → continue, anything else

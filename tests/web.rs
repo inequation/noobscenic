@@ -168,19 +168,24 @@ async fn the_root_serves_the_page_and_still_answers_the_version_check() {
 }
 
 #[tokio::test]
-async fn robots_are_listed_by_their_setid_and_resolved_with_an_sn_fallback() {
+async fn robots_are_listed_by_label_and_resolved_by_label_sn_or_the_legacy_account_id() {
     let (state, app) = setup("robots").await;
     adopt(&state).await;
 
     let (status, value) = call_json(&app, get("/api/robots")).await;
     assert_eq!(status, StatusCode::OK);
     let robot = &value["robots"][0];
-    assert_eq!(robot["id"], ID);
+    assert_eq!(robot["id"], SN, "the id in the URL is the stable serial");
+    assert_eq!(robot["label"], SN, "the label starts as the serial number");
     assert_eq!(robot["sn"], SN);
     assert_eq!(robot["bind_state"], "bound");
+    assert!(
+        robot.get("bind_user").is_none(),
+        "the cloud account id is not a name and must not be exposed"
+    );
 
     let (status, value) = call_json(&app, get("/api/robot/Foo/summary")).await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::OK, "old bookmarks still resolve");
     assert_eq!(value["sn"], SN);
     assert!(value["status"].is_null(), "no telemetry yet");
 
@@ -191,6 +196,67 @@ async fn robots_are_listed_by_their_setid_and_resolved_with_an_sn_fallback() {
     let (status, _) = call_json(&app, get("/api/robot/nobody/summary")).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 
+    cleanup(state).await;
+}
+
+#[tokio::test]
+async fn the_label_is_editable_validated_and_usable_as_the_id() {
+    let (state, app) = setup("label").await;
+    adopt(&state).await;
+
+    let (status, value) = call_json(
+        &app,
+        put_json(
+            "/api/robot/LSLDSM7PROTEST04/settings",
+            &json!({"label": "Kitchen"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(value["label"], "Kitchen");
+
+    let (_, robots) = call_json(&app, get("/api/robots")).await;
+    assert_eq!(robots["robots"][0]["label"], "Kitchen");
+    assert_eq!(robots["robots"][0]["id"], SN, "the URL id stays the serial");
+
+    let (status, summary) = call_json(&app, get("/api/robot/Kitchen/summary")).await;
+    assert_eq!(status, StatusCode::OK, "a label resolves the robot too");
+    assert_eq!(summary["sn"], SN);
+
+    let (status, error) = call_json(
+        &app,
+        put_json(
+            &format!("/api/robot/{SN}/settings"),
+            &json!({"label": "   "}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        error["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("empty")
+    );
+    let (status, _) = call_json(
+        &app,
+        put_json(
+            &format!("/api/robot/{SN}/settings"),
+            &json!({"label": "x".repeat(65)}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "over 64 bytes");
+    let (status, _) = call_json(
+        &app,
+        put_json("/api/robot/nobody/settings", &json!({"label": "Kitchen"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // The rejected attempts left the label alone.
+    let (_, robots) = call_json(&app, get("/api/robots")).await;
+    assert_eq!(robots["robots"][0]["label"], "Kitchen");
     cleanup(state).await;
 }
 
@@ -716,10 +782,18 @@ async fn a_stored_prebind_recovers_the_setid_id_for_the_ui() {
     assert_eq!(noobscenic::web::recover_bind_ids(&state.db).await, 1);
     let (_, value) = call_json(&app, get("/api/robots")).await;
     assert_eq!(
-        value["robots"][0]["id"], ID,
-        "the UI can now resolve ?id=Foo"
+        value["robots"][0]["id"], SN,
+        "the recovered account id is not a name: the UI keeps using the serial"
     );
+    assert_eq!(value["robots"][0]["label"], SN, "and the label starts as the serial");
     assert_eq!(value["robots"][0]["bind_state"], "bound");
+    let (status, summary) = call_json(&app, get("/api/robot/Foo/summary")).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a legacy ?id=Foo bookmark still resolves"
+    );
+    assert_eq!(summary["sn"], SN);
     let bound_ms: Option<i64> = sqlx::query_scalar("SELECT bound_ms FROM devices WHERE sn = ?")
         .bind(SN)
         .fetch_one(&state.db)
