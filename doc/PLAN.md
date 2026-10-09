@@ -447,8 +447,9 @@ interleave mid-frame).
   then flush any pending commands. `gateway.ack_handshake` (default `true`) sends
   the ack in the corrected envelope (below) with inner `infoType` 10001; the dispatcher
   has no 10001 handler, so it only earns a device-side `"Unknown infoType"` log — a
-  config toggle, not a guess baked into the code. The robot never waits for it:
-  every live handshake was followed by its first `21006` 2–5 ms later, before the ack.
+  config toggle, not a guess baked into the code. The robot does not wait for it:
+  across 45 live handshakes the first `21006` arrived a median 2 ms later (a few raced
+  the ack by ~0.3 s) and the session carried on regardless.
 * **`21006` Ping** — pong **immediately**, before any other work on that frame:
   `{"encrypt":0,"data":{"infoType":21006,"data":{"isExistConnect":true}}}` with
   `announce_app_online` (default on), or inner `"data":{}` with it off. The device
@@ -1086,5 +1087,10 @@ their vertices, retypes, deletes, undoes and saves through the 21004 → edit �
 round trip. Live-verified: a zone written over the API came back verbatim from the
 robot, a stale-version write was refused with 409, and the cleaning guard holds both
 edits and starts. Open: `21023` alone does not start a job (ACKed, mode unchanged)
-and the one fallback run cleaned near the robot's start rather than the drawn zone,
-so region targeting is unverified — see FIELD_NOTES.md for the `mapId` hypothesis.
+and, across three runs on two days, the fallback clean stayed near the robot's start
+rather than the drawn zone — including with the region written under the current
+`mapId` and with an inline `extraAreas` polygon at a second location. Region targeting
+is therefore **not working from the outside**; the mechanism is documented in
+FIELD_NOTES.md and asked of the RE agent in RE_REQUEST_ZONE_CLEAN.md. Until that
+answers, the picker's `▶️` sends the documented frames but its result is a whole-home
+clean, and the UI says so.

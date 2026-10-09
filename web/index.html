@@ -449,7 +449,7 @@ function updateBars() {
   play.disabled = zoneState.cleaning || zoneSelected.size === 0;
   play.title = zoneState.cleaning
     ? "A clean is running"
-    : "Clean " + zoneSelected.size + " selected zone(s)";
+    : "Clean " + zoneSelected.size + " selected zone(s) — targeting unverified";
   const edit = document.getElementById("zone-edit");
   edit.disabled = zoneState.cleaning;
   edit.title = zoneState.cleaning ? "A clean is running; editing is blocked" : "Edit zones";
@@ -538,7 +538,10 @@ async function cleanSelectedZones() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ids }),
     });
-    statusLine.textContent = "zone clean queued (" + ids.join(", ") + ")";
+    // Honest about today's finding: 21023 is ACKed, but only the fallback start is
+    // observed to do anything, and it cleans the whole home (FIELD_NOTES.md, 2026-10-09).
+    statusLine.textContent =
+      "clean requested (" + ids.join(", ") + ") — zone targeting is unverified";
     closeZones();
     setTimeout(async () => {
       try {

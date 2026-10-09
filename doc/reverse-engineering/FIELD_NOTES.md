@@ -164,6 +164,18 @@ Treat the §2.1 labels as swapped until someone re-checks them.
   whether `cleanId` resolved to the stored region is unverified. Hypothesis for a
   later session: the stored list's `mapId` (we preserved the robot's own `-1`) may
   have to be the current map id (`1791385091` here) for `cleanId` to resolve.
+* **Follow-up (2026-10-09): the `mapId` hypothesis is disproven, and `extraAreas` does
+  not work either.** With the region written under `mapId:1791385091`, `21023
+  {"cleanId":[1]}` + `smartClean` again cleaned the corridor near the dock
+  (x −5.4 → −3.1 m over 70 s, `cleanArea` ~1 m²), never heading east to the zone.
+  A third run sent `21023` with both `cleanId:[1]` *and* an inline
+  `extraAreas:[{vertexs:…,"mode":"area"}]` at a deliberately different spot (west of
+  the dock, x≈−6.4 m) — neither spot was visited. In all three runs the robot behaved
+  as if starting an ordinary whole-home clean from the dock, and `21023` itself is
+  always ACKed without starting anything. `21023` is "Index only" in FUNC_COMMANDS, so
+  the mechanism is unrecovered: see `RE_REQUEST_ZONE_CLEAN.md` for the question passed
+  to the RE agent. Until then the web UI's ▶️ must be treated as "request a clean",
+  not "clean exactly this zone".
 
 ## Raw evidence
 
