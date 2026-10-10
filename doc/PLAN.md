@@ -837,9 +837,10 @@ clean zone selects it, `▶️` queues the corrected sequence — `21023` with t
 — and `✏️` switches to drawing, moving, retyping, deleting and saving rectangles through
 the 21004 → edit → 21003 round trip with the version etag and the cleaning guard.
 Live-verified: write → read-back verbatim and a refused stale write; the corrected
-zone-clean start awaits a live run (the old `smartClean` fallback was what wiped the
-selection, `ZONE_CLEAN.md`). The spot clean button and the "more" menu are the two
-remaining items.
+zone-clean sequence runs end to end for near zones — travel, `sweep`/`area`, clean,
+dock — but aborts with fault `-2605` for zones ~9–10 m away in the right-hand room,
+an open question in RE_REQUEST_ZONE_CLEAN_ROUTE.md. The spot clean button and the
+"more" menu are the two remaining items.
 
 ---
 
@@ -1140,5 +1141,9 @@ runs from the current CleanArea set and works docked or idle. The server now que
 `21023 {"cleanId":[-3, …ids]}` (stored forbid zones stay active, matching the robot's
 own `[-1,-3]` schedule default) followed by `appointClean`, in that order — the poller
 sorts claimed rows by id so a multi-row enqueue can never overtake itself. The
-corrected sequence is static-analysis-certain but not yet live-tested; that is the
-next session where vacuuming is allowed.
+corrected sequence is **live-verified** (2026-10-10): with a stored zone the robot
+starts `sweep`/`subMode:"area"`, travels to the zone, cleans it and docks itself. It
+works for zones at the dock and ~1.5 m away; two rectangles in the far right-hand room
+(~9–10 m) still abort ~2 s after undocking with `errorState:[-2605]`, even though the
+map's free cells connect the dock to that room — see FIELD_NOTES.md and the follow-up
+question in RE_REQUEST_ZONE_CLEAN_ROUTE.md.

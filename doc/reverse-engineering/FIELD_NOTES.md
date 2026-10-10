@@ -183,6 +183,47 @@ Treat the §2.1 labels as swapped until someone re-checks them.
   for a zone clean. Evidence, test matrix and state coverage: `ZONE_CLEAN.md` (see also
   `FUNC_MAP.md` §6.2).
 
+## Zone clean: live run of the corrected sequence (2026-10-10, [field])
+
+The corrected sequence works — with one unexplained limit. All runs were from the dock
+with a single stored region (`active:"normal"`, world-frame mm), `21023 {"cleanId":[N]}`
+then `21005 {"mode":"appointClean"}`, both ACKed "ok":
+
+| Zone (mm) | Distance from dock | Result |
+|---|---|---|
+| (−5800…−4800, 800…1800) — contains the dock area | ~0 m | **cleaned**, robot returned and docked on its own |
+| (−4600…−3600, 700…1700) — corridor east of the dock | ~1.5 m | **cleaned**, robot returned and docked on its own |
+| (4800…5600, −2200…−1400) — right-hand room | ~10 m | **abort**: `sweep`/`subMode:"area"` then `backcharge` ~2 s later, `errorState:[-2605]`, never left the dock area |
+| (3800…4600, −2400…−1600) — right-hand room, clear of the room's obstacle blob | ~9 m | **same abort, `-2605` within ~2 s** |
+
+Details that constrain the explanation:
+
+* `subMode` is `"area"` throughout the successful runs — the zone selection reaches the
+  task (the plain-zones → `--area` mapping in `ZONE_CLEAN.md` is live-confirmed).
+* The abort is instant (undock, ~0.15 m, fault, return to dock) and identical for two
+  different rectangles in the right-hand room. Both rectangles are 100 % free cells in
+  the newest 20002 map.
+* A 4-connected flood fill over the map's free cells (`0xFF`) from the dock's cell
+  **reaches both far-zone rectangles** (the dock's free component is 19 582 cells and
+  contains the corridor and the right-hand room). So a naive "no free path" explanation
+  does not hold; if the fault is a planner failure it is a stricter internal rule
+  (inflation, door width, a cleaning graph separate from the transit graph, or an
+  area/room association).
+* `-2605` is fault index **23** in the status map (`FUNC_STATUS.md` §4.1); that table's
+  family guess ("bin/water/dock") is *low confidence*, so a navigation/route fault is
+  plausible but unproven.
+* LD event **6023** (index 7 in the `msg_report_ld` map) fired once during the
+  *successful* near-zone clean (14:17:34), so it is not the abort signal. It also fired
+  on 2026-10-07 15:10:30 during a normal clean. 6052 fired once on 10-07 14:58:12.
+* The robot's stored zone list was restored to empty afterwards (version 39), and the
+  robot is docked.
+
+Open: what actually raises fault index 23, and whether a *distant* area clean needs
+something the vendor cloud does that we have not done. Follow-up request:
+`RE_REQUEST_ZONE_CLEAN_ROUTE.md`. Wire traces: `wire-2026-10-10.jsonl`, commands
+101/102 (far, aborted), 105/106 (far, aborted), 107/108 and 111/112 (near, cleaned),
+117/118 (far, aborted), 120/121 (mid, cleaned).
+
 ## Raw evidence
 
 * `/media/sf_reshell-shared/device-log.bin` — robot's `/tmp/WifiConfLog`, 2026-10-04
