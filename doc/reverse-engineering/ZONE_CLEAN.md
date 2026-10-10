@@ -66,6 +66,11 @@ Note the persistence side-effect: after a zone clean the shm still holds the zon
 later whole-home start must be `smartClean` (it rebuilds the total region) — and a later
 "all stored regions" clean can be `21023 {"cleanId":[-2]}` + `appointClean`.
 
+**Distant-zone abort?** If a stored-zone clean for a far room backs ~0.15 m off the dock and
+re-docks within ~2 s with `errorState [-2605]`, that is `EID_E_CLEAN_CANNOT_ARRIVE` — the
+navigator's target search failed over the current map/segmentation state (no distance branch
+was found; ranked coverage causes and next steps in `ZONE_CLEAN_ROUTE.md` §3/§7). See `ZONE_CLEAN_ROUTE.md`.
+
 ## The app side (what the vendor app really sends) — verified from the APK
 
 * **`transitCmd "164"`** carries `cleanArea` = JSON list of `MapArea`:

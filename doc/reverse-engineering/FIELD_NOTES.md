@@ -209,19 +209,27 @@ Details that constrain the explanation:
   does not hold; if the fault is a planner failure it is a stricter internal rule
   (inflation, door width, a cleaning graph separate from the transit graph, or an
   area/room association).
-* `-2605` is fault index **23** in the status map (`FUNC_STATUS.md` §4.1); that table's
-  family guess ("bin/water/dock") is *low confidence*, so a navigation/route fault is
-  plausible but unproven.
+* `-2605` is fault index **23** in the status map (`FUNC_STATUS.md` §4.1) — **resolved below**:
+  index 23 = `EID_E_CLEAN_CANNOT_ARRIVE`.
 * LD event **6023** (index 7 in the `msg_report_ld` map) fired once during the
   *successful* near-zone clean (14:17:34), so it is not the abort signal. It also fired
   on 2026-10-07 15:10:30 during a normal clean. 6052 fired once on 10-07 14:58:12.
+  (*Resolved:* 6023 = `EID_I_CLEAN_TASK_FINISHED` — informational; this matches.)
 * The robot's stored zone list was restored to empty afterwards (version 39), and the
   robot is docked.
 
 Open: what actually raises fault index 23, and whether a *distant* area clean needs
 something the vendor cloud does that we have not done. Follow-up request:
-`RE_REQUEST_ZONE_CLEAN_ROUTE.md`. Wire traces: `wire-2026-10-10.jsonl`, commands
-101/102 (far, aborted), 105/106 (far, aborted), 107/108 and 111/112 (near, cleaned),
+`RE_REQUEST_ZONE_CLEAN_ROUTE.md`.
+
+**Resolved 2026-10-10 (RE side):** the fault is `EID_E_CLEAN_CANNOT_ARRIVE` — the navigator's
+area target search found no target for the far room during its ~2.5 s map-update window and
+gave up (stage 10). It is a map/label-coverage condition, not a distance limit. Log fragments
+to confirm on a failing run, ranked causes and next experiments (label check in the 20002
+raster, `21030 reset`, `extraAreas` variant): `ZONE_CLEAN_ROUTE.md`. The `FUNC_STATUS.md` §4.1
+error-index table is now resolved — `−2605` = cannot-arrive (index 23), and
+`EID_E_CLEAN_LOST_POSE` is never reported as a code. Wire traces: `wire-2026-10-10.jsonl`,
+commands 101/102 (far, aborted), 105/106 (far, aborted), 107/108 and 111/112 (near, cleaned),
 117/118 (far, aborted), 120/121 (mid, cleaned).
 
 ## Raw evidence

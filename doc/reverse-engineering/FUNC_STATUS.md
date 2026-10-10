@@ -329,18 +329,51 @@ The robot's small error index (devattr `errorState[0]`) is mapped to a cloud cod
 ```
 
 * Indices that are not in the map are sent as `0`.
-* The code families suggest drive (-23xx), brushes/fan (-24xx), sensors (-25xx),
-  bin/water/dock (-26xx) and kit faults (-27xx). This is [inferred, low–medium confidence]
-  from the ordering against the `EID_E_*` order.
-* **Open:** what the index 0..45 means. It is **not** an `EID_*` number. It may be the
-  `carrier` `errorState` bit index (`"errorStateNew:%08X"`).
+* **Where the index comes from (resolved 2026-10-10):** network_proxy keeps its own
+  **EID→index table** (file offset `0x89bf0`, stored unsorted — read each qword as an
+  `(EID, index)` pair), then maps index→cloud code with the rodata tuples above
+  (`0x8e2f0` / a variant at `0x91120`). The tempting "index = `EID_E_*` − 4000" alignment is a
+  **coincidence** — an earlier revision of this section fell for it; the real table below
+  disproves it (e.g. `EID_E_SKID` 4045 → 19, not 45; `EID_E_CLEAN_LOST_POSE_DONE` 4024 → 45).
+* **Joined fault table** (event → index → cloud code; indices without a code report `0`):
+
+  ```
+  1128 EID_I_LOW_BATTERY_FIND_CHARGER →  1 → −2101   4020 EID_E_LIDAR_PROTECTIVE_COVER → 12 → −2404
+  1086 EID_I_FIND_CHARGER_TASK_FAILED → 28 →  5058   4018 EID_E_LIDAR_SPEED_ERROR      → 29 → −2306
+  1130 EID_I_LOW_BAT_NEED_POWEROFF    →  2 → −2102   4019 EID_E_LIDAR_POINT_ERR        → 30 → −2305
+  4004 EID_E_WHEEL                    →  3 → −2201   4011 EID_E_FAN_SPEED              → 11 → −2403
+  4014 EID_E_COLLISION                →  4 → −2302   4031 EID_E_GARBAGE_BOX_OUT        → 14 → −2406
+  4005 EID_E_LEFT_WHEEL               → 40 →  –      4032 EID_E_GARBAGE_BOX_FULL       → 13 → −2405
+  4006 EID_E_RIGHT_WHEEL              → 41 →  –      4033 EID_E_GARBAGE_BOX_FULL_OUT   → 16 → −2407
+  4008 EID_E_SIDE_BRUSH               → 10 → −2402   4036 EID_E_WATER_BOX_EMPTY        → 22 → −2603
+  4009 EID_E_MIDDLE_BRUSH             →  8 → −2401   4037 EID_E_PHYSICAL_TRAPPED       → 17 → −2501
+  4015 EID_E_DROP                     → 26 → −2607   4038 EID_E_PLAN_TRAPPED           → 18 → −2501
+  4016 EID_E_FRONT_WALL_DIRTY         →  6 → −2308   4040 EID_E_PICK_UP_DO_TASK        → 20 → −2601
+  4017 EID_E_PSD_DIRTY                →  7 → −2309   4041 EID_E_TILE_DO_TASK           →  5 → −2304
+  4024 EID_E_CLEAN_LOST_POSE_DONE     → 45 →  6126   4042 EID_E_NO_DUST_BOX_DO_TASK    → 15 → −2406
+  4051 EID_E_CLEAN_CANNOT_ARRIVE      → 23 → −2605   4043 EID_E_NO_WATER_BOX_DO_TASK   → 21 → −2602
+  4052 EID_E_START_FROM_FORBID_AREA   → 24 → −2606   4045 EID_E_SKID                   → 19 → −2502
+  4048 EID_E_CANNOT_UPGRADE           → 31 → −2604   4049 EID_E_OPT_DURING_UPGRADE    → 32 →  –
+  4050 EID_E_BATTERY_DISCONNECT       → 33 → −2701   4053 EID_E_KIT_FAN_ERR            → 37 → −2705
+  4055 EID_E_KIT_MID_BRUSH_ERR        → 34 → −2702   4054 EID_E_KIT_SIDE_BRUSH_ERR     → 36 → −2704
+  4056 EID_E_KIT_MOTOR_ERR            → 35 → −2703   4057 EID_E_KIT_WATER_PUMP_ERR     → 39 → −2707
+  4058 EID_E_KIT_LIDAR_ERR            → 38 → −2706   4061 EID_E_START_FROM_MAGNETIC_WALL→ 25 →  –
+  4065 EID_E_SEWAGE_TANK_FULL         → 44 →  –      4066 EID_E_SEWAGE_BUFFER_TANK_FULL→ 43 →  –
+  4067 EID_E_DUST_COVER_OPEN          → 42 →  –      3001 EID_W_ULTRASONIC             →  6 → −2308
+  1026 EID_I_CHARGE                   →  1 → −2101   1011 EID_I_PICK_UP_RESUME          → 20 → −2601
+  1012 EID_I_GARBAGE_BOX_IN           → 13/14/16/15 → −2405/−2406/−2407/−2406  (four entries)
+  ```
+* **Not in the table = never reported**: `EID_E_CLEAN_LOST_POSE` (4023), `…_CANNOT`-families and the
+  find-charger pose events (4025–4030) have **no index** — e.g. a clean_task "lost pose/map"
+  abort does not surface as any `errorState` code. Only the events above can appear in the app.
 
 ### 4.2 Event notifications [static]
 
 **`infoType` 20003 (`msg_report.cpp`, `FUN_0045b8b8`, "Event = %d")**
 
 * The caller `FUN_0045c030` logs `"FUCK .... reason is not IER_ERROR_REPORT !!"` when the reason
-  is not 7, but then calls `FUN_0045b8b8` **unconditionally**. Any reason produces a 20003 POST.
+  is not 7, but then calls `FUN_0045b8b8` **unconditionally** (the *call* is unconditional; the
+  function itself still returns without posting when the index misses the 27-entry map below).
 * The function looks up a 27-entry `short→int` map (rodata `0x491120`). It is **not**
   identical to the §4.1 status map (`0x48e2f0`):
 
@@ -741,7 +774,9 @@ high, based mainly on the strings.
 1. **Unit of `cleanArea`/`allArea`**, and how the cloud converted `pos` (mm) and `phi` (mrad)
    into the app's 0..1000 map units. The pose encoding itself is resolved (§2).
 2. *(resolved: `elec` and `elecReal` are identical on this firmware, §2.)*
-3. **Meaning of the 0..45 error index** (§4.1) and of each −2xxx / 5058 / 6126 code.
+3. **Meaning of the 0..45 error index** — *resolved 2026-10-10: the joined EID→index→code
+   table in §4.1 (e.g. −2605 = `EID_E_CLEAN_CANNOT_ARRIVE`).* Remaining: the human-readable
+   text of each −2xxx / 5058 / 6126 cloud code (lives server-side).
 4. The **ReportPush** (LD 6xxx) record layout. *(The 20003 nesting is resolved, §4.2.)*
 5. *(resolved: replies go out via HTTP `cleanPack/response`, §2.2.)*
 6. **Initial value of the app-online flag**, and the untraced link from the change callback to the
