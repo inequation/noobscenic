@@ -1205,11 +1205,14 @@ every clean (operator decision, 2026-10-10).
   `backupMap` blob is verified against the robot's own `backupMapMd5`, and only then
   acked. A mismatched body gets `500`, so the robot keeps its files and retries —
   acking would make it delete its only copy (`BACKUP_MAP.md` §A5).
-* **Format (`NBMP`):** `"NBMP" | version u32 | blob length u32 | sn bytes | 0x00 |
-  blob`, all integers little-endian. The `.bkmap` stays byte-identical inside; the
-  serial makes importing another robot's map a refusal, the length catches truncation.
-  No md5 in the file: the server computes it from the exact bytes it serves, because
-  that is what the robot compares (`BACKUP_MAP.md` §D2).
+* **Format (`NBMP`):** `"NBMP" | version u32 | blob length u32 | md5[16] | sn bytes |
+  0x00 | blob`, all integers little-endian. The `.bkmap` stays byte-identical inside.
+  The serial makes importing another robot's map a refusal, the length catches
+  truncation, and the md5 catches a mangled copy — verified on import, because the
+  firmware answers `code:0` even for a tar that fails to extract, which would install
+  an empty map. The server still recomputes the md5 of the exact bytes it serves for
+  the `21025` frame, so what the robot compares can never disagree with what we hand
+  it (`BACKUP_MAP.md` §D2).
 * **Export** wraps the staged blob; **import** unwraps an upload, stages it and queues
   `21025 {"downUrl":…,"md5":…}` pointing at `GET /backup/{sn}/{token}` — unauthenticated
   (the robot sends no cookies) and untransformed (the md5 must match byte for byte).

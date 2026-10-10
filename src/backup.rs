@@ -2,23 +2,26 @@
 //!
 //! The restorable artifact the robot produces is its `.bkmap` (a tar.gz of
 //! `LastRecord`); this format wraps that blob so a file the user keeps is
-//! self-describing without inventing a second checksum copy: the header carries the
-//! robot serial so importing someone else's map is caught, and the blob length so a
-//! truncated file is caught before it reaches the robot. Integers are little-endian.
+//! self-describing *and* self-checking: the header carries the robot serial so
+//! importing someone else's map is caught, the blob length so a truncated file is
+//! caught, and the md5 of the blob so a mangled copy is caught before it can reach the
+//! robot — the firmware answers `code:0` even for a tar that fails to extract, which
+//! would leave an empty map. Integers are little-endian.
 //!
 //! ```text
-//! "NBMP" | version u32 | length u32 | sn bytes | 0x00 | blob…
+//! "NBMP" | version u32 | length u32 | md5[16] | sn bytes | 0x00 | blob…
 //! ```
 //!
-//! `length` is the blob length in bytes. The md5 the robot checks is *not* stored:
-//! the server computes it from the exact bytes it serves, so no copy of it can go
-//! stale.
+//! `length` is the blob length in bytes; `md5` is over those bytes. The server still
+//! recomputes the md5 of the exact bytes it serves for the `21025` frame, so what the
+//! robot checks can never disagree with what we hand it.
 
 use md5::{Digest as _, Md5};
 
 pub const FOURCC: [u8; 4] = *b"NBMP";
 pub const VERSION: u32 = 1;
-const FIXED: usize = 4 + 4 + 4;
+const MD5_LEN: usize = 16;
+const FIXED: usize = 4 + 4 + 4 + MD5_LEN;
 
 #[derive(Debug)]
 pub struct Export {
@@ -33,6 +36,7 @@ pub fn encode(sn: &str, blob: &[u8]) -> Vec<u8> {
     out.extend_from_slice(&FOURCC);
     out.extend_from_slice(&VERSION.to_le_bytes());
     out.extend_from_slice(&length.to_le_bytes());
+    out.extend_from_slice(&Md5::digest(blob));
     out.extend_from_slice(sn.as_bytes());
     out.push(0);
     out.extend_from_slice(blob);
@@ -42,15 +46,15 @@ pub fn encode(sn: &str, blob: &[u8]) -> Vec<u8> {
 /// Unwrap an uploaded export, refusing anything that is not exactly one intact
 /// `NBMP` container (doc/PLAN.md §20.6). The error is meant for the operator.
 pub fn decode(bytes: &[u8]) -> std::result::Result<Export, String> {
+    if bytes.starts_with(&[0x1f, 0x8b]) {
+        return Err(
+            "this looks like a bare .bkmap; import the .nbmap file the server exported".into(),
+        );
+    }
     if bytes.len() < FIXED + 1 {
         return Err("not an NBMP export: too short".into());
     }
     if bytes[..4] != FOURCC {
-        if bytes.starts_with(&[0x1f, 0x8b]) {
-            return Err(
-                "this looks like a bare .bkmap; import the .nbmap file the server exported".into(),
-            );
-        }
         return Err("not an NBMP export: the file does not start with NBMP".into());
     }
     let version = u32::from_le_bytes(bytes[4..8].try_into().expect("4 bytes"));
@@ -60,6 +64,7 @@ pub fn decode(bytes: &[u8]) -> std::result::Result<Export, String> {
         ));
     }
     let length = u32::from_le_bytes(bytes[8..12].try_into().expect("4 bytes")) as usize;
+    let stored_md5 = &bytes[12..12 + MD5_LEN];
     let Some(nul) = bytes[FIXED..].iter().position(|byte| *byte == 0) else {
         return Err("the export header has no serial terminator".into());
     };
@@ -78,6 +83,13 @@ pub fn decode(bytes: &[u8]) -> std::result::Result<Export, String> {
     }
     if !blob.starts_with(&[0x1f, 0x8b]) {
         return Err("the map payload is not a gzip stream".into());
+    }
+    if &Md5::digest(blob)[..] != stored_md5 {
+        return Err(
+            "the file is corrupt: the map's md5 does not match the header (truncated, \
+             altered, or not the file the server exported)"
+                .into(),
+        );
     }
     Ok(Export {
         sn,
@@ -107,6 +119,11 @@ mod tests {
         let encoded = encode("LSLDSM7PRO20403551", &blob());
         assert_eq!(&encoded[..4], b"NBMP");
         assert_eq!(u32::from_le_bytes(encoded[4..8].try_into().unwrap()), 1);
+        assert_eq!(
+            &encoded[12..28],
+            &Md5::digest(blob())[..],
+            "the header carries the md5"
+        );
         let decoded = decode(&encoded).expect("decodes");
         assert_eq!(decoded.sn, "LSLDSM7PRO20403551");
         assert_eq!(decoded.blob, blob());
@@ -121,6 +138,26 @@ mod tests {
         let mut padded = encoded.clone();
         padded.push(0);
         assert!(decode(&padded).unwrap_err().contains("truncated or padded"));
+    }
+
+    #[test]
+    fn a_mangled_blob_or_a_wrong_header_md5_is_refused() {
+        let encoded = encode("SN", &blob());
+
+        // One flipped byte inside the blob, length untouched: only the md5 catches it.
+        let mut flipped = encoded.clone();
+        let last = flipped.len() - 1;
+        flipped[last] ^= 0xff;
+        assert!(decode(&flipped).unwrap_err().contains("md5 does not match"));
+
+        // A header whose md5 does not describe the payload is refused too.
+        let mut wrong_header = encoded.clone();
+        wrong_header[12] ^= 0xff;
+        assert!(
+            decode(&wrong_header)
+                .unwrap_err()
+                .contains("md5 does not match")
+        );
     }
 
     #[test]
