@@ -646,8 +646,10 @@ function fromPixel(px, py) {
 }
 
 function pointerMillimetres(event) {
+  if (!view || !base) return null;
   const rect = canvas.getBoundingClientRect();
-  return fromPixel(event.clientX - rect.left, event.clientY - rect.top);
+  const [col, row] = screenToMap(event.clientX - rect.left, event.clientY - rect.top);
+  return fromPixel(col, row);
 }
 
 function pointInPolygon([x, y], vertices) {
@@ -669,13 +671,14 @@ function zoneAt(point) {
 
 /// The zone vertex under the pointer, in canvas pixels (fat targets for fingers).
 function vertexAt(event) {
-  if (zoneEditIndex < 0) return -1;
+  if (zoneEditIndex < 0 || !view) return -1;
   const rect = canvas.getBoundingClientRect();
   const x = event.clientX - rect.left;
   const y = event.clientY - rect.top;
   const vertices = zoneState.zones[zoneEditIndex].vertexs || [];
   for (let index = 0; index < vertices.length; index++) {
-    const [px, py] = toPixel(vertices[index][0] / 1000, vertices[index][1] / 1000);
+    const [col, row] = toPixel(vertices[index][0] / 1000, vertices[index][1] / 1000);
+    const [px, py] = mapToScreen(col, row);
     if (Math.hypot(px - x, py - y) < 14) return index;
   }
   return -1;
@@ -813,6 +816,17 @@ function toPixel(x, y) {
   let row = (y - (base.y_min || 0) - 0.05) / resolution;
   row = base.height - 1 - row;
   return [col + 0.5, row + 0.5];
+}
+
+// Map cell coordinates <-> canvas CSS pixels, through the pan/zoom view. Every
+// input path has to go through these: a screen point is not a map point once the
+// map has been scaled or letterboxed (which it almost always is).
+function mapToScreen(col, row) {
+  return [view.x + col * view.scale, view.y + row * view.scale];
+}
+
+function screenToMap(px, py) {
+  return [(px - view.x) / view.scale, (py - view.y) / view.scale];
 }
 
 function dot(point, colour) {
@@ -990,6 +1004,7 @@ canvas.addEventListener("pointerdown", (event) => {
     startPinch();
   } else if (pointers.size === 1 && !pan) {
     const point = pointerMillimetres(event);
+    if (!point) return;
     const vertex = vertexAt(event);
     if (vertex >= 0) {
       zoneDrag = { kind: "vertex", vertex, snapshot: false };
@@ -1006,7 +1021,8 @@ canvas.addEventListener("pointerdown", (event) => {
     }
   } else if (pointers.size === 1 && zonesView && !zonesEdit) {
     // Picker mode: a drag pans, but a tap (no movement) toggles the zone under it.
-    const hit = zoneAt(pointerMillimetres(event));
+    const point = pointerMillimetres(event);
+    const hit = point ? zoneAt(point) : -1;
     zonePending = hit >= 0 ? hit : null;
     if (hit >= 0) updateBars();
   }
@@ -1016,7 +1032,9 @@ canvas.addEventListener("pointermove", (event) => {
   const point = pointers.get(event.pointerId);
   if (!point || !view) return;
   if (zoneDrag) {
-    const [x, y] = pointerMillimetres(event);
+    const mapped = pointerMillimetres(event);
+    if (!mapped) return;
+    const [x, y] = mapped;
     if (!zoneDrag.snapshot) {
       snapshotZones();
       zoneDrag.snapshot = true;
@@ -1033,7 +1051,9 @@ canvas.addEventListener("pointermove", (event) => {
     return;
   }
   if (zoneDraft) {
-    zoneDraft.to = pointerMillimetres(event);
+    const mapped = pointerMillimetres(event);
+    if (!mapped) return;
+    zoneDraft.to = mapped;
     draw();
     return;
   }
