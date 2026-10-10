@@ -48,10 +48,9 @@ pub fn router(state: AppState) -> Router {
         .route("/", get(crate::web::index))
         // Browsers ask for this automatically; answering 204 keeps the catch-all's
         // warning log free of noise that is not device traffic.
-        .route(
-            "/favicon.ico",
-            get(|| async { axum::http::StatusCode::NO_CONTENT }),
-        )
+        .route("/favicon.ico", get(crate::web::favicon))
+        .route("/favicon.png", get(crate::web::favicon))
+        .route("/manifest.webmanifest", get(crate::web::manifest))
         .route("/api/robots", get(crate::web::robots))
         .route("/api/commands", get(crate::web::commands))
         .route("/api/robot/{id}/summary", get(crate::web::summary))
@@ -201,6 +200,8 @@ async fn cookie_gate(State(state): State<AppState>, request: Request, next: Next
     if path == "/cleanPack/register"
         || path == "/"
         || path == "/favicon.ico"
+        || path == "/favicon.png"
+        || path == "/manifest.webmanifest"
         || path.starts_with("/backup/")
         || path.starts_with("/api/")
     {

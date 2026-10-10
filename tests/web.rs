@@ -182,6 +182,44 @@ async fn the_root_serves_the_page_and_still_answers_the_version_check() {
 }
 
 #[tokio::test]
+async fn the_page_carries_its_icon_and_the_manifest_is_installable() {
+    let (state, app) = setup("icons").await;
+
+    let (status, body, _) = call(&app, get("/")).await;
+    assert_eq!(status, StatusCode::OK);
+    for marker in ["/favicon.png", "apple-touch-icon", "/manifest.webmanifest"] {
+        assert!(body.contains(marker), "the page must reference {marker}");
+    }
+
+    let (status, bytes, content_type) = call_bytes(&app, get("/favicon.png")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(content_type.as_deref(), Some("image/png"));
+    assert!(
+        bytes.starts_with(&[0x89, b'P', b'N', b'G']),
+        "the favicon must be a PNG"
+    );
+    let icon = image_size(&bytes);
+    assert_eq!(icon, (192, 192), "the home-screen size");
+
+    let (status, manifest, content_type) = call_bytes(&app, get("/manifest.webmanifest")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(content_type.as_deref(), Some("application/manifest+json"));
+    let manifest: Value = serde_json::from_slice(&manifest).expect("manifest JSON");
+    assert_eq!(manifest["display"], "standalone");
+    assert_eq!(manifest["icons"][0]["src"], "/favicon.png");
+    assert_eq!(manifest["icons"][0]["sizes"], "192x192");
+
+    cleanup(state).await;
+}
+
+/// Width and height straight out of the PNG's IHDR.
+fn image_size(bytes: &[u8]) -> (u32, u32) {
+    let width = u32::from_be_bytes(bytes[16..20].try_into().expect("4 bytes"));
+    let height = u32::from_be_bytes(bytes[20..24].try_into().expect("4 bytes"));
+    (width, height)
+}
+
+#[tokio::test]
 async fn robots_are_listed_by_label_and_resolved_by_label_sn_or_the_legacy_account_id() {
     let (state, app) = setup("robots").await;
     adopt(&state).await;

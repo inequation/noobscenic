@@ -35,6 +35,14 @@ use crate::session;
 /// The page, embedded at compile time.
 const INDEX: &str = include_str!("../web/index.html");
 
+/// The home-screen icon and the web-app manifest, embedded like the page. The icon is
+/// rendered from `web/logo.svg` (see that file's history for the exact command) at
+/// 192×192 — the size that serves both the browser tab and a home-screen shortcut —
+/// flattened onto the page background so iOS does not composite it on black, and
+/// Zopfli-compressed inside the PNG.
+const FAVICON: &[u8] = include_bytes!("../web/favicon.png");
+const MANIFEST: &str = include_str!("../web/manifest.webmanifest");
+
 /// How long after its last API touch a device still counts as watched. The page's
 /// 1.5 s poll keeps this fresh; closing (or hiding) the tab lets it lapse.
 const WATCHER_TTL_MS: i64 = 5_000;
@@ -182,6 +190,34 @@ pub async fn robots(State(state): State<AppState>) -> Response {
         })
         .collect();
     Json(json!({"robots": robots})).into_response()
+}
+
+/// `GET /favicon.png` and `/favicon.ico` — the home-screen/tab icon, embedded bytes.
+pub async fn favicon() -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, "image/png".to_string()),
+            (header::CACHE_CONTROL, "public, max-age=86400".to_string()),
+        ],
+        axum::body::Bytes::from_static(FAVICON),
+    )
+        .into_response()
+}
+
+/// `GET /manifest.webmanifest` — what makes "add shortcut to website" open without
+/// browser chrome on Android: `display: standalone` plus the icon.
+pub async fn manifest() -> Response {
+    (
+        [
+            (
+                header::CONTENT_TYPE,
+                "application/manifest+json".to_string(),
+            ),
+            (header::CACHE_CONTROL, "public, max-age=86400".to_string()),
+        ],
+        MANIFEST,
+    )
+        .into_response()
 }
 
 #[derive(Deserialize)]
