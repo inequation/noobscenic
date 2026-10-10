@@ -837,12 +837,14 @@ clean zone selects it, `▶️` queues the corrected sequence — `21023` with t
 — and `✏️` switches to drawing, moving, retyping, deleting and saving rectangles through
 the 21004 → edit → 21003 round trip with the version etag and the cleaning guard.
 Live-verified: write → read-back verbatim and a refused stale write; the corrected
-zone-clean sequence runs end to end for near zones — travel, `sweep`/`area`, clean,
-dock — for zones in the robot's own room (verified out to 6.6 m), but aborts with fault
-`-2605` (`EID_E_CLEAN_CANNOT_ARRIVE`) for zones in another room (verified at 9.6–10.4 m,
-the nearest such cell being 7.8 m out, so room and distance remain confounded). Open in
-RE_REQUEST_ZONE_CLEAN_ROOM.md. The spot clean button and the "more" menu are the two
-remaining items.
+zone-clean sequence runs end to end for zones in the robot's own room (verified out to
+6.6 m), but aborts with fault `-2605` (`EID_E_CLEAN_CANNOT_ARRIVE`) for a zone in
+another room — including a target only 2.6 m away across the label boundary, while a
+1.8 m same-room control cleaned. The target search is masked to the room (20002
+segmentation label) the robot currently stands in; the picker should warn before
+queueing a zone outside it. The vendor's cross-room flow is still open in
+RE_REQUEST_ZONE_CLEAN_ROOM.md (Q2). The spot clean button and the "more" menu are the
+two remaining items.
 
 ---
 
@@ -1159,13 +1161,19 @@ sorts claimed rows by id so a multi-row enqueue can never overtake itself. The
 corrected sequence is **live-verified** (2026-10-10): with a stored zone the robot
 starts `sweep`/`subMode:"area"`, travels to the zone, cleans it and docks itself. It
 works for every zone we tried in the dock's room — the operator's desk zone at 3.2 m,
-and test rectangles at 5.6 m and 6.6 m — and aborts ~2 s after undocking with
+and test rectangles at 5.6 m and 6.6 m — and aborts with
 `errorState:[-2605]` (`EID_E_CLEAN_CANNOT_ARRIVE`) for zones in the right-hand room at
 9.6 and 10.4 m. A segmentation reset (`21030 reset`, which finally put labels in the
-20002 raster) and an inline `extraAreas` variant changed nothing; the discriminator is
-that every success sits in the dock's segmentation label and every failure in `0x02`
-(another room) — the two conditions are confounded in this map, so the decisive test is
-one from inside the other room (FIELD_NOTES.md, RE_REQUEST_ZONE_CLEAN_ROOM.md).
+20002 raster) and an inline `extraAreas` variant changed nothing. **The decisive
+cross-room test (2026-10-10) settled the confound:** parked inside the right-hand room
+(label `0x02`), the robot aborted a target only 2.6 m away across the label boundary
+(`0x01`) without travelling, while a 1.8 m target in its own label cleaned and docked
+normally — the target search is masked to the segmentation label (room) the robot
+currently stands on, not to distance. Consequence for the picker: `▶️` only works for
+zones in the robot's current room; a selected zone elsewhere should be flagged with a
+warning (compare the robot's raster label with the zone's label before enqueueing)
+rather than queued to abort with `-2605`. FIELD_NOTES.md, RE_REQUEST_ZONE_CLEAN_ROOM.md
+(question 2, the vendor's cross-room flow, is still open).
 
 Names are editable in the editor's strip and auto-assigned as `Zone <n>` for new
 rectangles. The 31-byte `name`/`tag` and 30-byte `mode` limits from FUNC_MAP §4 are

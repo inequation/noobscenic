@@ -255,25 +255,46 @@ condition:
   so in this map "another room" and "beyond ~7.5 m" are confounded and cannot be
   separated from the dock.
 
-Working hypothesis (matches the RE mechanism — the target search runs over the
-segmentation-label grid): **an area clean can only target cells inside the label the
-robot is currently in**. The decisive test starts the clean with the robot *inside*
-the other room: clean (a) a zone there (same label → expect success) and (b) a zone
-back in the dock's room (different label → fails if label-bound, succeeds if it is
-only distance). Follow-up request: `RE_REQUEST_ZONE_CLEAN_ROOM.md`.
+**Confirmed live (2026-10-10): an area clean is masked to the segmentation label the
+robot currently stands on.** The discriminating test is a target that is *close but in
+the other label* — the labels touch at x≈2400, y≈−80 (a `0x01` cell at (2370,−80)
+beside `0x02` at (2420,−80)) — and the operator parked the robot inside the right-hand
+room to make it possible:
 
-> Correction (same day): that two-sided test is **not** decisive — both hypotheses
-> predict the same outcome. The discriminating test is a target that is *close but in
-> the other label*: the labels touch at x≈2400, y≈−80 (label `0x01` at (2370,−80) next
-> to `0x02` at (2420,−80)), so a ~0.5 m zone across the boundary settles it.
-> An attempt to drive the robot there with the RC pad (`3005`/`3007`/`3008` closed loop
-> on `pos`/`phi`) failed: the heading offset calibrated to ~177° (phi points backwards
-> relative to travel) but the controller then oscillated and netted only ~0.2 m of
-> travel. The robot was sent home and docked; no further driving without an operator.
+* **Cross-label, 2.6 m away (2.86 m to its centre):** zone `CrossBoundary` id 2, the
+  0.4 m square at (1508…1908, 144…544) in label `0x01`. `21023 {"cleanId":[2]}`
+  (17:39:40Z) and `21005 {"mode":"appointClean"}` (17:39:47Z) were both ACKed "ok",
+  but the next status (17:39:48Z) is `sweep`/`area` with `cleanArea:0`, `cleanTime:0`,
+  `errorState:[-2605]` and `pos` (4294,−858) — a 14 mm net move from the pre-start
+  pose (4308,−856). The job aborted before travelling and the robot switched to
+  `backcharge`.
+* **Same-label control, 1.8 m away (2.04 m to its centre):** the aborted run's return
+  was stopped while the robot was still in the right-hand room (`21017 stop` at
+  17:40:53Z left it idle at (5561,−637), label `0x02`), then zone `ControlNear` id 3,
+  the 0.4 m square at (6308…6708, −2656…−2256) in label `0x02`, was started the same
+  way (17:41:02Z/17:41:09Z). The robot drove to it, `sweep`/`area` ran normally,
+  `cleanTime` reached 10 s, and it docked itself.
 
-Wire traces: `wire-2026-10-10.jsonl`, commands 176/177 (21030 reset), 184/185
-(extraAreas, aborted), 188/189 (5.6 m, cleaned), 191/192 (6.6 m, cleaned). The robot's
-stored zone list was restored to the operator's `Biurko` zone afterwards.
+At the same scale of distance the only difference is the target's label relative to
+the robot's: fail across the boundary, success within it. Distance is independently
+ruled out by the earlier 6.6 m success in the robot's own label; indeed the failed
+`CrossBoundary` square *overlaps* that 6.6 m test box (both are label `0x01`), so the
+same floor cleaned from one starting label and was unreachable from the other. The
+newest 20002 raster corroborates the labels (robot start `0x02`, zone 2 `0x01`,
+zone 3 `0x02`, dock `0x01`; boundary at x≈2400). The run is in
+`wire-2026-10-10.jsonl`: frames seq 45/56 (fail) and 254/261 (success), with the
+`-2605` status in the channel-A 20001 request at 17:39:48Z.
+
+**Consequence for the web UI:** the picker's `▶️` can only start zones in the room
+the robot is currently in; a selected zone elsewhere will abort with `-2605`. The UI
+should compare the robot's raster label with each selected zone's label and warn
+before enqueueing. Noted in PLAN §20.5; the vendor's own cross-room flow is still an
+open question for the RE agent (`RE_REQUEST_ZONE_CLEAN_ROOM.md`, question 2).
+
+Wire traces for the earlier bisection: `wire-2026-10-10.jsonl`, commands 176/177
+(21030 reset), 184/185 (extraAreas, aborted), 188/189 (5.6 m, cleaned), 191/192
+(6.6 m, cleaned). The robot's stored zone list was restored to the operator's
+`Biurko` zone afterwards; the final cleanup left only `Biurko` (id 1, version 65).
 
 ## Manual driving from the dock: the first command is a back-out (2026-10-10, [field])
 
