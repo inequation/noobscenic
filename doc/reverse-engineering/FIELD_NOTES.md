@@ -321,6 +321,31 @@ Rules for any driver, human or script:
   drives back into the dock;
 * never calibrate a heading model from the first motion while docked.
 
+## Map backup restore, live (2026-10-10, [field])
+
+Confirms `BACKUP_MAP.md`'s model end to end with our own server:
+
+* **Staging.** Replaying one of the robot's real `uploadSingle` bodies (the 10-09
+  144 KB multipart) through the new handler stages the `.bkmap` (136 038 bytes, md5
+  `798440647c01a375f512ea0eb8dcd4d6`) exactly as the robot's `backupMapMd5` part says.
+* **Restore.** `21025 {"downUrl":"http://192.168.1.208:8080/backup/<sn>/<token>",
+  "md5":…}` → the robot fetched the URL (server log: `GET … 200`, 136 038 bytes),
+  replied `{"message":"ok","data":{"code":0}}`, and **0.7 s later pushed a fresh 20002**
+  carrying the snapshot's `pathId` (`1791574832`) with **0 labels** where the live map
+  had 18 921 — the install really happened, and the follow-up upload is the practical
+  success signal.
+* **Failure branch.** The same URL with `md5` all zeros → `{"message":"fail",
+  "data":{"code":-3}}`, live map untouched.
+* **Loopback trap.** A `downUrl` built from a `localhost`/`127.0.0.1` `Host` header
+  fails exactly like a bad md5 (`code:-3`) with nothing else in the reply — the robot
+  cannot fetch from its own loopback. Our import endpoint now refuses loopback hosts
+  with a message instead of queueing a doomed restore.
+* **What a restore replaces.** The live map, path, zones *and the stored pose*: after
+  the install the robot reported `fullcharge` (docked, physically unchanged) with
+  `pos` = the snapshot's (-3702, 201) until it relocalises. Zones are replaced too
+  (our `Biurko` list had to be written back); `CleanInfo.json`, `MapList.json` and the
+  clean stats survive (`load_backup_map.sh` re-applies them).
+
 ## Raw evidence
 
 * `/media/sf_reshell-shared/device-log.bin` — robot's `/tmp/WifiConfLog`, 2026-10-04

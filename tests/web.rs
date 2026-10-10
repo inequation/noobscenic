@@ -135,6 +135,20 @@ async fn call_json(app: &Router, request: Request<Body>) -> (StatusCode, Value) 
     (status, value)
 }
 
+async fn call_bytes(app: &Router, request: Request<Body>) -> (StatusCode, Vec<u8>, Option<String>) {
+    let response = app.clone().oneshot(request).await.expect("response");
+    let status = response.status();
+    let content_type = response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .map(|value| value.to_str().unwrap_or_default().to_string());
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body")
+        .to_vec();
+    (status, bytes, content_type)
+}
+
 async fn adopt(state: &AppState) {
     noobscenic::db::queries::upsert_device_seen(&state.db, SN, None)
         .await
@@ -654,6 +668,207 @@ async fn zone_edits_and_zone_cleans_are_blocked_while_a_clean_runs() {
     );
     assert!(selection.0 < start.0, "insertion order is preserved");
 
+    cleanup(state).await;
+}
+
+/// The robot's clean-record upload: multipart, with a binary `.bkmap` part and the
+/// md5 the robot computed for it (BACKUP_MAP.md §A5).
+fn multipart_upload(blob: &[u8], declared_md5: &str) -> (String, Vec<u8>) {
+    let boundary = "----noobscenic-test";
+    let mut body = Vec::new();
+    for (name, filename, content) in [
+        ("backupMapMd5", None, declared_md5.as_bytes().to_vec()),
+        ("data", None, b"{}".to_vec()),
+        ("sn", None, SN.as_bytes().to_vec()),
+        (
+            "cleanFile",
+            Some(format!("{SN}_7_9_1_2_1_0.txt")),
+            b"infoType 20004".to_vec(),
+        ),
+        (
+            "backupMap",
+            Some(format!("{SN}_7_9_1_2_1_0.bkmap")),
+            blob.to_vec(),
+        ),
+    ] {
+        body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+        body.extend_from_slice(
+            format!("Content-Disposition: form-data; name=\"{name}\"").as_bytes(),
+        );
+        if let Some(filename) = filename {
+            body.extend_from_slice(format!("; filename=\"{filename}\"").as_bytes());
+        }
+        body.extend_from_slice(b"\r\n\r\n");
+        body.extend_from_slice(&content);
+        body.extend_from_slice(b"\r\n");
+    }
+    body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+    (format!("multipart/form-data; boundary={boundary}"), body)
+}
+
+fn raw_body(path: &str, content_type: &str, body: Vec<u8>) -> Request<Body> {
+    let mut request = Request::builder()
+        .method("POST")
+        .uri(path)
+        .header(header::CONTENT_TYPE, content_type)
+        .body(Body::from(body))
+        .expect("request");
+    request
+        .extensions_mut()
+        .insert(ConnectInfo(std::net::SocketAddr::from((
+            [127, 0, 0, 1],
+            45678,
+        ))));
+    request
+}
+
+/// A tiny stand-in for a `.bkmap`: gzip magic and some bytes.
+fn fake_bkmap() -> Vec<u8> {
+    let mut blob = vec![0x1f, 0x8b, 0x08, 0x00, 0x01, 0x02, 0x03, 0x04];
+    blob.extend_from_slice(b"pretend tar.gz of LastRecord");
+    blob
+}
+
+#[tokio::test]
+async fn a_robot_upload_stages_a_backup_that_can_be_exported_and_restored() {
+    let (state, app) = setup("backup").await;
+    adopt(&state).await;
+
+    let blob = fake_bkmap();
+    let md5 = noobscenic::backup::md5_hex(&blob);
+    let (content_type, body) = multipart_upload(&blob, &md5);
+    let (status, value) = call_json(
+        &app,
+        raw_body("/cleanPack/uploadSingle", &content_type, body),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(value["code"], 0);
+
+    // The one-slot staging is visible to the zones view.
+    let (_, zones) = call_json(&app, get("/api/robot/Foo/zones")).await;
+    assert_eq!(zones["backup"]["md5"], md5);
+    assert_eq!(zones["backup"]["size"], blob.len() as i64);
+    assert_eq!(zones["backup"]["record"], format!("{SN}_7_9_1_2_1_0.txt"));
+
+    // Export: an NBMP container with the byte-identical blob inside.
+    let (status, bytes, content_type) = call_bytes(&app, get("/api/robot/Foo/backup")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(content_type.as_deref(), Some("application/octet-stream"));
+    let export = noobscenic::backup::decode(&bytes).expect("a valid NBMP export");
+    assert_eq!(export.sn, SN);
+    assert_eq!(export.blob, blob);
+
+    // Import with a LAN Host: staged, a 21025 queued, and the blob reachable at the
+    // URL the robot was handed.
+    let mut request = raw_body(
+        "/api/robot/Foo/backup",
+        "application/octet-stream",
+        bytes.clone(),
+    );
+    request
+        .headers_mut()
+        .insert(header::HOST, "192.168.1.208:8080".parse().expect("host"));
+    let (status, reply) = call_json(&app, request).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(reply["md5"], md5);
+    let down_url = reply["down_url"].as_str().expect("down_url");
+    assert!(
+        down_url.starts_with("http://192.168.1.208:8080/backup/"),
+        "{down_url}"
+    );
+
+    let (info_type, payload): (i64, String) =
+        sqlx::query_as("SELECT info_type, payload FROM commands ORDER BY id DESC LIMIT 1")
+            .fetch_one(&state.db)
+            .await
+            .expect("command row");
+    assert_eq!(info_type, 21025);
+    let payload: Value = serde_json::from_str(&payload).expect("payload JSON");
+    assert_eq!(payload["downUrl"], down_url);
+    assert_eq!(payload["md5"], md5);
+
+    let token = down_url.rsplit('/').next().expect("token");
+    let (status, served, _) = call_bytes(&app, get(&format!("/backup/{SN}/{token}"))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        served, blob,
+        "the robot must get the exact bytes the md5 covers"
+    );
+
+    // A file from another robot is refused; so is a localhost Host, because the
+    // robot cannot fetch from 127.0.0.1 (found live).
+    let mut foreign = raw_body(
+        "/api/robot/Foo/backup",
+        "application/octet-stream",
+        noobscenic::backup::encode("SOMEONE-ELSE", &blob),
+    );
+    foreign
+        .headers_mut()
+        .insert(header::HOST, "192.168.1.208:8080".parse().expect("host"));
+    let (status, error) = call_json(&app, foreign).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        error["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("SOMEONE-ELSE")
+    );
+
+    let mut loopback = raw_body(
+        "/api/robot/Foo/backup",
+        "application/octet-stream",
+        bytes.clone(),
+    );
+    loopback
+        .headers_mut()
+        .insert(header::HOST, "127.0.0.1:8080".parse().expect("host"));
+    let (status, error) = call_json(&app, loopback).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        error["error"].as_str().unwrap_or_default().contains("LAN"),
+        "{error}"
+    );
+
+    // A truncated container never reaches the robot.
+    let mut truncated = bytes.clone();
+    truncated.truncate(bytes.len() - 4);
+    let mut short = raw_body(
+        "/api/robot/Foo/backup",
+        "application/octet-stream",
+        truncated,
+    );
+    short
+        .headers_mut()
+        .insert(header::HOST, "192.168.1.208:8080".parse().expect("host"));
+    let (status, _) = call_json(&app, short).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    cleanup(state).await;
+}
+
+#[tokio::test]
+async fn an_upload_whose_md5_does_not_match_is_refused_so_the_robot_retries() {
+    let (state, app) = setup("backup-md5").await;
+    adopt(&state).await;
+
+    let blob = fake_bkmap();
+    let (content_type, body) = multipart_upload(&blob, "00000000000000000000000000000000");
+    let (status, _) = call_json(
+        &app,
+        raw_body("/cleanPack/uploadSingle", &content_type, body),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "a mismatched body must not be acked: the robot would delete its only copy"
+    );
+    let (_, zones) = call_json(&app, get("/api/robot/Foo/zones")).await;
+    assert!(
+        zones["backup"].is_null(),
+        "nothing may be staged from a bad body"
+    );
     cleanup(state).await;
 }
 

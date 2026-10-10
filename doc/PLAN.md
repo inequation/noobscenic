@@ -814,6 +814,7 @@ gating and the charging skip are covered by `tests/web.rs`.
 - [ ] "more" menu: specialised modes plus the consumables view (§20.3)
 - [x] manual steering pad with the ≤300 ms repeat, the 4001 release and the 4000 watchdog (§20.4)
 - [x] zone editor: 21004 → edit → 21003 round-trip for no-go, no-mop and clean zones (§20.5)
+- [x] one-slot map backup: export the newest received `.bkmap`, import one back and restore it (§20.6)
 
 **Done when:** a phone can steer the robot, spot-clean it, pick a specialised mode
 and draw a no-go zone, all on the same page.
@@ -844,7 +845,13 @@ another room — including a target only 2.6 m away across the label boundary, w
 segmentation label) the robot currently stands in; the picker should warn before
 queueing a zone outside it. The vendor's cross-room flow is still open in
 RE_REQUEST_ZONE_CLEAN_ROOM.md (Q2). The spot clean button and the "more" menu are the
-two remaining items.
+two remaining items. Map backup export/restore is in too (§20.6): one staged slot is
+exported as an `NBMP` container and imported back for a `21025` restore, verified live
+end to end — the robot fetched the blob from us, md5-ok, installed it and pushed the
+follow-up `20002` 0.7 s later; a wrong md5 fails with `code:-3` and leaves the map
+untouched, and a loopback `Host` is refused with guidance. Live side effect worth
+remembering: the restore replaces the live map, path, zones and stored pose, so the
+current zone list has to be written back if it should survive.
 
 ---
 
@@ -957,6 +964,9 @@ number and is the only user-editable setting for now.
 | `POST /api/robot/{id}/command` | form `name=<raw name>` from the catalog below → `insert_command` |
 | `POST /api/robot/{id}/control` | form `code=<ctrlCode>` → a realtime `21020` frame straight to the device writer, bypassing the queue (§20.4) |
 | `PUT /api/robot/{id}/settings` | JSON `label` → the robot's user-visible name (empty or >64 bytes refused) |
+| `GET /api/robot/{id}/backup` | the staged map backup as an `NBMP` export download (§20.6) |
+| `POST /api/robot/{id}/backup` | an `NBMP` export body → stage it and queue a `21025` restore |
+| `GET /backup/{sn}/{token}` | the raw `.bkmap` the robot itself fetches for that restore |
 
 `web/index.html` is embedded at compile time (`include_str!`), so there is no static
 file serving and no runtime path lookup. Layout: top bar with a `☰` drawer toggle,
@@ -1180,3 +1190,36 @@ rectangles. The 31-byte `name`/`tag` and 30-byte `mode` limits from FUNC_MAP §4
 enforced on **both** sides: the UI caps its input (UTF-8 aware, never splitting a
 character) and the API caps the payload again before it reaches the firmware, so the
 robot's 32-byte `strcpy` buffers cannot be overrun even by a hand-crafted request.
+
+### 20.6 Map backup: export and restore (one slot)
+
+**There is no way to ask the robot for a backup.** The upload is driven by a ~10 s
+filesystem poller that drains `/tmp/Run/CleanRecord/*.txt` against matching `.bkmap`s;
+the files are only created at clean end (gated on `cleanTime` ≥ 60 s and >3 path
+points, `BACKUP_MAP.md` §A1/A2). So the server keeps **one slot**: the newest clean's
+`.bkmap`, whatever the robot happened to send last. That is enough for the two user
+actions — export it to the user's own storage, or import one back — without archiving
+every clean (operator decision, 2026-10-10).
+
+* **Staging:** `uploadSingle`'s multipart is parsed properly (binary parts and all), the
+  `backupMap` blob is verified against the robot's own `backupMapMd5`, and only then
+  acked. A mismatched body gets `500`, so the robot keeps its files and retries —
+  acking would make it delete its only copy (`BACKUP_MAP.md` §A5).
+* **Format (`NBMP`):** `"NBMP" | version u32 | blob length u32 | sn bytes | 0x00 |
+  blob`, all integers little-endian. The `.bkmap` stays byte-identical inside; the
+  serial makes importing another robot's map a refusal, the length catches truncation.
+  No md5 in the file: the server computes it from the exact bytes it serves, because
+  that is what the robot compares (`BACKUP_MAP.md` §D2).
+* **Export** wraps the staged blob; **import** unwraps an upload, stages it and queues
+  `21025 {"downUrl":…,"md5":…}` pointing at `GET /backup/{sn}/{token}` — unauthenticated
+  (the robot sends no cookies) and untransformed (the md5 must match byte for byte).
+  The `downUrl` is built from the browser's `Host` header; a loopback host is refused
+  with guidance, because the robot cannot fetch from `127.0.0.1` (found live).
+* **Success signal:** `code:0` means download+md5 only — the install runs afterwards
+  and replies before it (`BACKUP_MAP.md` §D5). The observable confirmation is the fresh
+  `20002` map upload that follows; live, it arrived ~0.7 s after the command.
+* **Side effects (live-confirmed):** the archive replaces the live map, the path, the
+  zones and the *stored pose* (`pos` then reads the snapshot's pose until the robot
+  relocalises), while `CleanInfo.json`, `MapList.json` and the clean stats survive.
+  An import therefore replaces whatever zones the robot had — keep the current list
+  and write it back if needed.

@@ -480,12 +480,15 @@ pub async fn backup_import(
     // The robot fetches `downUrl` itself (no headers, no redirects — BACKUP_MAP §D1),
     // so the URL has to be absolute. The browser's Host header is our address as the
     // operator reaches us, which is what the robot on the same LAN needs.
-    let host = request
-        .headers()
-        .get(header::HOST)
-        .and_then(|value| value.to_str().ok())
-        .map(str::to_string)
-        .unwrap_or_else(|| "127.0.0.1:8080".to_string());
+    let host = match robot_facing_host(
+        request
+            .headers()
+            .get(header::HOST)
+            .and_then(|value| value.to_str().ok()),
+    ) {
+        Ok(host) => host,
+        Err(message) => return bad_request(&message),
+    };
 
     let body = axum::body::to_bytes(request.into_body(), 16 * 1024 * 1024)
         .await
@@ -570,6 +573,37 @@ fn sanitise(label: &str) -> String {
     } else {
         cleaned
     }
+}
+
+/// The address the robot is told to fetch a backup from. The browser's `Host` header
+/// is our address as the operator reaches us — and a UI opened through `localhost`
+/// would hand the robot a URL it cannot reach (found live on 2026-10-10, where it
+/// surfaced only as a `code:-3` "down fail"): refuse loopback hosts with guidance
+/// instead of queueing a restore that cannot work.
+fn robot_facing_host(host: Option<&str>) -> std::result::Result<String, String> {
+    let Some(host) = host.map(str::trim).filter(|host| !host.is_empty()) else {
+        return Err(
+            "the request carried no Host header, so the robot cannot be told where to fetch the map"
+                .to_string(),
+        );
+    };
+    let name = if let Some(rest) = host.strip_prefix('[') {
+        rest.split(']').next().unwrap_or(rest)
+    } else {
+        host.split(':').next().unwrap_or(host)
+    }
+    .to_ascii_lowercase();
+    if name == "localhost"
+        || name.ends_with(".localhost")
+        || name == "::1"
+        || name.starts_with("127.")
+    {
+        return Err(format!(
+            "the robot cannot fetch a backup from {host}; open the web UI through the \
+             server's LAN address and try the import again"
+        ));
+    }
+    Ok(host.to_string())
 }
 
 /// `POST /api/robot/{id}/zones/refresh` — ask the robot for its list (`21004`). The
