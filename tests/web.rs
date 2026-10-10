@@ -200,6 +200,10 @@ async fn the_page_carries_its_icon_and_the_manifest_is_installable() {
     );
     let icon = image_size(&bytes);
     assert_eq!(icon, (192, 192), "the home-screen size");
+    assert_eq!(
+        bytes[25], 6,
+        "the icon keeps the artwork's transparency (PNG colour type 6 = RGBA)"
+    );
 
     let (status, manifest, content_type) = call_bytes(&app, get("/manifest.webmanifest")).await;
     assert_eq!(status, StatusCode::OK);

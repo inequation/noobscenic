@@ -38,8 +38,8 @@ const INDEX: &str = include_str!("../web/index.html");
 /// The home-screen icon and the web-app manifest, embedded like the page. The icon is
 /// rendered from `web/logo.svg` (see that file's history for the exact command) at
 /// 192×192 — the size that serves both the browser tab and a home-screen shortcut —
-/// flattened onto the page background so iOS does not composite it on black, and
-/// Zopfli-compressed inside the PNG.
+/// with the artwork's transparency kept as authored (the SVG page is white at zero
+/// alpha; do not flatten it) and Zopfli-compressed inside the PNG.
 const FAVICON: &[u8] = include_bytes!("../web/favicon.png");
 const MANIFEST: &str = include_str!("../web/manifest.webmanifest");
 
