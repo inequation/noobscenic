@@ -190,6 +190,13 @@ async fn the_page_carries_its_icon_and_the_manifest_is_installable() {
     for marker in ["/favicon.png", "apple-touch-icon", "/manifest.webmanifest"] {
         assert!(body.contains(marker), "the page must reference {marker}");
     }
+    for marker in [
+        "id=\"theme-switch\"",
+        "id=\"theme-dark\"",
+        "name=\"theme-color\" content=\"#f6f7f9\"",
+    ] {
+        assert!(body.contains(marker), "the page must carry {marker}");
+    }
 
     let (status, bytes, content_type) = call_bytes(&app, get("/favicon.png")).await;
     assert_eq!(status, StatusCode::OK);
@@ -210,6 +217,10 @@ async fn the_page_carries_its_icon_and_the_manifest_is_installable() {
     assert_eq!(content_type.as_deref(), Some("application/manifest+json"));
     let manifest: Value = serde_json::from_slice(&manifest).expect("manifest JSON");
     assert_eq!(manifest["display"], "standalone");
+    assert_eq!(
+        manifest["theme_color"], "#f6f7f9",
+        "the manifest matches the light default"
+    );
     assert_eq!(manifest["icons"][0]["src"], "/favicon.png");
     assert_eq!(manifest["icons"][0]["sizes"], "192x192");
 

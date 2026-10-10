@@ -3,29 +3,47 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="theme-color" content="#16181d">
+<meta name="theme-color" content="#f6f7f9">
 <link rel="icon" type="image/png" sizes="192x192" href="/favicon.png">
 <link rel="apple-touch-icon" href="/favicon.png">
 <link rel="manifest" href="/manifest.webmanifest">
 <title>noobscenic</title>
+<script>
+// Applied before the page paints so a dark-mode reload does not flash light.
+// Light is the default; the toggle writes `theme=dark` (180 days, path=/).
+document.documentElement.dataset.theme =
+  /(?:^|; )theme=dark(?:;|$)/.test(document.cookie) ? "dark" : "light";
+</script>
 <style>
-  :root { color-scheme: dark; }
+  /* Light is the default; the toggle sets data-theme="dark" on <html> (cookie-backed).
+     Only the UI chrome follows the theme — the map grid keeps the robot's own cell
+     colours (walls dark, unknown grey, free near-white) in both modes. */
+  :root { color-scheme: light;
+          --bg: #f6f7f9; --fg: #16181d; --panel: #ffffff; --border: #d9dde4;
+          --control: #ffffff; --control-border: #c6cbd6; --muted: #5b6270;
+          --accent: #1e5adc; }
+  html[data-theme="dark"] {
+          color-scheme: dark;
+          --bg: #16181d; --fg: #e8e8ea; --panel: #1f2229; --border: #2c313a;
+          --control: #262a32; --control-border: #3a3f48; --muted: #9aa0aa;
+          --accent: #4f83e8; }
   html, body { margin: 0; height: 100%; }
   body { display: flex; flex-direction: column; height: 100dvh;
-         background: #16181d; color: #e8e8ea;
+         background: var(--bg); color: var(--fg);
          font: 15px/1.35 system-ui, sans-serif; }
   header, footer { display: flex; align-items: center; gap: 8px;
-                   padding: 8px 10px; background: #1f2229; }
+                   padding: 8px 10px; background: var(--panel); }
   header { flex-wrap: wrap; }
   footer { justify-content: center; }
-  #status { flex: 1 1 100%; min-width: 0; font-size: 13px; color: #9aa0aa;
+  #status { flex: 1 1 100%; min-width: 0; font-size: 13px; color: var(--muted);
             white-space: nowrap; overflow-x: auto; }
   main { flex: 1; position: relative; overflow: hidden; }
   canvas { display: block; width: 100%; height: 100%; touch-action: none;
            cursor: grab; user-select: none; -webkit-user-select: none; }
   canvas.panning { cursor: grabbing; }
   select, input, button { font: inherit; padding: 8px 10px; border-radius: 6px;
-                          border: 1px solid #3a3f48; background: #262a32; color: inherit; }
+                          border: 1px solid var(--control-border);
+                          background: var(--control); color: inherit; }
   input { min-width: 8ch; max-width: 40vw; }
   [hidden] { display: none !important; }
   footer .bar { display: flex; justify-content: center; gap: 8px; }
@@ -33,17 +51,35 @@
   button { min-width: 88px; }
   button.big { min-width: 64px; font-size: 22px; line-height: 1; padding: 10px 12px; }
   button:disabled { opacity: 0.45; }
-  button.active { background: #35507a; border-color: #6f8fc0; }
+  button.active { background: var(--accent); border-color: var(--accent);
+                  color: #ffffff; }
+  .switch { display: inline-flex; align-items: center; gap: 6px; margin-left: auto;
+            cursor: pointer; user-select: none; }
+  .switch input { position: absolute; opacity: 0; width: 0; height: 0; margin: 0;
+                  padding: 0; border: 0; min-width: 0; max-width: none; }
+  .switch .slider { width: 40px; height: 22px; border-radius: 11px;
+                    background: var(--control); position: relative;
+                    border: 1px solid var(--control-border); }
+  .switch .slider::after { content: ""; position: absolute; top: 2px; left: 2px;
+                           width: 16px; height: 16px; border-radius: 50%;
+                           background: #ffffff; border: 1px solid #8d94a3; }
+  .switch input:checked + .slider { background: var(--accent);
+                                    border-color: var(--accent); }
+  .switch input:checked + .slider::after { left: 20px; }
+  .switch input:focus-visible + .slider { outline: 2px solid var(--accent);
+                                          outline-offset: 2px; }
   #menu-toggle { min-width: 0; font-size: 20px; line-height: 1; padding: 6px 10px; }
   #menu { position: fixed; left: 0; bottom: 0; width: 15rem; z-index: 2;
-          background: #1f2229; border-right: 1px solid #2c313a; overflow-y: auto;
+          background: var(--panel); border-right: 1px solid var(--border);
+          overflow-y: auto;
           transform: translateX(-100%); transition: transform 150ms ease; }
   #menu.open { transform: none; }
   #menu .drawer { display: flex; flex-direction: column; gap: 8px; padding: 10px; }
   .tools { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
   .tools button { min-width: 0; font-size: 22px; line-height: 1; padding: 10px; }
   #remote { position: fixed; left: 0; right: 0; bottom: 0; z-index: 4;
-            background: #1f2229; border-top: 1px solid #2c313a; padding: 12px 10px;
+            background: var(--panel); border-top: 1px solid var(--border);
+            padding: 12px 10px;
             transform: translateY(100%); transition: transform 150ms ease; }
   #remote.open { transform: none; }
   #remote .pad { display: grid; grid-template-columns: repeat(3, 1fr);
@@ -58,18 +94,19 @@
   #remote-close { position: absolute; top: 6px; right: 8px; min-width: 0;
                   font-size: 14px; padding: 4px 8px; }
   #zone-types { display: flex; align-items: center; gap: 8px; padding: 6px 10px;
-                background: #1f2229; border-bottom: 1px solid #2c313a; }
-  #zone-hint { min-width: 0; font-size: 12px; color: #9aa0aa; overflow: hidden;
+                background: var(--panel); border-bottom: 1px solid var(--border); }
+  #zone-hint { min-width: 0; font-size: 12px; color: var(--muted); overflow: hidden;
                white-space: nowrap; text-overflow: ellipsis; }
   #settings { position: fixed; inset: 0; z-index: 6; display: flex;
-              flex-direction: column; padding: 14px; background: #16181d; }
+              flex-direction: column; padding: 14px; background: var(--bg); }
   #settings h2 { margin: 0 0 14px; font-size: 18px; }
-  #settings label { font-size: 13px; color: #9aa0aa; }
+  #settings label { font-size: 13px; color: var(--muted); }
   #settings input { font: inherit; padding: 10px; border-radius: 6px;
-                    border: 1px solid #3a3f48; background: #262a32; color: inherit; }
+                    border: 1px solid var(--control-border);
+                    background: var(--control); color: inherit; }
   #settings .actions { margin-top: auto; display: flex; justify-content: flex-end;
                        gap: 8px; }
-  #sent { min-width: 0; font-size: 13px; color: #9aa0aa;
+  #sent { min-width: 0; font-size: 13px; color: var(--muted);
           white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 </style>
 </head>
@@ -78,6 +115,11 @@
   <button id="menu-toggle" title="More…">☰</button>
   <label for="robot">Robot</label>
   <select id="robot"></select>
+  <label class="switch" id="theme-switch" title="Dark mode">
+    <span aria-hidden="true">🌙</span>
+    <input type="checkbox" id="theme-dark">
+    <span class="slider"></span>
+  </label>
   <span id="status">loading…</span>
 </header>
 <aside id="menu">
@@ -236,6 +278,29 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// ── Theme ────────────────────────────────────────────────────────────────────────
+
+/// The chrome takes its colours from CSS variables, but the map is painted on a
+/// canvas: the few strokes drawn over it ask here instead.
+function ink(dark, light) {
+  return document.documentElement.dataset.theme === "dark" ? dark : light;
+}
+
+function applyTheme(mode) {
+  document.documentElement.dataset.theme = mode;
+  const toggle = document.getElementById("theme-dark");
+  if (toggle) toggle.checked = mode === "dark";
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.setAttribute("content", mode === "dark" ? "#16181d" : "#f6f7f9");
+  draw();
+}
+
+/// A UI preference, not a credential: 180 days, whole path, same-site only.
+function setTheme(mode) {
+  document.cookie = "theme=" + mode + "; max-age=15552000; path=/; SameSite=Lax";
+  applyTheme(mode);
+}
+
 function api(suffix, options) {
   return json("/api/robot/" + encodeURIComponent(robot) + suffix, options);
 }
@@ -311,6 +376,9 @@ async function init() {
     picker.click();
   };
   document.getElementById("backup-file").onchange = importBackup;
+  document.getElementById("theme-dark").onchange = (event) =>
+    setTheme(event.target.checked ? "dark" : "light");
+  applyTheme(document.documentElement.dataset.theme);
   const nameInput = document.getElementById("zone-name");
   nameInput.addEventListener("focus", () => {
     if (zoneEditIndex >= 0) snapshotZones(); // one undo step per editing session
@@ -967,7 +1035,9 @@ function drawZones() {
     ctx.fill();
     const active = zonesEdit ? index === zoneEditIndex : zoneSelected.has(index);
     ctx.lineWidth = (active || cleaning ? 3 : 2) / view.scale;
-    ctx.strokeStyle = active || cleaning ? "rgb(255,255,255)" : "rgba(255,255,255,0.55)";
+    ctx.strokeStyle = active || cleaning
+      ? ink("rgb(255,255,255)", "rgb(12,18,34)")
+      : ink("rgba(255,255,255,0.55)", "rgba(12,18,34,0.55)");
     ctx.stroke();
     if (cleaning) {
       const name = (zone.name || "").trim();
@@ -981,7 +1051,7 @@ function drawZones() {
     }
     if (zonesEdit && index === zoneEditIndex) {
       const radius = 7 / view.scale;
-      ctx.fillStyle = "rgb(255,255,255)";
+      ctx.fillStyle = ink("rgb(255,255,255)", "rgb(12,18,34)");
       points.forEach(([x, y]) => ctx.fillRect(x - radius / 2, y - radius / 2, radius, radius));
     }
   });
@@ -990,7 +1060,7 @@ function drawZones() {
     const [x2, y2] = toPixel(zoneDraft.to[0] / 1000, zoneDraft.to[1] / 1000);
     ctx.setLineDash([6 / view.scale, 4 / view.scale]);
     ctx.lineWidth = 2 / view.scale;
-    ctx.strokeStyle = "rgb(255,255,255)";
+    ctx.strokeStyle = ink("rgb(255,255,255)", "rgb(12,18,34)");
     ctx.strokeRect(Math.min(x1, x2), Math.min(y1, y2), Math.abs(x2 - x1), Math.abs(y2 - y1));
     ctx.setLineDash([]);
   }
