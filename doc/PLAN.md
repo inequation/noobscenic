@@ -967,7 +967,16 @@ three buttons — `⚡` Charge, a stateful `▶️`/`⏸️`/`⏯️` button tha
 `backcharge` → pause the return, paused/dormant/fault → continue, anything else
 disabled), and a disabled `🗺️` zone-cleaning placeholder.
 Changing the robot sets `location.search`, so `?id=` stays bookmarkable and the back
-button works. Rendering is client-side: base64 → `Uint8Array` → `ImageData` (0x00
+button works.
+
+Zones are drawn wherever they matter: the no-go / no-sweep / no-mop zones are permanent
+overlays on the main map (the list is fetched on every poll, not only inside the zones
+view), the zones a running zone clean was started with stay drawn — name label and a
+bold outline — until the robot is back at rest, and the zones view draws everything
+with names. The zone editor's strip carries the type `<select>` and a name field whose
+input is capped at the robot's 31 UTF-8 bytes; new zones are auto-named `Zone <n>`.
+
+Rendering is client-side: base64 → `Uint8Array` → `ImageData` (0x00
 wall / 0x7F unknown / 0xFF free / other bytes = label hue, as in
 `tools/map2png.py`), `putImageData`, then CSS scaling with
 `image-rendering: pixelated`; the path, its start/end dots and the dock are drawn on
@@ -1147,3 +1156,9 @@ works for zones at the dock and ~1.5 m away; two rectangles in the far right-han
 (~9–10 m) still abort ~2 s after undocking with `errorState:[-2605]`, even though the
 map's free cells connect the dock to that room — see FIELD_NOTES.md and the follow-up
 question in RE_REQUEST_ZONE_CLEAN_ROUTE.md.
+
+Names are editable in the editor's strip and auto-assigned as `Zone <n>` for new
+rectangles. The 31-byte `name`/`tag` and 30-byte `mode` limits from FUNC_MAP §4 are
+enforced on **both** sides: the UI caps its input (UTF-8 aware, never splitting a
+character) and the API caps the payload again before it reaches the firmware, so the
+robot's 32-byte `strcpy` buffers cannot be overrun even by a hand-crafted request.

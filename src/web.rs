@@ -575,8 +575,10 @@ fn zones_from_payload(payload: &Value) -> Vec<Value> {
 
 /// Validate an edited zone list before it reaches the firmware (doc/PLAN.md §20.5):
 /// whole `[x, y]` integer vertices, at least three distinct ones, no collapsed
-/// polygon, and the string fields inside the robot's fixed buffers (`name`/`tag` 31
-/// UTF-8 bytes, `mode` 30 — a longer value overruns its parser). Returns the list
+/// polygon. The string fields are **capped** to the robot's fixed buffers
+/// (`name`/`tag` 31 UTF-8 bytes, `mode` 30): the firmware `strcpy`s them into 32-byte
+/// stack buffers, so anything longer is a real overflow — the UI caps too, and this
+/// is the backstop that must hold even for a hand-crafted API call. Returns the list
 /// with consecutive duplicate vertices dropped.
 fn validate_zones(value: &Value) -> std::result::Result<Vec<Value>, String> {
     let Some(regions) = value.as_array() else {
@@ -587,14 +589,20 @@ fn validate_zones(value: &Value) -> std::result::Result<Vec<Value>, String> {
         let Some(object) = region.as_object() else {
             return Err(format!("region {index} is not an object"));
         };
+        let mut normalized = object.clone();
         for (key, limit) in [("name", 31), ("tag", 31), ("mode", 30)] {
-            if let Some(text) = object.get(key).and_then(Value::as_str)
-                && text.len() > limit
-            {
-                return Err(format!(
-                    "region {index}: {key} is {} bytes; the robot's buffer holds {limit}",
-                    text.len()
-                ));
+            if let Some(text) = object.get(key).and_then(Value::as_str) {
+                let capped = cap_bytes(text, limit);
+                if capped.len() != text.len() {
+                    tracing::warn!(
+                        region = index,
+                        field = key,
+                        bytes = text.len(),
+                        limit,
+                        "zone field capped to the robot's buffer"
+                    );
+                    normalized.insert(key.to_string(), Value::String(capped.to_string()));
+                }
             }
         }
         let Some(vertices) = object.get("vertexs").and_then(Value::as_array) else {
@@ -636,7 +644,6 @@ fn validate_zones(value: &Value) -> std::result::Result<Vec<Value>, String> {
                 "region {index}: {span_x}x{span_y} mm is thinner than two 50 mm cells"
             ));
         }
-        let mut normalized = object.clone();
         normalized.insert(
             "vertexs".into(),
             Value::Array(points.iter().map(|[x, y]| json!([x, y])).collect()),
@@ -655,6 +662,19 @@ fn polygon_area(points: &[[i64; 2]]) -> i128 {
         sum += i128::from(x1) * i128::from(y2) - i128::from(x2) * i128::from(y1);
     }
     sum
+}
+
+/// The longest prefix of `text` that fits in `limit` UTF-8 bytes and still ends on a
+/// character boundary — never split a multi-byte character to reach the limit.
+fn cap_bytes(text: &str, limit: usize) -> &str {
+    if text.len() <= limit {
+        return text;
+    }
+    let mut end = limit;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
 }
 
 /// `POST /api/robot/{id}/control` — one realtime `21020` frame for the steering pad.

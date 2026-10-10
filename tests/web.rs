@@ -559,19 +559,29 @@ async fn zones_read_back_can_be_edited_and_written_with_an_etag() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "two vertices");
-    let long_name = json!([{
+    // Over-long strings are capped to the robot's buffers rather than rejected: the UI
+    // caps too, and the backstop must hold for a hand-crafted API call. The cap may
+    // not split a multi-byte character.
+    let long_names = json!([{
         "vertexs": [[0, 0], [100, 0], [100, 100]],
-        "active": "forbid", "name": "x".repeat(32),
+        "active": "forbid", "name": "x".repeat(40), "tag": "ż".repeat(20),
     }]);
     let (status, _) = call_json(
         &app,
         put_json(
             "/api/robot/Foo/zones",
-            &json!({"version": 2, "value": long_name}),
+            &json!({"version": 2, "value": long_names}),
         ),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "name over the buffer");
+    assert_eq!(status, StatusCode::OK);
+    let (_, payload) = last_command(&state).await;
+    let payload: Value = serde_json::from_str(&payload).expect("payload JSON");
+    let name = payload["value"][0]["name"].as_str().expect("name");
+    let tag = payload["value"][0]["tag"].as_str().expect("tag");
+    assert_eq!(name, "x".repeat(31), "name capped at 31 bytes");
+    assert_eq!(tag.len(), 30, "twenty two-byte characters cap at 30 bytes");
+    assert_eq!(tag.chars().count(), 15, "the cap lands on a char boundary");
 
     cleanup(state).await;
 }
