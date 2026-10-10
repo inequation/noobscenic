@@ -495,9 +495,12 @@ pub async fn zones_write(
 
 /// `POST /api/robot/{id}/zones/clean` — clean the picked stored regions (`21023`).
 ///
-/// Whether `21023` alone starts the job is unestablished (FUNC_MAP §6.2); the UI
-/// watches the status and falls back to `smartClean` if nothing starts, so the server
-/// stays a dumb pipe here.
+/// The sequence is fixed by ZONE_CLEAN.md (2026-10-09): `21023` only writes the
+/// CleanArea selection and never starts a job while idle, and `smartClean` would
+/// synthesize a whole-map total region, wiping that selection — the earlier whole-home
+/// runs. The start is `21005 {"mode":"appointClean"}`, which runs from the current
+/// region set and works docked or idle. Stored forbid zones are folded in as `-3` so
+/// no-go areas stay active, matching the robot's own schedule default of `[-1,-3]`.
 pub async fn zones_clean(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -521,11 +524,35 @@ pub async fn zones_clean(
     if ids.is_empty() {
         return bad_request("missing ids: the stored regions to clean");
     }
-    let payload = json!({"cleanId": ids}).to_string();
-    match queries::insert_command(&state.db, &sn, info_type::ZONE_CLEAN, &payload, 0).await {
-        Ok(command_id) => Json(json!({"queued": command_id})).into_response(),
-        Err(error) => internal(error),
-    }
+    let mut clean_id = vec![-3];
+    clean_id.extend(ids);
+    let selection = json!({"cleanId": clean_id}).to_string();
+    let selection_command =
+        match queries::insert_command(&state.db, &sn, info_type::ZONE_CLEAN, &selection, 0).await {
+            Ok(command_id) => command_id,
+            Err(error) => return internal(error),
+        };
+    // Enqueued second, so it is pushed second (the poller keeps insertion order).
+    let start_command = match queries::insert_command(
+        &state.db,
+        &sn,
+        info_type::CLEAN,
+        "{\"mode\":\"appointClean\"}",
+        0,
+    )
+    .await
+    {
+        Ok(command_id) => command_id,
+        Err(error) => return internal(error),
+    };
+    tracing::info!(
+        sn = %sn,
+        selection_command,
+        start_command,
+        zones = clean_id.len() - 1,
+        "zone clean queued (21023 + appointClean)"
+    );
+    Json(json!({"queued": selection_command, "start": start_command})).into_response()
 }
 
 /// A clean in progress blocks zone edits and zone-clean starts (operator decision,

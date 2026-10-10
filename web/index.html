@@ -515,7 +515,7 @@ function updateBars() {
   play.disabled = zoneState.cleaning || zoneSelected.size === 0;
   play.title = zoneState.cleaning
     ? "A clean is running"
-    : "Clean " + zoneSelected.size + " selected zone(s) — targeting unverified";
+    : "Clean " + zoneSelected.size + " selected zone(s)";
   const edit = document.getElementById("zone-edit");
   edit.disabled = zoneState.cleaning;
   edit.title = zoneState.cleaning ? "A clean is running; editing is blocked" : "Edit zones";
@@ -590,10 +590,10 @@ async function saveZones() {
   }
 }
 
-/// `21023` with the picked stored region ids. Whether that alone starts the job is
-/// unestablished (FUNC_MAP §6.2), so if the robot is not cleaning a few seconds later
-/// we follow with `smartClean`, which starts the job with the active regions set —
-/// the pairing the docs describe.
+/// The server queues the whole correct sequence: `21023` with the picked stored region
+/// ids (plus `-3` so stored no-go zones stay active), then `21005 {"mode":"appointClean"}`
+/// — the "start from the current region set" path (ZONE_CLEAN.md, 2026-10-09). A
+/// `smartClean` here would wipe the selection with a whole-map total region.
 async function cleanSelectedZones() {
   const ids = [...zoneSelected].map((index) => zoneState.zones[index]).filter(Boolean)
     .map((zone) => Number(zone.id)).filter((id) => Number.isFinite(id));
@@ -604,22 +604,8 @@ async function cleanSelectedZones() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ids }),
     });
-    // Honest about today's finding: 21023 is ACKed, but only the fallback start is
-    // observed to do anything, and it cleans the whole home (FIELD_NOTES.md, 2026-10-09).
-    statusLine.textContent =
-      "clean requested (" + ids.join(", ") + ") — zone targeting is unverified";
+    statusLine.textContent = "zone clean started (" + ids.join(", ") + ")";
     closeZones();
-    setTimeout(async () => {
-      try {
-        const summary = await json("/api/robot/" + encodeURIComponent(robot) + "/summary");
-        const mode = (summary.status || {}).mode || "";
-        if (!["sweep", "backcharge", "FindChargerAndWash"].includes(mode)) {
-          sendCommand("smartClean");
-        }
-      } catch (error) {
-        statusLine.textContent = "zone clean check failed: " + error.message;
-      }
-    }, 3000);
   } catch (error) {
     statusLine.textContent = "zone clean refused: " + error.message;
   }

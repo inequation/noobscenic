@@ -59,13 +59,17 @@ pub async fn drain_once(state: &AppState) {
         let Some(handle) = state.registry.get(&sn) else {
             continue;
         };
-        let claimed = match queries::claim_commands(&state.db, &sn, now_ms()).await {
+        let mut claimed = match queries::claim_commands(&state.db, &sn, now_ms()).await {
             Ok(claimed) => claimed,
             Err(error) => {
                 tracing::error!(%error, %sn, "command queue: could not claim commands");
                 continue;
             }
         };
+        // Push in enqueue order. `UPDATE … RETURNING` does not promise an order, and a
+        // multi-row enqueue can depend on it (a zone clean is `21023` then the
+        // `appointClean` start, and the start must not overtake the selection).
+        claimed.sort_by_key(|command| command.id);
         for command in claimed {
             push(state, &sn, &handle, command).await;
         }

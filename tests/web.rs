@@ -615,7 +615,8 @@ async fn zone_edits_and_zone_cleans_are_blocked_while_a_clean_runs() {
     .await;
     assert_eq!(status, StatusCode::CONFLICT, "no second clean");
 
-    // Once docked, the same request becomes a queued 21023.
+    // Once docked, the same request queues the documented pair: the 21023 selection
+    // (with -3 so stored no-go zones stay active) followed by the appointClean start.
     store_status(&state, "fullcharge").await;
     let (status, queued) = call_json(
         &app,
@@ -624,10 +625,24 @@ async fn zone_edits_and_zone_cleans_are_blocked_while_a_clean_runs() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert!(queued["queued"].is_i64());
-    let (info_type, payload) = last_command(&state).await;
-    assert_eq!(info_type, 21023);
-    let payload: Value = serde_json::from_str(&payload).expect("payload JSON");
-    assert_eq!(payload["cleanId"], json!([1, 2]));
+    assert!(queued["start"].is_i64());
+    let rows: Vec<(i64, i64, String)> =
+        sqlx::query_as("SELECT id, info_type, payload FROM commands ORDER BY id DESC LIMIT 2")
+            .fetch_all(&state.db)
+            .await
+            .expect("the queued pair");
+    let start = &rows[0];
+    let selection = &rows[1];
+    assert_eq!(start.1, 21005, "the start goes last");
+    assert_eq!(start.2, "{\"mode\":\"appointClean\"}");
+    assert_eq!(selection.1, 21023);
+    let payload: Value = serde_json::from_str(&selection.2).expect("payload JSON");
+    assert_eq!(
+        payload["cleanId"],
+        json!([-3, 1, 2]),
+        "forbid records stay in the selection as no-go zones"
+    );
+    assert!(selection.0 < start.0, "insertion order is preserved");
 
     cleanup(state).await;
 }
@@ -785,7 +800,10 @@ async fn a_stored_prebind_recovers_the_setid_id_for_the_ui() {
         value["robots"][0]["id"], SN,
         "the recovered account id is not a name: the UI keeps using the serial"
     );
-    assert_eq!(value["robots"][0]["label"], SN, "and the label starts as the serial");
+    assert_eq!(
+        value["robots"][0]["label"], SN,
+        "and the label starts as the serial"
+    );
     assert_eq!(value["robots"][0]["bind_state"], "bound");
     let (status, summary) = call_json(&app, get("/api/robot/Foo/summary")).await;
     assert_eq!(

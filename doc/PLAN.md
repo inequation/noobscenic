@@ -813,7 +813,7 @@ gating and the charging skip are covered by `tests/web.rs`.
 - [ ] spot clean button (§20.2)
 - [ ] "more" menu: specialised modes plus the consumables view (§20.3)
 - [x] manual steering pad with the ≤300 ms repeat, the 4001 release and the 4000 watchdog (§20.4)
-- [ ] zone editor: 21004 → edit → 21003 round-trip for no-go, no-mop and clean zones (§20.5)
+- [x] zone editor: 21004 → edit → 21003 round-trip for no-go, no-mop and clean zones (§20.5)
 
 **Done when:** a phone can steer the robot, spot-clean it, pick a specialised mode
 and draw a no-go zone, all on the same page.
@@ -831,7 +831,15 @@ speeds up to 300 ms while control frames flow and falls back to 1.5 s after they
 The server-side watchdog is in as well: after 2 s without a control frame the server
 sends `4000` itself, so a closed tab or dead Wi-Fi leaves the robot stationary (its own
 400 ms speed timeout is the first line, this is the second) and out of manual mode.
-The phase's other three items are untouched.
+The zone editor and its picker are in (§20.5): `🗺️` lists the stored zones, tapping a
+clean zone selects it, `▶️` queues the corrected sequence — `21023` with the selection
+(plus `-3`, so stored no-go zones stay active) followed by `21005 {"mode":"appointClean"}`
+— and `✏️` switches to drawing, moving, retyping, deleting and saving rectangles through
+the 21004 → edit → 21003 round trip with the version etag and the cleaning guard.
+Live-verified: write → read-back verbatim and a refused stale write; the corrected
+zone-clean start awaits a live run (the old `smartClean` fallback was what wiped the
+selection, `ZONE_CLEAN.md`). The spot clean button and the "more" menu are the two
+remaining items.
 
 ---
 
@@ -1037,7 +1045,7 @@ A sheet behind a three-dots button; every entry is backed by a documented frame:
 
 | Entry | Frame | Notes |
 |---|---|---|
-| Zone / room clean | `21023` with `cleanId` (−1 whole map, −2 all stored, −3 forbid only, −4 non-forbid, N = stored region) and/or `extraAreas` (`mode:"area"` zone, `mode:"point"` spot) | whether 21023 alone *starts* the job is unestablished (FUNC_MAP §6.2): test on hardware, possibly follow with 21005 |
+| Zone / room clean | `21023` with `cleanId` (−1 whole map, −2 all stored, −3 forbid only, −4 non-forbid, N = stored region) and/or `extraAreas` (`mode:"area"` zone, `mode:"point"` spot), **then** `21005 {"mode":"appointClean"}` | resolved by `ZONE_CLEAN.md`: 21023 only writes the CleanArea selection (a no-op when idle) and `smartClean` would wipe it with a whole-map total region; `appointClean` starts from the current selection and works docked |
 | Smart room clean | `21005 {"mode":"smartAreaClean"}` | auto-segmentation, then room by room |
 | Deep clean | `21005 {"mode":"depthTotalClean"}` | cover_mode 1 |
 | Y-shaped mopping | `21005 {"mode":"smartClean","pathType":"y_word"}` (or `21020` 3024) | |
@@ -1124,11 +1132,13 @@ the zones view in picker mode (tap a clean zone to select it, `▶️` starts th
 their vertices, retypes, deletes, undoes and saves through the 21004 → edit → 21003
 round trip. Live-verified: a zone written over the API came back verbatim from the
 robot, a stale-version write was refused with 409, and the cleaning guard holds both
-edits and starts. Open: `21023` alone does not start a job (ACKed, mode unchanged)
-and, across three runs on two days, the fallback clean stayed near the robot's start
-rather than the drawn zone — including with the region written under the current
-`mapId` and with an inline `extraAreas` polygon at a second location. Region targeting
-is therefore **not working from the outside**; the mechanism is documented in
-FIELD_NOTES.md and asked of the RE agent in RE_REQUEST_ZONE_CLEAN.md. Until that
-answers, the picker's `▶️` sends the documented frames but its result is a whole-home
-clean, and the UI says so.
+edits and starts. **Zone running, resolved 2026-10-09 (`ZONE_CLEAN.md`):** `21023`
+only ever live-updates a running job — when idle it is dropped — and `smartClean`
+synthesizes a whole-map total region that *overwrites* the selection, which is why our
+three runs cleaned the whole home. The start is `21005 {"mode":"appointClean"}`, which
+runs from the current CleanArea set and works docked or idle. The server now queues
+`21023 {"cleanId":[-3, …ids]}` (stored forbid zones stay active, matching the robot's
+own `[-1,-3]` schedule default) followed by `appointClean`, in that order — the poller
+sorts claimed rows by id so a multi-row enqueue can never overtake itself. The
+corrected sequence is static-analysis-certain but not yet live-tested; that is the
+next session where vacuuming is allowed.

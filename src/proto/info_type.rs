@@ -8,6 +8,7 @@ pub const EVENT: i64 = 20003;
 pub const RECORD: i64 = 20004;
 pub const ZONES_WRITE: i64 = 21003;
 pub const ZONES_READ: i64 = 21004;
+pub const CLEAN: i64 = 21005;
 pub const PING: i64 = 21006;
 pub const PATH: i64 = 21011;
 pub const REMOTE_CONTROL: i64 = 21020;
@@ -22,6 +23,7 @@ pub fn name(info_type: i64) -> Option<&'static str> {
         RECORD => Some("clean-record"),
         ZONES_WRITE => Some("zone-write"),
         ZONES_READ => Some("zone-read"),
+        CLEAN => Some("clean"),
         PING => Some("ping"),
         PATH => Some("clean-path"),
         REMOTE_CONTROL => Some("remote-control"),

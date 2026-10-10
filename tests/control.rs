@@ -401,3 +401,43 @@ async fn an_encrypt_1_row_fails_while_the_flag_is_off() {
     server.abort();
     cleanup(state).await;
 }
+
+#[tokio::test]
+async fn the_queue_pushes_in_enqueue_order_even_when_created_ms_disagrees() {
+    let (addr, state, server) = gateway("order").await;
+    let (mut sock, mut decoder) = connect(addr).await;
+
+    // A zone clean is two rows: the 21023 selection, then the appointClean start. The
+    // start must never overtake the selection.
+    let selection = enqueue(&state, 21023, "{\"cleanId\":[-3,1]}").await;
+    let start = enqueue(&state, 21005, "{\"mode\":\"appointClean\"}").await;
+    // Claim order follows the pending index, not insertion; make `start` look one
+    // millisecond older (any older and the TTL would expire it first) so a fix that
+    // relies on that order would push it first.
+    sqlx::query(
+        "UPDATE commands SET created_ms = (SELECT min(created_ms) FROM commands) - 1
+         WHERE id = ?",
+    )
+        .bind(start)
+        .execute(&state.db)
+        .await
+        .expect("backdate");
+
+    noobscenic::commands::drain_once(&state).await;
+    let frames = read_frames(&mut sock, &mut decoder, 2).await;
+    let info_types: Vec<i64> = frames
+        .iter()
+        .map(|frame| {
+            let value: Value = serde_json::from_slice(frame).expect("frame JSON");
+            value["data"]["infoType"].as_i64().expect("infoType")
+        })
+        .collect();
+    assert_eq!(
+        info_types,
+        vec![21023, 21005],
+        "the selection is pushed before its start (ids {selection}, {start})"
+    );
+
+    server.abort();
+    cleanup(state).await;
+}
