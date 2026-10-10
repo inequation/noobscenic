@@ -44,7 +44,7 @@ pub fn mint() -> Minted {
 }
 
 /// Hex of `bytes` random bytes, so the result is always twice that long and ASCII.
-fn random_hex(bytes: usize) -> String {
+pub fn random_hex(bytes: usize) -> String {
     let mut buf = vec![0u8; bytes];
     rand::fill(buf.as_mut_slice());
     let mut out = String::with_capacity(bytes * 2);

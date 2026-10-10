@@ -14,7 +14,7 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
 use axum::Json;
-use axum::extract::{Form, Path, Query, State};
+use axum::extract::{Form, Path, Query, Request, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use base64::Engine as _;
@@ -24,11 +24,13 @@ use sqlx::SqlitePool;
 use tokio::sync::watch;
 
 use crate::AppState;
+use crate::backup;
 use crate::channel_a::handlers;
 use crate::channel_b::{codec, registry};
 use crate::db::{now_ms, queries};
 use crate::error::Error;
 use crate::proto::info_type;
+use crate::session;
 
 /// The page, embedded at compile time.
 const INDEX: &str = include_str!("../web/index.html");
@@ -399,15 +401,175 @@ pub async fn zones(State(state): State<AppState>, Path(id): Path<String>) -> Res
         .cloned()
         .unwrap_or(Value::Null);
 
+    let backup = match queries::load_map_backup_meta(&state.db, &sn).await {
+        Ok(Some((received_ms, record_name, md5, size))) => json!({
+            "received_ms": received_ms,
+            "record": record_name,
+            "md5": md5,
+            "size": size,
+        }),
+        Ok(None) => Value::Null,
+        Err(error) => return internal(error),
+    };
+
     Json(json!({
         "version": version,
         "read_ms": read_ms,
         "map_id": map_id,
         "zones": zones,
+        "backup": backup,
         "cleaning": cleaning_in_progress(&state, &sn).await,
         "online": state.registry.is_online(&sn),
     }))
     .into_response()
+}
+
+/// `GET /api/robot/{id}/backup` — the staged map backup as an `NBMP` export file.
+pub async fn backup_export(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    let Some(sn) = resolve(&state, &id).await else {
+        return unknown(&id);
+    };
+    state.watchers.touch(&sn);
+
+    let stored = match queries::load_map_backup(&state.db, &sn).await {
+        Ok(Some(stored)) => stored,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "no map backup has been received for this robot yet"})),
+            )
+                .into_response();
+        }
+        Err(error) => return internal(error),
+    };
+    let (_, blob) = stored;
+    let label = queries::device_label(&state.db, &sn)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| sn.clone());
+    let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S");
+    let filename = format!("{}-{stamp}.nbmap", sanitise(&label));
+    let bytes = backup::encode(&sn, &blob);
+
+    (
+        [
+            (header::CONTENT_TYPE, "application/octet-stream".to_string()),
+            (
+                header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{filename}\""),
+            ),
+        ],
+        bytes,
+    )
+        .into_response()
+}
+
+/// `POST /api/robot/{id}/backup` — import an `NBMP` export and restore it: stage the
+/// blob, hand the robot a URL to it and queue the `21025` (doc/PLAN.md §20.6).
+pub async fn backup_import(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    request: Request,
+) -> Response {
+    let Some(sn) = resolve(&state, &id).await else {
+        return unknown(&id);
+    };
+    state.watchers.touch(&sn);
+
+    // The robot fetches `downUrl` itself (no headers, no redirects — BACKUP_MAP §D1),
+    // so the URL has to be absolute. The browser's Host header is our address as the
+    // operator reaches us, which is what the robot on the same LAN needs.
+    let host = request
+        .headers()
+        .get(header::HOST)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string)
+        .unwrap_or_else(|| "127.0.0.1:8080".to_string());
+
+    let body = axum::body::to_bytes(request.into_body(), 16 * 1024 * 1024)
+        .await
+        .unwrap_or_default();
+    let export = match backup::decode(&body) {
+        Ok(export) => export,
+        Err(message) => return bad_request(&message),
+    };
+    if export.sn != sn {
+        return bad_request(&format!(
+            "this export was taken from {}; it cannot be restored to {}",
+            export.sn, sn
+        ));
+    }
+
+    let md5 = backup::md5_hex(&export.blob);
+    let token = session::random_hex(16);
+    if let Err(error) =
+        queries::upsert_map_backup(&state.db, &sn, None, &md5, &token, &export.blob).await
+    {
+        return internal(error);
+    }
+
+    let down_url = format!("http://{host}/backup/{sn}/{token}");
+    let payload = json!({"downUrl": down_url, "md5": md5}).to_string();
+    let command_id =
+        match queries::insert_command(&state.db, &sn, info_type::BACKUP_RESTORE, &payload, 0).await
+        {
+            Ok(command_id) => command_id,
+            Err(error) => return internal(error),
+        };
+    tracing::info!(sn = %sn, command_id, bytes = export.blob.len(), %down_url, "map restore queued");
+    Json(json!({
+        "queued": command_id,
+        "down_url": down_url,
+        "md5": md5,
+        "size": export.blob.len(),
+    }))
+    .into_response()
+}
+
+/// `GET /backup/{sn}/{token}` — the exact bytes the robot downloads for a `21025`
+/// restore. No cookies (the robot sends none), no `Content-Encoding`, no
+/// transformation: the md5 we handed the robot is of these bytes.
+pub async fn backup_blob(
+    State(state): State<AppState>,
+    Path((sn, token)): Path<(String, String)>,
+) -> Response {
+    match queries::load_map_backup_by_token(&state.db, &sn, &token).await {
+        Ok(Some(blob)) => (
+            [
+                (header::CONTENT_TYPE, "application/octet-stream".to_string()),
+                (header::CACHE_CONTROL, "no-store".to_string()),
+            ],
+            blob,
+        )
+            .into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "no such backup"})),
+        )
+            .into_response(),
+        Err(error) => internal(error),
+    }
+}
+
+/// Keep an export filename to characters every filesystem accepts.
+fn sanitise(label: &str) -> String {
+    let cleaned: String = label
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let cleaned = cleaned.trim_matches('_').to_string();
+    if cleaned.is_empty() {
+        "robot".to_string()
+    } else {
+        cleaned
+    }
 }
 
 /// `POST /api/robot/{id}/zones/refresh` — ask the robot for its list (`21004`). The

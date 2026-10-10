@@ -517,6 +517,88 @@ pub async fn set_device_label(pool: &SqlitePool, sn: &str, label: &str) -> Resul
     Ok(result.rows_affected() == 1)
 }
 
+/// The device's current label, for export filenames.
+pub async fn device_label(pool: &SqlitePool, sn: &str) -> Result<Option<String>> {
+    Ok(sqlx::query_scalar("SELECT label FROM devices WHERE sn = ?")
+        .bind(sn)
+        .fetch_optional(pool)
+        .await?)
+}
+
+/// Store the newest map backup for a device (the one-slot model, doc/PLAN.md §20.6),
+/// replacing whatever was staged before. The md5 is computed by the caller from
+/// exactly these bytes — it is what the robot will compare on restore.
+pub async fn upsert_map_backup(
+    pool: &SqlitePool,
+    sn: &str,
+    record_name: Option<&str>,
+    md5: &str,
+    token: &str,
+    blob: &[u8],
+) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO map_backups (sn, received_ms, record_name, md5, size, token, blob)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(sn) DO UPDATE SET
+             received_ms = excluded.received_ms,
+             record_name = excluded.record_name,
+             md5         = excluded.md5,
+             size        = excluded.size,
+             token       = excluded.token,
+             blob        = excluded.blob",
+    )
+    .bind(sn)
+    .bind(now_ms())
+    .bind(record_name)
+    .bind(md5)
+    .bind(blob.len() as i64)
+    .bind(token)
+    .bind(blob)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// `(received_ms, record_name, md5, size)` of the staged backup, for the UI.
+#[allow(clippy::type_complexity)]
+pub async fn load_map_backup_meta(
+    pool: &SqlitePool,
+    sn: &str,
+) -> Result<Option<(i64, Option<String>, String, i64)>> {
+    Ok(
+        sqlx::query_as("SELECT received_ms, record_name, md5, size FROM map_backups WHERE sn = ?")
+            .bind(sn)
+            .fetch_optional(pool)
+            .await?,
+    )
+}
+
+/// `(md5, blob)` of the staged backup, for an export download.
+pub async fn load_map_backup(pool: &SqlitePool, sn: &str) -> Result<Option<(String, Vec<u8>)>> {
+    Ok(
+        sqlx::query_as("SELECT md5, blob FROM map_backups WHERE sn = ?")
+            .bind(sn)
+            .fetch_optional(pool)
+            .await?,
+    )
+}
+
+/// The exact bytes the robot fetches on restore (`BACKUP_MAP.md` §D1: no auth, no
+/// transformation — the md5 must match byte for byte).
+pub async fn load_map_backup_by_token(
+    pool: &SqlitePool,
+    sn: &str,
+    token: &str,
+) -> Result<Option<Vec<u8>>> {
+    Ok(
+        sqlx::query_scalar("SELECT blob FROM map_backups WHERE sn = ? AND token = ?")
+            .bind(sn)
+            .bind(token)
+            .fetch_optional(pool)
+            .await?,
+    )
+}
+
 /// Devices whose `setID` id was never recorded — the candidates for recovering it
 /// from a stored preBind (doc/PLAN.md §19).
 pub async fn unbound_devices(pool: &SqlitePool) -> Result<Vec<String>> {

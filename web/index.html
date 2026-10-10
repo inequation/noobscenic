@@ -126,6 +126,8 @@
   </div>
   <div id="bar-zones" class="bar" hidden>
     <button id="zone-exit" class="big" title="Leave zones">❌</button>
+    <button id="backup-export" class="big" title="Export map">📤</button>
+    <button id="backup-import" class="big" title="Import map">📥</button>
     <button id="zone-play" class="big" title="Clean selected">▶️</button>
     <button id="zone-edit" class="big" title="Edit zones">✏️</button>
   </div>
@@ -137,6 +139,7 @@
     <button id="edit-save" class="big" title="Save zones">💾</button>
   </div>
 </footer>
+<input id="backup-file" type="file" accept=".nbmap" hidden>
 <script>
 "use strict";
 const canvas = document.getElementById("map");
@@ -297,6 +300,13 @@ async function init() {
   document.getElementById("edit-resize").onclick = toggleResize;
   document.getElementById("zone-play").onclick = cleanSelectedZones;
   document.getElementById("zone-type").onchange = retypeSelectedZone;
+  document.getElementById("backup-export").onclick = exportBackup;
+  document.getElementById("backup-import").onclick = () => {
+    const picker = document.getElementById("backup-file");
+    picker.value = "";
+    picker.click();
+  };
+  document.getElementById("backup-file").onchange = importBackup;
   const nameInput = document.getElementById("zone-name");
   nameInput.addEventListener("focus", () => {
     if (zoneEditIndex >= 0) snapshotZones(); // one undo step per editing session
@@ -561,6 +571,46 @@ function updateBars() {
   resize.title = zoneResize ? "Resize: tap a side or corner and drag (tap again to stop)" : "Resize";
   document.getElementById("zone-name").disabled = zoneEditIndex < 0;
   document.getElementById("zone-type").disabled = zoneEditIndex < 0;
+  // The staged backup is the one the robot uploaded at its last clean end
+  // (BACKUP_MAP.md §A1: there is no way to ask for a fresh one).
+  const exportButton = document.getElementById("backup-export");
+  const backup = zoneState.backup;
+  exportButton.disabled = !backup;
+  exportButton.title = backup
+    ? "Export map (snapshot from " + new Date(backup.received_ms).toLocaleString() +
+      ", " + Math.round(backup.size / 1024) + " KiB)"
+    : "Export map — no backup received yet";
+}
+
+/// 📤: download the staged backup as an NBMP container.
+function exportBackup() {
+  window.location.href = "/api/robot/" + encodeURIComponent(robot) + "/backup";
+}
+
+/// 📥: pick an NBMP file and restore it to the robot. Restoring replaces the live
+/// map, zones and path and interrupts a clean (BACKUP_MAP.md §D3/§D4), so it asks
+/// first; the success signal is the fresh map upload that follows the install (§D5).
+async function importBackup() {
+  const picker = document.getElementById("backup-file");
+  const file = picker.files && picker.files[0];
+  if (!file) return;
+  const sure = window.confirm(
+    "Replace the robot's current map, zones and path with \"" + file.name + "\"?\n" +
+    "This interrupts a clean in progress.",
+  );
+  if (!sure) return;
+  try {
+    const reply = await json("/api/robot/" + encodeURIComponent(robot) + "/backup", {
+      method: "POST",
+      headers: { "Content-Type": "application/octet-stream" },
+      body: await file.arrayBuffer(),
+    });
+    statusLine.textContent =
+      "restore requested (" + Math.round(reply.size / 1024) + " KiB); waiting for the robot's new map";
+    await loadZones(false);
+  } catch (error) {
+    statusLine.textContent = "import refused: " + error.message;
+  }
 }
 
 /// Truncate to at most `limit` UTF-8 bytes without splitting a character — the same

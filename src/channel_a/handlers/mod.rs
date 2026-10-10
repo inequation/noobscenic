@@ -39,6 +39,16 @@ fn envelope(code: i64, message: &str, data: Value) -> Response {
         .into_response()
 }
 
+/// A `500` with the benign envelope's shape: used when the robot must *not* treat an
+/// upload as delivered (a body that failed our integrity check) so it retries.
+pub fn upload_failed() -> Response {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(json!({"code": 1, "message": "retry"})),
+    )
+        .into_response()
+}
+
 /// The OTA answer: no update, with the flag at the top level *and* under `data`,
 /// because the two RE sources disagree and the plan says emit both (doc/PLAN.md §9.3).
 pub fn no_update() -> Response {

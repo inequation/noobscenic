@@ -35,6 +35,7 @@ use crate::wire::{Direction, Record, Recorded};
 
 pub mod form;
 pub(crate) mod handlers;
+pub mod multipart;
 
 /// The device uploads LZ4 maps through `uploadEvents`, so bodies are not small; this
 /// is a sanity bound, not a policy.
@@ -68,6 +69,13 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/robot/{id}/zones/clean", post(crate::web::zones_clean))
         .route("/api/robot/{id}/settings", put(crate::web::settings))
+        .route(
+            "/api/robot/{id}/backup",
+            get(crate::web::backup_export).post(crate::web::backup_import),
+        )
+        // The robot fetches this one itself for a `21025` restore: no cookie, no
+        // session gate, and the token is the whole credential (doc/PLAN.md §20.6).
+        .route("/backup/{sn}/{token}", get(crate::web::backup_blob))
         .route("/cleanPack/register", post(handlers::register::register))
         .route(
             "/cleanPack/getSockAddr",
@@ -193,6 +201,7 @@ async fn cookie_gate(State(state): State<AppState>, request: Request, next: Next
     if path == "/cleanPack/register"
         || path == "/"
         || path == "/favicon.ico"
+        || path.starts_with("/backup/")
         || path.starts_with("/api/")
     {
         return next.run(request).await;

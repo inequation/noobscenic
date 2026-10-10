@@ -3,6 +3,7 @@
 //! See `doc/PLAN.md` for the design and `doc/reverse-engineering/` for the protocol
 //! the design is derived from.
 
+pub mod backup;
 pub mod channel_a;
 pub mod channel_b;
 pub mod commands;

@@ -13,6 +13,7 @@ pub const PING: i64 = 21006;
 pub const PATH: i64 = 21011;
 pub const REMOTE_CONTROL: i64 = 21020;
 pub const ZONE_CLEAN: i64 = 21023;
+pub const BACKUP_RESTORE: i64 = 21025;
 
 pub fn name(info_type: i64) -> Option<&'static str> {
     match info_type {
@@ -28,6 +29,7 @@ pub fn name(info_type: i64) -> Option<&'static str> {
         PATH => Some("clean-path"),
         REMOTE_CONTROL => Some("remote-control"),
         ZONE_CLEAN => Some("zone-clean"),
+        BACKUP_RESTORE => Some("map-restore"),
         _ => None,
     }
 }
