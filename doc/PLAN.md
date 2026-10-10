@@ -841,11 +841,14 @@ Live-verified: write → read-back verbatim and a refused stale write; the corre
 zone-clean sequence runs end to end for zones in the robot's own room (verified out to
 6.6 m), but aborts with fault `-2605` (`EID_E_CLEAN_CANNOT_ARRIVE`) for a zone in
 another room — including a target only 2.6 m away across the label boundary, while a
-1.8 m same-room control cleaned. The target search is masked to the room (20002
-segmentation label) the robot currently stands in; the picker should warn before
-queueing a zone outside it. The vendor's cross-room flow is still open in
-RE_REQUEST_ZONE_CLEAN_ROOM.md (Q2). The spot clean button and the "more" menu are the
-two remaining items. Map backup export/restore is in too (§20.6): one staged slot is
+1.8 m same-room control cleaned. That cross-boundary result is still ambiguous: the RE
+static analysis finds no current-label restriction in area mode and points at the
+doorway/planner grid as the alternative (the label boundary coincides with the mapped
+passage). The designed cross-room path is `21023` with `segmentId` → smart mode; the
+first live probe was ACKed but ran `subMode:"area"` on the old selection instead of the
+east room, so it is not confirmed. Next: retry with a positive `cleanId` and watch for
+smart mode (FIELD_NOTES.md, RE_REQUEST_ZONE_CLEAN_ROOM.md). The spot clean button and
+the "more" menu are the two remaining items. Map backup export/restore is in too (§20.6): one staged slot is
 exported as an `NBMP` container and imported back for a `21025` restore, verified live
 end to end — the robot fetched the blob from us, md5-ok, installed it and pushed the
 follow-up `20002` 0.7 s later; a wrong md5 fails with `code:-3` and leaves the map
@@ -1174,16 +1177,20 @@ works for every zone we tried in the dock's room — the operator's desk zone at
 and test rectangles at 5.6 m and 6.6 m — and aborts with
 `errorState:[-2605]` (`EID_E_CLEAN_CANNOT_ARRIVE`) for zones in the right-hand room at
 9.6 and 10.4 m. A segmentation reset (`21030 reset`, which finally put labels in the
-20002 raster) and an inline `extraAreas` variant changed nothing. **The decisive
-cross-room test (2026-10-10) settled the confound:** parked inside the right-hand room
+20002 raster) and an inline `extraAreas` variant changed nothing. **The cross-room
+mechanism is still being pinned down (2026-10-10):** parked inside the right-hand room
 (label `0x02`), the robot aborted a target only 2.6 m away across the label boundary
 (`0x01`) without travelling, while a 1.8 m target in its own label cleaned and docked
-normally — the target search is masked to the segmentation label (room) the robot
-currently stands on, not to distance. Consequence for the picker: `▶️` only works for
-zones in the robot's current room; a selected zone elsewhere should be flagged with a
-warning (compare the robot's raster label with the zone's label before enqueueing)
-rather than queued to abort with `-2605`. FIELD_NOTES.md, RE_REQUEST_ZONE_CLEAN_ROOM.md
-(question 2, the vendor's cross-room flow, is still open).
+normally. That is consistent with a current-label mask, but the RE static analysis finds
+no such restriction in area mode and notes that the label boundary coincides with the
+mapped doorway — a doorway/planner-grid pruning effect produces the same `-2605`. The
+designed cross-room path is `21023` with `segmentId` → smart mode (RE:
+`ZONE_CLEAN_ROOM.md`); the first live probe from the dock was ACKed "ok" but the robot
+ran `subMode:"area"` and headed for the old area selection, not the east room, so the
+smart path is not confirmed. Next step (not tonight): resend with a positive `cleanId`
+plus `segmentId`, watch `subMode` for smart, and check the device log. Until then the
+picker should warn that cross-room area cleans are not supported/verified rather than
+claim a settled room mask. FIELD_NOTES.md, RE_REQUEST_ZONE_CLEAN_ROOM.md.
 
 Names are editable in the editor's strip and auto-assigned as `Zone <n>` for new
 rectangles. The 31-byte `name`/`tag` and 30-byte `mode` limits from FUNC_MAP §4 are

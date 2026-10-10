@@ -317,6 +317,24 @@ cross-boundary pair with a distance-matched same-label control; ③ the cleanabl
 check on failed targets. Mechanism, per-submode mask table and device-log greps:
 `ZONE_CLEAN_ROOM.md`; `ZONE_CLEAN_ROUTE.md` §3 and `ZONE_CLEAN.md` carry both readings.
 
+**First live `segmentId` probe (2026-10-10, [field]): negative — smart mode not
+entered.** After `21030 {"autoAreaId":0,"operate":"reset"}` put 18 929 labels back into
+the restored 10-09 raster (dock cell `0x01`, east room `0x02`), we sent from the dock:
+`21023 {"cleanId":[-3],"segmentId":[2]}` then `21005 {"mode":"appointClean"}`. Both
+were ACKed "ok" (trace seq 202/204 and 203/206, 20:21:48Z), but the robot never
+entered smart mode: the status is `mode=sweep`/`subMode:"area"` throughout, and it
+drove from the dock east/north to (−773,2029) — consistent with the old
+`CrossBoundary` area selection (1508…1908, 144…544), not the east room (label `0x02`,
+x>≈2400). We stopped it at 20:22:25Z, sent `21012 {"cmd":"start"}`, and it docked and
+reached `fullcharge` at (−5420,308) by 20:23:08Z.
+
+So the `21023` payload as sent did not take the region-writing path (or this unit's
+handler ignores `segmentId`); `cleanId:[-3]` alone appears to have left the previous
+CleanArea shm selection intact, and `appointClean` ran that instead. Test ① needs a
+retry with a **positive** `cleanId` (an unused id, or a real stored id if the extra
+zone is acceptable) so the handler enters the region-building branch, plus a device-log
+check for the smart strings. Not tonight.
+
 ## Manual driving from the dock: the first command is a back-out (2026-10-10, [field])
 
 The robot parks **facing the dock** — at our dock that is south on the map, `phi ≈
