@@ -1,28 +1,31 @@
 # noobscenic
 
+![noobscenic icon](web/favicon.png)
+
 A clean-room, reverse-engineered replacement server for the **Proscenic M7 Pro**
 robot vacuum, written in Rust.
 
-The goal is to re-home the robot to a server you control — re-implementing the
-vendor cloud's REST API, push gateway, and the local UDP config protocol — so it
-keeps working without ever talking to Proscenic.
+The goal is to re-home (pair) the robot to a server you control —
+re-implementing the vendor cloud APIs and protocols — so it keeps working
+without actually ever talking to the vendor cloud.
 
-Protocol analysis and reverse-engineering artifacts live in [`doc/`](doc/).
+⚠️ The software assumes single household use and exposure to LAN only — it lacks
+access control (authentication) or security features (HTTPS). **Run it exposed
+to the internet at your own risk.** ⚠️
 
 Status:
 - ☑️ re-homing (pairing) works,
-- ☑️ channel A (REST) real register/session/sync flow works,
-- ☑️ channel B (real-time) both delivers commands and takes telemetry,
-- ☑️ decoded maps, assembled clean paths,
-- ☑️ ACK-correlated command queue (console and one-shot CLI),
-- ☑️ SQLite persistent storage with trace references,
-- ☑️ AES command encryption is configurable;
-- ☑️ a web UI to watch and pan/zoom the map and path, send the basic commands, steer the robot, edit zones, rename robots and export/restore map backups,
-- ⬜ the trace viewer, replay mode and TLS are deliberately postponed (see "Not yet implemented").
+- ☑️ commands, robot responses, and telemetry all work,
+- ☑️ maps, zones, paths - decoded, rendered, imported and exported,
+- ☑️ SQLite persistent storage,
+- ☑️ a web UI to control the robot.
 
-![Screenshot of the WIP web UI](doc/screenshot.png) ![Screenshot of the remote control](doc/screenshot2.png)
+ℹ️ *The web UI is run from the server itself and is mobile-friendly. No separate
+mobile app is planned.*
 
-## Operator guide
+![Screenshot of the WIP web UI](doc/screenshot.png) ![Screenshot of the zone editing view](doc/screenshot2.png)
+
+## Usage guide
 
 ### What you need
 
@@ -92,7 +95,24 @@ working directory; unknown keys are rejected). The interesting ones:
   `send <sn> 21017 {"cmd":"stop"}` ends it, and `send <sn> 21012 {"cmd":"start"}`
   sends the robot home.
 
-### 4. Backing out
+### 4. Normal use
+
+Open the server address on port 8080 in a browser:
+
+
+### Troubleshooting
+
+If the rehoming tool reports no robot, check the robot is in pairing mode and
+this machine is on the `Proscenic-` network, not still on its normal Wi-Fi.
+
+If nothing reaches the server after the switch, check the firewall — a missing
+inbound "allow" rule, or a "deny" rule, can drop the robot's packets silently.
+The default ports are 8080 and 8081, TCP.
+
+If the robot stops reaching the server later, its configured `server-address`
+may have changed: use a DHCP reservation, a static address, or a DNS name.
+
+### Backing out
 
 - **Stop the server** — console `quit`, or Ctrl-C. The robot keeps working from its
   own panel; you lose the app-style control, telemetry and maps until it is re-homed.
@@ -105,26 +125,22 @@ working directory; unknown keys are rejected). The interesting ones:
   re-adding is refused, a factory reset clears the robot side.
 - **Forget everything we stored**: delete `var/`.
 
-### Troubleshooting
+### Not yet implemented (perhaps deliberately postponed)
 
-If the tool reports no robot, check the robot is in pairing mode and this machine is
-on the `Proscenic-` network, not still on its normal Wi-Fi.
-
-If nothing reaches the server after the switch, check the firewall — a missing
-inbound "allow" rule, or a "deny" rule, can drop the robot's packets silently. The
-default ports are 8080 and 8081, TCP.
-
-If the robot stops reaching the server later, its configured `server-address` may
-have changed: use a DHCP reservation, a static address, or a DNS name.
-
-### Not yet implemented (deliberately postponed)
+Protocol analysis and reverse-engineering artifacts live in [`doc/`](doc/).
 
 Planned, but not a priority at the moment:
 
-- `noobscenic trace <file>` — render a wire capture as a readable timeline.
-- `--replay` — feed a recorded capture back into a fresh server as a regression test.
-- TLS on the listeners — only useful for a DNS-override deployment that impersonates
-  the vendor hostname. The robot validates no certificates, so a self-signed cert
-  would do, and the re-homed path needs none of it.
+- Scheduled cleaning. Not a feature I ever used myself.
+- Some robot settings, such as speaker volume, water pump strength are not
+  exposed yet.
+- `noobscenic trace <file>` — rendering a wire capture as a readable timeline.
+  Cool, but not exactly necessary.
+- `--replay` — feed a recorded capture back into a fresh server as a regression
+  test. Same as above.
+- TLS on the listeners — only useful for a DNS-override deployment that
+  impersonates the vendor hostname. The robot validates no certificates, so a
+  self-signed cert would do, and the re-homed path needs none of it.
+- Exploit for uploading a homebrew firmware. Needs security research.
 
 See [`doc/PLAN.md`](doc/PLAN.md) §14 for what these would look like.
