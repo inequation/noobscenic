@@ -205,6 +205,8 @@ const settingsLabel = document.getElementById("settings-label");
 
 let robot = null;   // the {id} the API is addressed by
 let robotEntries = []; // the dropdown's data, latest from /api/robots
+let robotStatus = null; // newest 20001 payload, for the robot marker's pose
+let poseRev = null;     // "x,y,phi" of the last drawn pose
 let mapRev = null;  // "id:received_ms" of the drawn map
 let pathRev = null; // "id:span" of the drawn path
 let base = null;    // the fetched map frame
@@ -414,6 +416,16 @@ async function tick() {
     const summary = await api("/summary");
     statusLine.textContent = describe(summary);
     updateButtons(summary);
+    // The robot marker follows this poll (1.5 s, 300 ms while steering), so redraw
+    // only when the pose actually moved.
+    robotStatus = summary.status || null;
+    const pose = robotStatus && Array.isArray(robotStatus.pos)
+      ? robotStatus.pos.join(",") + "," + robotStatus.phi
+      : "none";
+    if (pose !== poseRev) {
+      poseRev = pose;
+      draw();
+    }
     // The list is fetched even outside the zones view: forbid zones are permanent
     // overlays on the main map and the zone-clean highlight needs it too. Local edits
     // in progress are never clobbered.
@@ -1014,6 +1026,11 @@ function draw() {
   if (base.dock_x != null && base.dock_y != null) {
     diamond(toPixel(base.dock_x / 1000, base.dock_y / 1000));
   }
+  if (robotStatus && Array.isArray(robotStatus.pos) && robotStatus.pos.length >= 2) {
+    const [px, py] = toPixel(robotStatus.pos[0] / 1000, robotStatus.pos[1] / 1000);
+    const phi = robotStatus.phi == null ? NaN : Number(robotStatus.phi) / 1000;
+    robotMarker(px, py, phi);
+  }
   drawZones();
 }
 
@@ -1167,10 +1184,9 @@ function dot(point, colour) {
 /// The charging station: a green diamond that scales with the map (radius in cells,
 /// like any other feature) with a white lightning bolt over it — six points in a
 /// 24-unit box shaped like ⚡, fitted inside the rhombus so it stays clear of the
-/// edges at every zoom. Radius 7 cells (0.7 m across at this map's 50 mm cells) is the
-/// smallest that still reads as a bolt at desktop fit zoom; zooming in grows it.
+/// edges at every zoom.
 function diamond([x, y]) {
-  const radius = 7;
+  const radius = 3.5;
   ctx.fillStyle = "rgb(34,160,72)";
   ctx.beginPath();
   ctx.moveTo(x, y - radius);
@@ -1193,6 +1209,26 @@ function diamond([x, y]) {
     else ctx.moveTo(px, py);
   });
   ctx.closePath();
+  ctx.fill();
+}
+
+/// The robot: a black disc in map scale — radius 3.5 cells matches the dock marker
+/// and roughly the machine's own 35 cm — with a blue dot towards its nose. The status
+/// payload's `phi` is the heading in milliradians, counter-clockwise from +x, in the
+/// map frame's axes (+y north); the canvas has y pointing down, hence the negated
+/// sine. The dot sits half a radius out and is a fifth of the radius wide.
+function robotMarker(x, y, phi) {
+  const radius = 3.5;
+  ctx.fillStyle = "rgb(0,0,0)";
+  ctx.beginPath();
+  ctx.arc(x, y, radius, 0, 7);
+  ctx.fill();
+  if (!Number.isFinite(phi)) return;
+
+  const offset = radius * 0.5;
+  ctx.fillStyle = "rgb(30,90,220)";
+  ctx.beginPath();
+  ctx.arc(x + offset * Math.cos(phi), y - offset * Math.sin(phi), radius * 0.2, 0, 7);
   ctx.fill();
 }
 
