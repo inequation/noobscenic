@@ -1098,6 +1098,10 @@ Three facts shape the design:
   `commands`.
 * The first steering command **interrupts a running clean** and enters manual mode;
   4001 also starts manual mode, so it is only ever sent after a steering command.
+* While **docked** the robot parks facing the dock — south at ours — and the first
+  steering command only backs it out (~0.15 m) with the drive frames expiring, after
+  which "forward" drives it back toward the dock. Undock first, wait for movement,
+  then rotate before driving off (FIELD_NOTES.md, 2026-10-10).
 
 Safety: a server-side watchdog — no steering frame from a watched client for 2 s and
 the server sends 4000 itself, so a closed tab or dead Wi-Fi cannot leave the robot in

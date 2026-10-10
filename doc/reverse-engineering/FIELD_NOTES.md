@@ -275,6 +275,31 @@ Wire traces: `wire-2026-10-10.jsonl`, commands 176/177 (21030 reset), 184/185
 (extraAreas, aborted), 188/189 (5.6 m, cleaned), 191/192 (6.6 m, cleaned). The robot's
 stored zone list was restored to the operator's `Biurko` zone afterwards.
 
+## Manual driving from the dock: the first command is a back-out (2026-10-10, [field])
+
+The robot parks **facing the dock** — at our dock that is south on the map, `phi ≈
+−1.5 rad` — i.e. it is looking at the wall. Any steering command issued while docked
+first runs the firmware's hard-coded leave-charger step (the ~0.15 m back-off, the
+`{−0.15, 0, 0.2, 10.0}` navigator step in `ZONE_CLEAN_ROUTE.md` §2): the robot reverses
+out **keeping its heading**, and the `3005` frames sent during that window simply expire
+against the 400 ms speed timeout. One forward command after the back-out then drives
+the robot straight back toward the dock, because "forward" follows `phi`.
+
+Measured (`wire-2026-10-10.jsonl`, 16:51:18–16:51:23): four `3005` frames over ~1 s
+moved the robot **backwards** (+y, 102 mm) with `phi` unchanged (−1.525 → −1.527 rad);
+a six-frame `3008` burst then took `phi` to −3.07 rad (facing west — the operator
+watched it turn west-south-west), after which `3005` moved it **along that heading**.
+So **`phi` is the heading and forward drives along it**; the apparent 177° "offset" I
+first computed was the back-out step, not a frame convention.
+
+Rules for any driver, human or script:
+
+* treat the first steering command at the dock as "undock, do not steer": wait until
+  `pos` has moved ~0.15 m clear of the dock before trusting any heading or motion;
+* the parked heading here is ~south, so rotate ~π before driving forward or the robot
+  drives back into the dock;
+* never calibrate a heading model from the first motion while docked.
+
 ## Raw evidence
 
 * `/media/sf_reshell-shared/device-log.bin` — robot's `/tmp/WifiConfLog`, 2026-10-04
