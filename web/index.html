@@ -28,6 +28,7 @@
   button { min-width: 88px; }
   button.big { min-width: 64px; font-size: 22px; line-height: 1; padding: 10px 12px; }
   button:disabled { opacity: 0.45; }
+  button.active { background: #35507a; border-color: #6f8fc0; }
   #menu-toggle { min-width: 0; font-size: 20px; line-height: 1; padding: 6px 10px; }
   #menu { position: fixed; left: 0; bottom: 0; width: 15rem; z-index: 2;
           background: #1f2229; border-right: 1px solid #2c313a; overflow-y: auto;
@@ -128,6 +129,7 @@
   <div id="bar-edit" class="bar" hidden>
     <button id="edit-cancel" class="big" title="Cancel editing">❌</button>
     <button id="edit-undo" class="big" title="Undo">↶️</button>
+    <button id="edit-resize" class="big" title="Resize" disabled>↔️</button>
     <button id="edit-delete" class="big" title="Delete the selected zone">🗑️</button>
     <button id="edit-save" class="big" title="Save zones">💾</button>
   </div>
@@ -200,6 +202,8 @@ let zoneUndo = [];
 let zoneDraft = null;      // rectangle being dragged out: {from:[mm,mm], to:[mm,mm]}
 let zoneDrag = null;       // moving a zone or one of its vertices
 let zonePending = null;    // which zone the pointer went down on (picker tap)
+let zoneResize = false;    // 8-sector resize mode for the selected zone
+const ZONE_MIN_MM = 100;   // the server refuses anything thinner than two 50 mm cells
 
 async function json(url, options) {
   const response = await fetch(url, options);
@@ -284,6 +288,7 @@ async function init() {
   document.getElementById("edit-undo").onclick = undoZones;
   document.getElementById("edit-delete").onclick = deleteSelectedZone;
   document.getElementById("edit-save").onclick = saveZones;
+  document.getElementById("edit-resize").onclick = toggleResize;
   document.getElementById("zone-play").onclick = cleanSelectedZones;
   document.getElementById("zone-type").onchange = retypeSelectedZone;
 
@@ -474,6 +479,7 @@ async function openZones() {
 function closeZones() {
   zonesView = false;
   zonesEdit = false;
+  zoneResize = false;
   zoneSelected.clear();
   zoneEditIndex = -1;
   zoneDraft = null;
@@ -521,6 +527,10 @@ function updateBars() {
   edit.title = zoneState.cleaning ? "A clean is running; editing is blocked" : "Edit zones";
   document.getElementById("edit-delete").disabled = zoneEditIndex < 0;
   document.getElementById("edit-undo").disabled = zoneUndo.length === 0;
+  const resize = document.getElementById("edit-resize");
+  resize.disabled = zoneEditIndex < 0;
+  resize.classList.toggle("active", zoneResize);
+  resize.title = zoneResize ? "Resize: tap a side or corner and drag (tap again to stop)" : "Resize";
 }
 
 function snapshotZones() {
@@ -530,6 +540,7 @@ function snapshotZones() {
 
 function startEdit() {
   zonesEdit = true;
+  zoneResize = false;
   zoneSelected.clear();
   zoneEditIndex = -1;
   zoneUndo = [];
@@ -541,6 +552,7 @@ function startEdit() {
 function cancelEdit() {
   if (zoneBaseline !== null) zoneState.zones = JSON.parse(zoneBaseline);
   zonesEdit = false;
+  zoneResize = false;
   zoneEditIndex = -1;
   zoneDraft = null;
   updateBars();
@@ -551,6 +563,7 @@ function undoZones() {
   const previous = zoneUndo.pop();
   if (previous === undefined) return;
   zoneState.zones = JSON.parse(previous);
+  zoneResize = false;
   zoneEditIndex = -1;
   updateBars();
   draw();
@@ -560,6 +573,7 @@ function deleteSelectedZone() {
   if (zoneEditIndex < 0) return;
   snapshotZones();
   zoneState.zones.splice(zoneEditIndex, 1);
+  zoneResize = false;
   zoneEditIndex = -1;
   updateBars();
   draw();
@@ -581,6 +595,7 @@ async function saveZones() {
     });
     statusLine.textContent = "zones saved; confirming with the robot…";
     zonesEdit = false;
+    zoneResize = false;
     zoneState.version = reply.version;
     updateBars();
     await loadZones(true);
@@ -682,6 +697,60 @@ function vertexAt(event) {
     if (Math.hypot(px - x, py - y) < 14) return index;
   }
   return -1;
+}
+
+/// The selected zone's axis-aligned bounds, in millimetres.
+function zoneBounds(zone) {
+  const xs = zone.vertexs.map(([x]) => x);
+  const ys = zone.vertexs.map(([, y]) => y);
+  return {
+    minX: Math.min(...xs),
+    maxX: Math.max(...xs),
+    minY: Math.min(...ys),
+    maxY: Math.max(...ys),
+  };
+}
+
+/// Which resize sector a point outside the rectangle falls in, as the string the
+/// ASCII diagram suggests: "n", "ne", "e", "se", "s", "sw", "w", "nw". `null` when
+/// the point is inside (those taps keep their normal meaning). The partition is the
+/// 3×3 one: the straight-edge bands are as wide as the rectangle, the corner sectors
+/// are the quadrants beyond them.
+function resizeRegion(point, bbox) {
+  const [x, y] = point;
+  const horizontal = x < bbox.minX ? "w" : x > bbox.maxX ? "e" : "";
+  const vertical = y < bbox.minY ? "s" : y > bbox.maxY ? "n" : "";
+  if (!horizontal && !vertical) return null;
+  return vertical + horizontal;
+}
+
+/// Move the touched edge(s) of the selected zone to the dragged point. Works off the
+/// bounding box, so a polygon generalises to "the vertices on that edge move"; a
+/// cardinal sector only touches its own axis.
+function resizeZone(zone, region, point) {
+  const bounds = zoneBounds(zone);
+  let { minX, maxX, minY, maxY } = bounds;
+  const [x, y] = point;
+  if (region.includes("w")) minX = Math.round(Math.min(x, maxX - ZONE_MIN_MM));
+  if (region.includes("e")) maxX = Math.round(Math.max(x, minX + ZONE_MIN_MM));
+  if (region.includes("s")) minY = Math.round(Math.min(y, maxY - ZONE_MIN_MM));
+  if (region.includes("n")) maxY = Math.round(Math.max(y, minY + ZONE_MIN_MM));
+  zone.vertexs = zone.vertexs.map(([vx, vy]) => {
+    let nx = vx;
+    let ny = vy;
+    if (region.includes("w") && vx <= bounds.minX) nx = minX;
+    if (region.includes("e") && vx >= bounds.maxX) nx = maxX;
+    if (region.includes("s") && vy <= bounds.minY) ny = minY;
+    if (region.includes("n") && vy >= bounds.maxY) ny = maxY;
+    return [nx, ny];
+  });
+}
+
+function toggleResize() {
+  if (zoneEditIndex < 0) return;
+  zoneResize = !zoneResize;
+  updateBars();
+  draw();
 }
 
 /// Finish a dragged-out rectangle: round to whole millimetres, insist on the same
@@ -805,6 +874,48 @@ function drawZones() {
     ctx.strokeStyle = "rgb(255,255,255)";
     ctx.strokeRect(Math.min(x1, x2), Math.min(y1, y2), Math.abs(x2 - x1), Math.abs(y2 - y1));
     ctx.setLineDash([]);
+  }
+  if (zonesEdit && zoneResize && zoneEditIndex >= 0) {
+    drawResizeGuides(zoneState.zones[zoneEditIndex]);
+  }
+}
+
+/// Resize mode's affordance: a dashed outline around the selected zone and the eight
+/// sector labels. Drawn in screen space (so the labels keep their size at any zoom),
+/// which is why it comes last — it leaves the transform in CSS pixels.
+function drawResizeGuides(zone) {
+  const bounds = zoneBounds(zone);
+  const [x0, y0] = mapToScreen(...toPixel(bounds.minX / 1000, bounds.minY / 1000));
+  const [x1, y1] = mapToScreen(...toPixel(bounds.maxX / 1000, bounds.maxY / 1000));
+  const left = Math.min(x0, x1);
+  const right = Math.max(x0, x1);
+  const top = Math.min(y0, y1);
+  const bottom = Math.max(y0, y1);
+  const dpr = window.devicePixelRatio || 1;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.setLineDash([5, 4]);
+  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = "rgba(255,255,255,0.85)";
+  ctx.strokeRect(left - 16, top - 16, right - left + 32, bottom - top + 32);
+  ctx.setLineDash([]);
+  ctx.fillStyle = "rgba(255,255,255,0.9)";
+  ctx.font = "11px system-ui, sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  const cx = (left + right) / 2;
+  const cy = (top + bottom) / 2;
+  const pad = 23;
+  for (const [text, x, y] of [
+    ["NW", left - pad, top - pad],
+    ["N", cx, top - pad],
+    ["NE", right + pad, top - pad],
+    ["W", left - pad, cy],
+    ["E", right + pad, cy],
+    ["SW", left - pad, bottom + pad],
+    ["S", cx, bottom + pad],
+    ["SE", right + pad, bottom + pad],
+  ]) {
+    ctx.fillText(text, x, y);
   }
 }
 
@@ -1005,11 +1116,29 @@ canvas.addEventListener("pointerdown", (event) => {
   } else if (pointers.size === 1 && !pan) {
     const point = pointerMillimetres(event);
     if (!point) return;
-    const vertex = vertexAt(event);
+    // In resize mode the corners are deliberately not grabbable — that is the whole
+    // point — so a press outside the selected rectangle always resizes instead of
+    // creating a new zone, and vertex handles are ignored.
+    const vertex = zoneResize ? -1 : vertexAt(event);
     if (vertex >= 0) {
       zoneDrag = { kind: "vertex", vertex, snapshot: false };
     } else {
       const hit = zoneAt(point);
+      if (zoneResize && zoneEditIndex >= 0 && hit !== zoneEditIndex) {
+        if (hit >= 0) {
+          // A different zone under the finger: select it rather than resizing.
+          zoneEditIndex = hit;
+          document.getElementById("zone-type").value = zoneType(zoneState.zones[hit]);
+          updateBars();
+          draw();
+          return;
+        }
+        const region = resizeRegion(point, zoneBounds(zoneState.zones[zoneEditIndex]));
+        if (region) {
+          zoneDrag = { kind: "resize", region, snapshot: false };
+          return;
+        }
+      }
       if (hit >= 0) {
         zoneEditIndex = hit;
         document.getElementById("zone-type").value = zoneType(zoneState.zones[hit]);
@@ -1041,6 +1170,8 @@ canvas.addEventListener("pointermove", (event) => {
     }
     if (zoneDrag.kind === "vertex") {
       zoneState.zones[zoneEditIndex].vertexs[zoneDrag.vertex] = [x, y];
+    } else if (zoneDrag.kind === "resize") {
+      resizeZone(zoneState.zones[zoneEditIndex], zoneDrag.region, [x, y]);
     } else {
       const dx = x - zoneDrag.from[0];
       const dy = y - zoneDrag.from[1];
