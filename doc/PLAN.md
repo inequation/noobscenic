@@ -838,9 +838,11 @@ clean zone selects it, `▶️` queues the corrected sequence — `21023` with t
 the 21004 → edit → 21003 round trip with the version etag and the cleaning guard.
 Live-verified: write → read-back verbatim and a refused stale write; the corrected
 zone-clean sequence runs end to end for near zones — travel, `sweep`/`area`, clean,
-dock — but aborts with fault `-2605` for zones ~9–10 m away in the right-hand room,
-an open question in RE_REQUEST_ZONE_CLEAN_ROUTE.md. The spot clean button and the
-"more" menu are the two remaining items.
+dock — for zones in the robot's own room (verified out to 6.6 m), but aborts with fault
+`-2605` (`EID_E_CLEAN_CANNOT_ARRIVE`) for zones in another room (verified at 9.6–10.4 m,
+the nearest such cell being 7.8 m out, so room and distance remain confounded). Open in
+RE_REQUEST_ZONE_CLEAN_ROOM.md. The spot clean button and the "more" menu are the two
+remaining items.
 
 ---
 
@@ -1152,10 +1154,14 @@ own `[-1,-3]` schedule default) followed by `appointClean`, in that order — th
 sorts claimed rows by id so a multi-row enqueue can never overtake itself. The
 corrected sequence is **live-verified** (2026-10-10): with a stored zone the robot
 starts `sweep`/`subMode:"area"`, travels to the zone, cleans it and docks itself. It
-works for zones at the dock and ~1.5 m away; two rectangles in the far right-hand room
-(~9–10 m) still abort ~2 s after undocking with `errorState:[-2605]`, even though the
-map's free cells connect the dock to that room — see FIELD_NOTES.md and the follow-up
-question in RE_REQUEST_ZONE_CLEAN_ROUTE.md.
+works for every zone we tried in the dock's room — the operator's desk zone at 3.2 m,
+and test rectangles at 5.6 m and 6.6 m — and aborts ~2 s after undocking with
+`errorState:[-2605]` (`EID_E_CLEAN_CANNOT_ARRIVE`) for zones in the right-hand room at
+9.6 and 10.4 m. A segmentation reset (`21030 reset`, which finally put labels in the
+20002 raster) and an inline `extraAreas` variant changed nothing; the discriminator is
+that every success sits in the dock's segmentation label and every failure in `0x02`
+(another room) — the two conditions are confounded in this map, so the decisive test is
+one from inside the other room (FIELD_NOTES.md, RE_REQUEST_ZONE_CLEAN_ROOM.md).
 
 Names are editable in the editor's strip and auto-assigned as `Zone <n>` for new
 rectangles. The 31-byte `name`/`tag` and 30-byte `mode` limits from FUNC_MAP §4 are

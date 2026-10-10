@@ -232,6 +232,40 @@ error-index table is now resolved — `−2605` = cannot-arrive (index 23), and
 commands 101/102 (far, aborted), 105/106 (far, aborted), 107/108 and 111/112 (near, cleaned),
 117/118 (far, aborted), 120/121 (mid, cleaned).
 
+## Zone clean: the far-zone abort is about *rooms*, not distance (2026-10-10, [field])
+
+`ZONE_CLEAN_ROUTE.md` identified `-2605` as `EID_E_CLEAN_CANNOT_ARRIVE` (the navigator's
+target search found no cell). We ran its suggested experiments and then bisected the
+condition:
+
+* **`21030 {"autoAreaId":0,"operate":"reset"}` works** and the forced 20002 upload then
+  carries segmentation labels for the first time (previously **0 labelled** cells; after
+  the reset 19 390 cells carry labels `0x01`/`0x02`). It did **not** fix the far zone:
+  the same rectangle still started `sweep`/`area` and aborted ~2 s later.
+* **`extraAreas` (inline region, `mode:"area"`) also aborted** — so the stored-`cleanId`
+  mapping is not the difference.
+* **Bisecting by distance** from the dock (all zones 0.8–1.6 m wide, all in free,
+  labelled cells, all started with `21023 {"cleanId":[N]}` + `appointClean` from the
+  dock): **3.2 m ✓** (operator's `Biurko` zone), **5.6 m ✓**, **6.6 m ✓** — each drove
+  out, cleaned and docked itself; **9.6 m ✗** and **10.4 m ✗** aborted as before.
+* **The discriminator is the segmentation label**: every success sits in label
+  `0x01` — the same label as the dock cell — and every failure sits in label `0x02`
+  (the right-hand room). The corridor's label boundary is at x≈2400, **7.8 m** from the
+  dock (the nearest label-`0x02` cell), while label-`0x01` free space ends at ≈7.5 m —
+  so in this map "another room" and "beyond ~7.5 m" are confounded and cannot be
+  separated from the dock.
+
+Working hypothesis (matches the RE mechanism — the target search runs over the
+segmentation-label grid): **an area clean can only target cells inside the label the
+robot is currently in**. The decisive test starts the clean with the robot *inside*
+the other room: clean (a) a zone there (same label → expect success) and (b) a zone
+back in the dock's room (different label → fails if label-bound, succeeds if it is
+only distance). Follow-up request: `RE_REQUEST_ZONE_CLEAN_ROOM.md`.
+
+Wire traces: `wire-2026-10-10.jsonl`, commands 176/177 (21030 reset), 184/185
+(extraAreas, aborted), 188/189 (5.6 m, cleaned), 191/192 (6.6 m, cleaned). The robot's
+stored zone list was restored to the operator's `Biurko` zone afterwards.
+
 ## Raw evidence
 
 * `/media/sf_reshell-shared/device-log.bin` — robot's `/tmp/WifiConfLog`, 2026-10-04
