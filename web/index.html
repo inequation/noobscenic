@@ -1164,14 +1164,35 @@ function dot(point, colour) {
   ctx.fill();
 }
 
+/// The charging station: a green diamond that scales with the map (radius in cells,
+/// like any other feature) with a white lightning bolt over it — six points in a
+/// 24-unit box shaped like ⚡, fitted inside the rhombus so it stays clear of the
+/// edges at every zoom. Radius 7 cells (0.7 m across at this map's 50 mm cells) is the
+/// smallest that still reads as a bolt at desktop fit zoom; zooming in grows it.
 function diamond([x, y]) {
-  const radius = 4 / view.scale;
-  ctx.fillStyle = "rgb(230,40,40)";
+  const radius = 7;
+  ctx.fillStyle = "rgb(34,160,72)";
   ctx.beginPath();
   ctx.moveTo(x, y - radius);
   ctx.lineTo(x + radius, y);
   ctx.lineTo(x, y + radius);
   ctx.lineTo(x - radius, y);
+  ctx.closePath();
+  ctx.fill();
+
+  // Pre-centred bolt: half-extent 11.5 units, so `fit` scales it to 72% of the
+  // diamond and the tips stay just inside the rhombus.
+  const bolt = [[4, -11.5], [-8, 0.5], [0, 0.5], [-3, 11.5], [8, -2.5], [1, -2.5]];
+  const fit = (radius * 0.72) / 11.5;
+  ctx.fillStyle = "rgb(255,255,255)";
+  ctx.beginPath();
+  bolt.forEach(([bx, by], index) => {
+    const px = x + bx * fit;
+    const py = y + by * fit;
+    if (index) ctx.lineTo(px, py);
+    else ctx.moveTo(px, py);
+  });
+  ctx.closePath();
   ctx.fill();
 }
 
