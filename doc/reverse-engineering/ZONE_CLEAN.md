@@ -68,8 +68,10 @@ later whole-home start must be `smartClean` (it rebuilds the total region) — a
 
 **Distant-zone abort?** If a stored-zone clean for a far room backs ~0.15 m off the dock and
 re-docks within ~2 s with `errorState [-2605]`, that is `EID_E_CLEAN_CANNOT_ARRIVE` — the
-navigator's target search failed over the current map/segmentation state (no distance branch
-was found; ranked coverage causes and next steps in `ZONE_CLEAN_ROUTE.md` §3/§7). See `ZONE_CLEAN_ROUTE.md`.
+navigator's target search found no target cell in the state-10 window. Whether that is a
+label-mask or a boundary/planner-grid effect is still open (two readings; `ZONE_CLEAN_ROUTE.md`
+§3). For the cross-room mechanism (send rooms as `segmentId` → smart mode) and the
+discriminating tests, see `ZONE_CLEAN_ROOM.md`.
 
 ## The app side (what the vendor app really sends) — verified from the APK
 

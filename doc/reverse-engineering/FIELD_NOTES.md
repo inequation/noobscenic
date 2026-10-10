@@ -296,6 +296,27 @@ Wire traces for the earlier bisection: `wire-2026-10-10.jsonl`, commands 176/177
 (6.6 m, cleaned). The robot's stored zone list was restored to the operator's
 `Biurko` zone afterwards; the final cleanup left only `Biurko` (id 1, version 65).
 
+**Resolved 2026-10-10 (RE side): the vendor's cross-room flow (question 2).** There is
+**no move-to-area step anywhere** in the command/EID space — the designed mechanism is
+`21023 {"cleanId":[…],"segmentId":[<label>]}` (the handler still requires the `cleanId`
+key) → kind-6 "smart" regions → task_manager submode 7, whose target mask is the
+**requested** room label and whose A\* transit is **label-agnostic** — the robot drives
+across room boundaries itself; its current label is used only as the *arrival* predicate.
+So the supported cross-room flow is: send the room as `segmentId` + `appointClean` (from
+the dock, no pre-positioning needed — test ① below runs exactly this).
+
+**One caveat on "masked to the current label" above:** it is *one of two readings*. The
+static analysis finds **no current-label restriction in the area mode** (the task's only
+current-label use is submode 7's arrival check; the area-search mask is the target
+polygon), and this map cannot separate the readings because the label boundary (x≈2400)
+coincides with the mapped passage — every cross-boundary target also crosses the doorway,
+and a doorway the planner's grids treat as blocked/pruned yields the identical state-10 →
+`−2605` tail. Discriminating tests, in run order: ① the `segmentId` room path from the
+dock (both the recommended mechanism and a decisive transit probe); ② the sharpened close
+cross-boundary pair with a distance-matched same-label control; ③ the cleanable-raster
+check on failed targets. Mechanism, per-submode mask table and device-log greps:
+`ZONE_CLEAN_ROOM.md`; `ZONE_CLEAN_ROUTE.md` §3 and `ZONE_CLEAN.md` carry both readings.
+
 ## Manual driving from the dock: the first command is a back-out (2026-10-10, [field])
 
 The robot parks **facing the dock** — at our dock that is south on the map, `phi ≈

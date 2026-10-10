@@ -29,7 +29,8 @@ Do not chase it for this symptom; it is a separate abort class (see §5).
    **`"Try to update slam here 2.5 second"`** (≈3,000,000 ticks) — then **one** re-search. If it
    still finds nothing: `"CLEAN_SUB_MOD_SMART  No target Point "` (double space after `SMART`,
    trailing space) → label++ → stage 2; when labels
-   and regions are exhausted (`reachTimes(+0x15c)==0`, submode ≠ 1) `CreateSubRegion` sets
+   and regions are exhausted (`reachTimes(+0x15c)==0`, submode ≠ 1; submode 4 diverts to the
+   `+0x140`-pose navigation instead) `CreateSubRegion` sets
    **stage 10**, and `CCleanTask::Run` case 10 posts **EID 4051** — the only site in the
    firmware that *posts* 4051 (`bl PostEvent` at navigator `0x4b5118`; libcpc.so merely has a
    `movz #0xfd3` for the name table).
@@ -48,29 +49,38 @@ The tick unit is not verified, so treat the match as **approximate, not exact**.
 
 ## 3. Why near zones pass and the far room fails
 
-*[Inference, ranked — not yet confirmed by a capture:]* the working zones sit in the
-dock/corridor area, which the map and its labels demonstrably cover, and the binary's success
-form is `"try trans success, go to true target pt"` (`@0x4dd798`). For the far room the search
-finds **no target cell** in its mask during the window. The
-implementor's flood-fill test over free cells does not contradict this: the search is not a
-reachability test — it looks for a *target cell* in the map/label grids the planner actually
-uses, and that state evidently lacks a usable target there.
+**[Field update 2026-10-10]** The implementor's bisect (six dock runs, all zones free and
+labelled, 0.8–1.6 m wide): **distance is ruled out** (3.2 m, 5.6 m, 6.6 m zones clean; 9.6 m,
+10.4 m abort); every success sits in label `0x01` (the dock's label), every failure in `0x02`;
+`21030 {"operate":"reset"}` produced labels for the first time (19 390 cells) but did not fix
+the far zone; inline `extraAreas` aborts the same; a cross-boundary test (robot parked inside
+`0x02`, target 2.6 m away in `0x01`) aborted while a same-label control cleaned.
 
-Candidate causes (ranked, not yet distinguished — all are map-state, none is distance):
-1. **No segmentation label over the far room** in the current `SegmentationMapShareMem`
-   (the smart-submode search is restricted to the label grid; unlabelled area = no target).
-2. The far room is missing/unknown in the robot's **current** map even though the latest
-   uploaded 20002 raster shows free cells (the upload can be stale relative to live state, or
-   the planner's cleaned/inflated mask differs).
-3. A label exists but its connected component is empty in the planner's mask
-   (`"cant find clean area!!!"` is the log for a label with no cells).
+**Two readings remain — the field data cannot distinguish them** (the label boundary coincides
+with the mapped passage between the rooms at x≈2400 *[inference]*, so every cross-boundary target also crosses
+the doorway):
 
-**Self-serve check #1 (no robot access needed):** inspect the newest 20002 `map` raster at the
-far-room cells vs the working near-zone cells — the segmentation pass overwrites free `0xFF`
-cells with the non-zero room-label byte. If the near zones sit on **labelled** cells and the far
-room is still plain `0xFF` (or a single label with no connected body), hypothesis 1/3 is it.
-**Self-serve check #2:** pull the device log during a failing far-zone run and grep the strings
-in §4 — one run settles which cause.
+1. **[Their reading] a current-label mask.** *But our static analysis finds no current-label
+   restriction in the area mode* — the only current-label use in the task is the smart mode's
+   arrival check; the area-search mask is the target polygon (`ZONE_CLEAN_ROOM.md`, with the
+   per-submode mask table).
+2. **[Static-analysis reading] a boundary/grid effect.** The state-10 tail fires when nothing
+   is reachable/arrival-satisfiable; a doorway that the planner's grids treat as blocked (or a
+   target pruned from the job's cleanable set) produces the identical −2605 without any label
+   masking. The earlier whole-home run that never headed east to the zone (it moved only
+   −5.4→−3.1 m) is consistent with this too.
+
+**Why the target cell is not found (both readings agree on this level):** the search looks for
+a *target cell* in the planner's own grids — not merely free cells — so either the label
+filter (mode 7 / reading 1) or the cleanable/passability state at the doorway (reading 2)
+removes it. The implementor's 4-connected flood fill over the 20002 raster does not test
+either grid.
+
+**How to settle it — run `ZONE_CLEAN_ROOM.md`'s tests:** ① `segmentId` room path from the dock
+(the designed cross-room mechanism and a transit probe); ② the small cross-boundary zone pair
+(sharpened version of their test); ③ the cleanable-raster check on failed targets
+(one-directional: not-free in the raster ⇒ pruned; free in the raster does not prove cleanable
+in the planner).
 
 ## 4. Device-log greps (decisive; ordered)
 
