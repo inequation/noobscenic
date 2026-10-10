@@ -262,6 +262,15 @@ the other room: clean (a) a zone there (same label → expect success) and (b) a
 back in the dock's room (different label → fails if label-bound, succeeds if it is
 only distance). Follow-up request: `RE_REQUEST_ZONE_CLEAN_ROOM.md`.
 
+> Correction (same day): that two-sided test is **not** decisive — both hypotheses
+> predict the same outcome. The discriminating test is a target that is *close but in
+> the other label*: the labels touch at x≈2400, y≈−80 (label `0x01` at (2370,−80) next
+> to `0x02` at (2420,−80)), so a ~0.5 m zone across the boundary settles it.
+> An attempt to drive the robot there with the RC pad (`3005`/`3007`/`3008` closed loop
+> on `pos`/`phi`) failed: the heading offset calibrated to ~177° (phi points backwards
+> relative to travel) but the controller then oscillated and netted only ~0.2 m of
+> travel. The robot was sent home and docked; no further driving without an operator.
+
 Wire traces: `wire-2026-10-10.jsonl`, commands 176/177 (21030 reset), 184/185
 (extraAreas, aborted), 188/189 (5.6 m, cleaned), 191/192 (6.6 m, cleaned). The robot's
 stored zone list was restored to the operator's `Biurko` zone afterwards.

@@ -40,10 +40,16 @@ are indistinguishable.
    robot, and an 8.5 m label-`0x02` test would still be confounded with a ~7.5 m
    distance threshold in this map.
 
-**Decisive experiment we can run on request:** drive the robot into the right-hand room
-(or stop a whole-home clean once it is there), then clean (a) a zone in that room and
-(b) the operator's `Biurko` zone back in room `0x01`. Label-bound ⇒ (a) works and (b)
-fails; distance-bound ⇒ both work (the robot would be ~10 m from Biurko).
+**Decisive experiment we can run on request:** a two-sided variant (drive the robot
+into the right-hand room, then clean a zone *there* and one back in room `0x01`) is
+**not** decisive — a per-label mask and a plain distance limit both predict "the local
+zone works, the distant one fails". The discriminating test needs a target that is
+**close but in the other label**: in the current raster the two labels touch directly
+at x≈2400, y≈−80 (a `0x01` cell at (2370,−80) beside a `0x02` cell at (2420,−80)).
+Park the robot at ≈(2800,−80) (label `0x02`) and clean a small zone at
+(2200…2360, −280…−80) (label `0x01`, ~0.5 m away): label-bound ⇒ `-2605` at half a
+metre; distance/reachability-bound ⇒ it cleans. A nearby zone inside the robot's own
+label is the positive control.
 
 **Evidence:** `FIELD_NOTES.md` ("Zone clean: the far-zone abort is about *rooms*…",
 2026-10-10) and `var/traces/wire-2026-10-10.jsonl`.
