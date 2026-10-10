@@ -72,7 +72,11 @@ a JSON literal; forbidden zones and schedules ride the app-side `value.forbidden
 and `value.orders[]` fields — these are app/ImRequestValue concepts, not robot
 command-name strings.)
 
-**Map / files** (`FUN_0044ab18`): `backupMap`, `backupMapMd5`, `cleanFile`.
+**Map / files** — *corrected 2026-10-10:* `backupMap`, `backupMapMd5`, `cleanFile` are **not**
+inbound command names. They are the **outbound** multipart part names / JSON key of the
+clean-record upload (`FUN_0044ab18`); each string has a single reference in the image and is
+never matched against `data`. The actual inbound map-backup keys are **`downUrl` + `md5`**
+(infoType 21025, `SetBackupMapHandle`) — see `BACKUP_MAP.md`.
 
 **OTA** (`FUN_00414af0`/`FUN_00414e38`): `updateMode` (+`version`,`downUrl`,`fileSize`,
 `charge`,`fullcharge`).
@@ -103,8 +107,11 @@ Your rehome server **will** receive these:
 - **`infoType 10001`** — connect handshake (`connectionType`, empty `token`, `sn`).
 - **Status frame** (`event_send.cpp`): `reliable, elecReal(battery), subMode,
   isInForbidMode, cleanArea, allArea, cleanTime, allTime, workNoisy, errorState,
-  timeStamp, water, autoBoost, cleanMode, backWashArea, backupMapSwitch,
-  cleanComponents, dustCenterFreq, workstationType, ldAvoidColli`.
+  timeStamp, water, autoBoost, cleanMode, cleanComponents, dustCenterFreq,
+  workstationType, ldAvoidColli`.
+  (`backWashArea` and `backupMapSwitch` appear only in the `/tmp/devattr` dump, not on the
+  wire — `FUNC_STATUS.md` §2; the `backupMapSwitch` setter is dead code and the live gate is
+  task_manager's — `BACKUP_MAP.md` §B.)
 - **Device attrs** (`devattr_data.cpp`): `conmunicationState, chargeState, motorState,
   sensorState, cleanModuleState`.
 

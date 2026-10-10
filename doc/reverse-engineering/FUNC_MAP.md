@@ -528,19 +528,28 @@ field; `segmentId` array order may define it [inferred, untested].
 `21024 {"cmd":"delCurMap"}` or `{"cmd":"cancleMap"}` (both go to the same branch of
 `FUN_00472f20`) → `FUN_00413498` → `EID_C_DELETE_MAP`(2033).
 
-### 8.2 Backup map (static, partially)
-- **Upload.** When a clean finishes, `OnNewCleanRecord` (`FUN_0044ab18`) multipart-posts the
-  following to `cleanPack/uploadSingle` (URL table `+0xc8`):
-  - `cleanFile` (the record)
-  - `backupMap` (`*.bkmap` = tar.gz of `/tmp/Run/LastRecord`; see MAP.md and `save_backup_map.sh`)
-  - `backupMapMd5`
-- **Restore.** `21025 {"downUrl":"<url>","md5":"<hex>"}` (`FUN_00472da0` → `FUN_00446938`/`ce0`):
-  1. download to `/tmp/DownloadBackupMap`
-  2. check the md5
-  3. apply (`load_backup_map.sh`, `EID_C_RELOAD_BACKUPMAP` 2032)
-  4. report "BackupMap apply ok" or "down fail" via `cleanPack/response`
-- **Enable switch.** The `backupMapSwitch` status attribute exists. Its setter
-  `FUN_0041750c` (SetCollectBackupMapSwitch) has no direct caller. How it is set is unknown.
+### 8.2 Backup map — resolved 2026-10-10 (`BACKUP_MAP.md`)
+- **Upload.** Filesystem-poller driven: np's never-stopped thread (~10 s) picks the oldest
+  `/tmp/Run/CleanRecord/*.txt`, matches `/tmp/Run/BackUpMap/<name>*.bkmap`, and multipart-POSTs
+  to `cleanPack/uploadSingle` (`+0xc8`) via `FUN_0044ab18` — parts in ascending-key order
+  `backupMapMd5, data, sn, ts, cleanFile, backupMap` (backup parts only when a `.bkmap` exists;
+  `cleanFile` always). **No inbound request triggers it.** tm creates the files at clean end
+  (`FUN_0041d9b0`; gate: `cleanTime` ≥ 60 s, sane clock, not `running_mode`) and the `.bkmap`
+  only when `mEnableBKMap` (tm+0x263, default 1) is set and the map save succeeded. Failure
+  keeps the files → retried each poll; answer **2xx + `{"code":0}`** or it retries forever, and
+  a >1 MiB record dir silently wipes all queued records.
+- **Restore.** `21025 {"downUrl":"<url>","md5":"<hex>"}` (`FUN_00472da0` → `FUN_00446938` →
+  `FUN_00446ce0`): libcurl GET (http/https, verify off, no redirects, no headers), lowercase-hex
+  md5 of the raw body (case-sensitive 32-byte compare), then
+  `sh /tmp/AppRom/load_backup_map.sh /tmp/DownloadBackupMap /tmp/Run/LastRecord/` + EID 0x7f0.
+  **No CPS gate; interrupts a running clean; no reboot.** The `code:0` reply is pushed without
+  waiting for the install (racy); install completion shows as a fresh map upload. The script
+  preserves the live `CleanInfo.json` + `MapList.json`; everything else (incl. **`AreaSetting`
+  zones**) comes from the archive; tar failures are silent.
+- **Enable switch.** np's `FUN_0041750c` (SetCollectBackupMapSwitch) is **dead** (zero
+  references). The working gate is tm's `mEnableBKMap` (default **on**), fed by the config
+  service ("BKMap"); `backupMapSwitch` is `/tmp/devattr`-only, never on the wire — a server
+  cannot read it.
 
 ### 8.3 Multi-map
 There is one live map plus one backup slot. `MapList.json` is kept across restores, but nothing
@@ -548,7 +557,8 @@ in the firmware selects between several maps. This means multi-floor maps are no
 this build [inferred].
 
 ### 8.4 Clean-record (history) map [static, partial]
-- `task_manager` `FUN_0041d9b0` writes `/tmp/Run/BackUpMap/<…>.txt` containing:
+- `task_manager` `FUN_0041d9b0` writes the record `/tmp/Run/CleanRecord/<…>.txt` containing:
+  (the `.bkmap` archives live in `/tmp/Run/BackUpMap/`; §8.2)
   - `{"infoType":20004,"data":{"events","mapID","width","height","resolution","x_min","y_min","lz4_len","map", base64_len, …}`
   - the record fields `sn, mac, start, end, sweep, mop, sweepOnly, cleanTime, cleanMode,
     isDoneNormal, isError, curState`
