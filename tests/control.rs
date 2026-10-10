@@ -418,10 +418,10 @@ async fn the_queue_pushes_in_enqueue_order_even_when_created_ms_disagrees() {
         "UPDATE commands SET created_ms = (SELECT min(created_ms) FROM commands) - 1
          WHERE id = ?",
     )
-        .bind(start)
-        .execute(&state.db)
-        .await
-        .expect("backdate");
+    .bind(start)
+    .execute(&state.db)
+    .await
+    .expect("backdate");
 
     noobscenic::commands::drain_once(&state).await;
     let frames = read_frames(&mut sock, &mut decoder, 2).await;
