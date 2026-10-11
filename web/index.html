@@ -499,6 +499,8 @@ async function sendCommand(name) {
 }
 
 function openRemote() {
+  menu.classList.remove("open");
+  menuToggle.textContent = "☰";
   remoteSheet.classList.add("open");
   tick(); // fresh status as the pad opens
 }
