@@ -10,10 +10,11 @@
 > current-label restriction in the area-mode target search (`ZONE_CLEAN_ROOM.md`).
 > The designed cross-room path is `21023 {"cleanId":[…],"segmentId":[<label>]}` →
 > smart mode; the first live probe and the 2026-10-11 positive-`cleanId` retry were
-> both ACKed "ok" but the robot ran `subMode:"area"` on the old selection instead of
-> entering smart mode and heading to the east room, so that path is not confirmed
-> either. The mask reading still needs the sharpened boundary test; the `segmentId`
-> mechanism needs the `extraAreas`/`point` isolation below.
+> both ACKed "ok" but the robot ran `subMode:"area"` instead of smart, and each run was
+> stopped before reaching a target, so which old area destination it was heading for is
+> unknown (an east-room area job is not ruled out). The smart path is not confirmed.
+> The mask reading still needs the sharpened boundary test; the `segmentId` mechanism
+> needs the `extraAreas`/`point` isolation below.
 
 ## What we now know (follow-up to `ZONE_CLEAN_ROUTE.md`)
 
@@ -48,10 +49,11 @@ are indistinguishable.
    (`ZONE_CLEAN_ROOM.md`). **Still open as two readings.**
 2. What does the vendor stack do for a zone in **another room**? The RE answer is the
    `segmentId` → smart-mode path, but both the 2026-10-10 probe and the 2026-10-11
-   positive-`cleanId` retry were ACKed "ok" and then ran `subMode:"area"` on the old
-   selection, never entering smart mode or heading to the east room. **Still open:**
-   confirm whether this unit's handler supports `segmentId` at all, and whether the
-   region-writing branch runs for `extraAreas` (isolate it same-room).
+   positive-`cleanId` retry were ACKed "ok" and then ran `subMode:"area"`, and both
+   were stopped before reaching a target. Whether the old area destination was in the
+   east room is therefore unknown. **Still open:** confirm whether this unit's handler
+   supports `segmentId` at all, and whether the region-writing branch runs for
+   `extraAreas` (isolate it same-room).
 3. If it is not the label: what in the target search depends on the robot's position at
    start (a search box around the pose, the "4.5 m bbox" in `ZONE_CLEAN_ROUTE.md` §6,
    the leave-charger step, …)? The 6.6 m success rules out a 4.5 m radius around the
@@ -77,10 +79,11 @@ and self-docking for the latter.
 **Live `segmentId` probes (2026-10-10 and 2026-10-11, both negative):** the first,
 with `21023 {"cleanId":[-3],"segmentId":[2]}` on the reset map, and the second, with
 a positive `21023 {"cleanId":[99],"segmentId":[2]}` on the richer post-driving map,
-were both ACKed "ok" by the robot but ran `mode=sweep`/`subMode:"area"` and headed for
-the old area selection, not the east room. The second stopped at (−3956,738) and
-docked at (−5420,293). A positive `cleanId` is not the missing piece; confirm whether
-this unit's handler supports `segmentId` and whether `extraAreas` is consumed.
+were both ACKed "ok" by the robot but ran `mode=sweep`/`subMode:"area"`, and both were
+stopped while heading east before reaching a target. The second stopped at (−3956,738)
+and docked at (−5420,293); the destination is unknown, so an east-room area job is not
+ruled out. A positive `cleanId` is not the missing piece; confirm whether this unit's
+handler supports `segmentId` and whether `extraAreas` is consumed.
 
 **Evidence:** `FIELD_NOTES.md` ("Zone clean: the far-zone abort is about *rooms*…",
 2026-10-10) and `var/traces/wire-2026-10-10.jsonl`.

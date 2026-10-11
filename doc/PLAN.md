@@ -846,10 +846,11 @@ static analysis finds no current-label restriction in area mode and points at th
 doorway/planner grid as the alternative (the label boundary coincides with the mapped
 passage). The designed cross-room path is `21023` with `segmentId` → smart mode; the
 first live probe and the 2026-10-11 positive-`cleanId` retry were both ACKed "ok" but
-ran `subMode:"area"` on the old selection instead of the east room, so the smart path
-is not confirmed on this unit. Next (operator-gated): isolate `extraAreas` same-room and
-then test `mode:"point"` (FIELD_NOTES.md, RE_REQUEST_ZONE_CLEAN_ROOM.md). The spot clean
-button and the "more" menu are the two remaining items. Map backup export/restore is in too (§20.6): one staged slot is
+ran `subMode:"area"` instead of smart (the destination was not reached, so the old area
+target is unknown), so the smart path is not confirmed on this unit. Next
+(operator-gated): isolate `extraAreas` same-room and then test `mode:"point"`
+(FIELD_NOTES.md, RE_REQUEST_ZONE_CLEAN_ROOM.md). The spot clean button and the "more"
+menu are the two remaining items. Map backup export/restore is in too (§20.6): one staged slot is
 exported as an `NBMP` container and imported back for a `21025` restore, verified live
 end to end — the robot fetched the blob from us, md5-ok, installed it and pushed the
 follow-up `20002` 0.7 s later; a wrong md5 fails with `code:-3` and leaves the map
@@ -1187,12 +1188,12 @@ no such restriction in area mode and notes that the label boundary coincides wit
 mapped doorway — a doorway/planner-grid pruning effect produces the same `-2605`. The
 designed cross-room path is `21023` with `segmentId` → smart mode (RE:
 `ZONE_CLEAN_ROOM.md`); the first probe and the 2026-10-11 positive-`cleanId` retry were
-both ACKed "ok" but ran `subMode:"area"` on the old selection, not the east room, so
-the smart path is not confirmed on this unit. Next (operator-gated): isolate
-`extraAreas` with a small same-room area region, then test `mode:"point"`, and capture
-a device log if possible. Until then the picker should warn that cross-room area cleans
-are not supported/verified rather than claim a settled room mask. FIELD_NOTES.md,
-RE_REQUEST_ZONE_CLEAN_ROOM.md.
+both ACKed "ok" but ran `subMode:"area"` instead of smart; the destination was not
+reached, so the old area target is unknown, and the smart path is not confirmed on this
+unit. Next (operator-gated): isolate `extraAreas` with a small same-room area region,
+then test `mode:"point"`, and capture a device log if possible. Until then the picker
+should warn that cross-room area cleans are not supported/verified rather than claim a
+settled room mask. FIELD_NOTES.md, RE_REQUEST_ZONE_CLEAN_ROOM.md.
 
 Names are editable in the editor's strip and auto-assigned as `Zone <n>` for new
 rectangles. The 31-byte `name`/`tag` and 30-byte `mode` limits from FUNC_MAP §4 are

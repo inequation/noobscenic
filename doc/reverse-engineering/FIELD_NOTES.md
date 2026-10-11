@@ -323,10 +323,13 @@ the restored 10-09 raster (dock cell `0x01`, east room `0x02`), we sent from the
 `21023 {"cleanId":[-3],"segmentId":[2]}` then `21005 {"mode":"appointClean"}`. Both
 were ACKed "ok" (trace seq 202/204 and 203/206, 20:21:48Z), but the robot never
 entered smart mode: the status is `mode=sweep`/`subMode:"area"` throughout, and it
-drove from the dock east/north to (−773,2029) — consistent with the old
-`CrossBoundary` area selection (1508…1908, 144…544), not the east room (label `0x02`,
-x>≈2400). We stopped it at 20:22:25Z, sent `21012 {"cmd":"start"}`, and it docked and
-reached `fullcharge` at (−5420,308) by 20:23:08Z.
+drove from the dock east/north to (−773,2029) before we stopped it. Because it never
+reached a target, the destination is unknown: the old CleanArea set could have been an
+area zone in the east room (for example `ControlNear`, 6308…6708, −2656…−2256, which
+cleaned successfully on 2026-10-10) just as well as one in the dock's room. The firm
+signal is `subMode:"area"` — this is not the smart `segmentId` path. We stopped it at
+20:22:25Z, sent `21012 {"cmd":"start"}`, and it docked and reached `fullcharge` at
+(−5420,308) by 20:23:08Z.
 
 So the `21023` payload as sent did not take the region-writing path (or this unit's
 handler ignores `segmentId`); `cleanId:[-3]` alone appears to have left the previous
@@ -336,10 +339,12 @@ CleanArea shm selection intact, and `appointClean` ran that instead.
 On the richer post-driving map (dock `0x01`, east room `0x02`), from the dock:
 `21023 {"cleanId":[99],"segmentId":[2]}` then `21005 {"mode":"appointClean"}`. Both
 ACKed "ok" (trace seq 123/125 and 124/129, 09:09:16Z), but the robot again ran
-`sweep`/`subMode:"area"` and headed for the old area selection (stopped at
-(−3956,738)); `21017 stop` + `21012 start` docked it at (−5420,293). A positive
-`cleanId` is therefore not the missing piece — this unit's handler does not build the
-kind-6 smart regions from `segmentId` as sent, or it ignores the key. Next diagnostics
+`sweep`/`subMode:"area"` and was heading east (`phi≈0`) when stopped at (−3956,738),
+before reaching any target; the destination is therefore unknown and this does not
+rule out an east-room area job. The missing `smart` submode is the firm signal.
+`21017 stop` + `21012 start` docked it at (−5420,293). A positive `cleanId` is
+therefore not the missing piece — this unit's handler does not build the kind-6 smart
+regions from `segmentId` as sent, or it ignores the key. Next diagnostics
 (operator-gated): isolate `extraAreas` with a small same-room area region, then the
 same-room `mode:"point"` case; a device log during either would settle whether the
 region-writing branch runs at all.
