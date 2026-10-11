@@ -91,8 +91,10 @@ document.documentElement.dataset.theme =
   #rc-back    { grid-area: 2 / 2 / 3 / 3; }
   #rc-right   { grid-area: 1 / 1 / 3 / 2; }
   #rc-left    { grid-area: 1 / 3 / 3 / 4; }
-  #remote-close { position: absolute; top: 6px; right: 8px; min-width: 0;
-                  font-size: 14px; padding: 4px 8px; }
+  /* Every "leave/cancel" ❌ is this: small, in the top-right corner of its panel —
+     the remote drawer, the zones view and the zone editor all use it. */
+  .close { position: absolute; top: 6px; right: 8px; min-width: 0; z-index: 3;
+           font-size: 14px; padding: 4px 8px; }
   #zone-types { display: flex; align-items: center; gap: 8px; padding: 6px 10px;
                 background: var(--panel); border-bottom: 1px solid var(--border); }
   #zone-hint { min-width: 0; font-size: 12px; color: var(--muted); overflow: hidden;
@@ -134,7 +136,7 @@ document.documentElement.dataset.theme =
   </div>
 </aside>
 <section id="remote">
-  <button id="remote-close" title="Close">❌</button>
+  <button id="remote-close" class="close" title="Close">❌</button>
   <div class="pad">
     <button id="rc-forward" title="Forward">⬆️</button>
     <button id="rc-back" title="Backward">⬇️</button>
@@ -163,7 +165,11 @@ document.documentElement.dataset.theme =
          title="Zone name (at most 31 UTF-8 bytes — the robot's buffer)" disabled>
   <span id="zone-hint">drag to draw · tap to select · right-drag or two fingers to pan</span>
 </div>
-<main><canvas id="map" width="1" height="1"></canvas></main>
+<main>
+  <canvas id="map" width="1" height="1"></canvas>
+  <button id="zone-exit" class="close" title="Leave zones" hidden>❌</button>
+  <button id="edit-cancel" class="close" title="Cancel editing" hidden>❌</button>
+</main>
 <footer>
   <div id="bar-main" class="bar">
     <button id="charge" class="big" title="Charge">⚡</button>
@@ -171,14 +177,12 @@ document.documentElement.dataset.theme =
     <button id="zones" class="big" title="Zone cleaning">🗺️</button>
   </div>
   <div id="bar-zones" class="bar" hidden>
-    <button id="zone-exit" class="big" title="Leave zones">❌</button>
     <button id="backup-export" class="big" title="Export map">📤</button>
     <button id="backup-import" class="big" title="Import map">📥</button>
     <button id="zone-play" class="big" title="Clean selected">▶️</button>
     <button id="zone-edit" class="big" title="Edit zones">✏️</button>
   </div>
   <div id="bar-edit" class="bar" hidden>
-    <button id="edit-cancel" class="big" title="Cancel editing">❌</button>
     <button id="edit-undo" class="big" title="Undo">↶️</button>
     <button id="edit-resize" class="big" title="Resize" disabled>↔️</button>
     <button id="edit-delete" class="big" title="Delete the selected zone">🗑️</button>
@@ -638,6 +642,8 @@ function updateBars() {
   document.getElementById("bar-main").hidden = zonesView;
   document.getElementById("bar-zones").hidden = !zonesView || zonesEdit;
   document.getElementById("bar-edit").hidden = !zonesEdit;
+  document.getElementById("zone-exit").hidden = !zonesView || zonesEdit;
+  document.getElementById("edit-cancel").hidden = !zonesEdit;
   document.getElementById("zone-types").hidden = !zonesEdit;
   const play = document.getElementById("zone-play");
   play.disabled = zoneState.cleaning || zoneSelected.size === 0;
