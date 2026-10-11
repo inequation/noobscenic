@@ -9,10 +9,11 @@
 > label boundary coincides with the mapped doorway, and the RE static analysis finds no
 > current-label restriction in the area-mode target search (`ZONE_CLEAN_ROOM.md`).
 > The designed cross-room path is `21023 {"cleanId":[…],"segmentId":[<label>]}` →
-> smart mode; the first live probe from the dock was ACKed "ok" but the robot ran
-> `subMode:"area"` on the old selection instead of entering smart mode and heading to
-> the east room, so that path is not confirmed either. Both the mask reading and the
-> `segmentId` mechanism need the retry below.
+> smart mode; the first live probe and the 2026-10-11 positive-`cleanId` retry were
+> both ACKed "ok" but the robot ran `subMode:"area"` on the old selection instead of
+> entering smart mode and heading to the east room, so that path is not confirmed
+> either. The mask reading still needs the sharpened boundary test; the `segmentId`
+> mechanism needs the `extraAreas`/`point` isolation below.
 
 ## What we now know (follow-up to `ZONE_CLEAN_ROUTE.md`)
 
@@ -46,11 +47,11 @@ are indistinguishable.
    so a doorway/planner-grid pruning effect produces the same `-2605`
    (`ZONE_CLEAN_ROOM.md`). **Still open as two readings.**
 2. What does the vendor stack do for a zone in **another room**? The RE answer is the
-   `segmentId` → smart-mode path, but the first live probe (2026-10-10) was ACKed "ok"
-   and then ran `subMode:"area"` on the old selection, never entering smart mode or
-   heading to the east room. **Still open:** retry with a positive `cleanId` (the
-   handler may need one to enter the region-writing branch), or confirm whether this
-   unit's handler supports `segmentId` at all.
+   `segmentId` → smart-mode path, but both the 2026-10-10 probe and the 2026-10-11
+   positive-`cleanId` retry were ACKed "ok" and then ran `subMode:"area"` on the old
+   selection, never entering smart mode or heading to the east room. **Still open:**
+   confirm whether this unit's handler supports `segmentId` at all, and whether the
+   region-writing branch runs for `extraAreas` (isolate it same-room).
 3. If it is not the label: what in the target search depends on the robot's position at
    start (a search box around the pose, the "4.5 m bbox" in `ZONE_CLEAN_ROUTE.md` §6,
    the leave-charger step, …)? The 6.6 m success rules out a 4.5 m radius around the
@@ -73,13 +74,13 @@ The executed version used the close cross-boundary zone `CrossBoundary`
 than (2800,−80). Result: `-2605` without travelling for the former, a normal clean
 and self-docking for the latter.
 
-**First live `segmentId` probe (2026-10-10, negative):** with the restored map
-re-segmented (`21030 reset`; 18 929 labels, dock `0x01`, east room `0x02`), the dock
-sent `21023 {"cleanId":[-3],"segmentId":[2]}` + `21005 {"mode":"appointClean"}`.
-Both ACKed "ok", but the robot ran `mode=sweep`/`subMode:"area"` and headed for the
-old area selection (to (−773,2029) when stopped), not the east room; it was stopped
-and docked. Retry with a positive `cleanId` before drawing conclusions about the
-`segmentId` mechanism.
+**Live `segmentId` probes (2026-10-10 and 2026-10-11, both negative):** the first,
+with `21023 {"cleanId":[-3],"segmentId":[2]}` on the reset map, and the second, with
+a positive `21023 {"cleanId":[99],"segmentId":[2]}` on the richer post-driving map,
+were both ACKed "ok" by the robot but ran `mode=sweep`/`subMode:"area"` and headed for
+the old area selection, not the east room. The second stopped at (−3956,738) and
+docked at (−5420,293). A positive `cleanId` is not the missing piece; confirm whether
+this unit's handler supports `segmentId` and whether `extraAreas` is consumed.
 
 **Evidence:** `FIELD_NOTES.md` ("Zone clean: the far-zone abort is about *rooms*…",
 2026-10-10) and `var/traces/wire-2026-10-10.jsonl`.

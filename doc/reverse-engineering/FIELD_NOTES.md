@@ -330,10 +330,19 @@ reached `fullcharge` at (−5420,308) by 20:23:08Z.
 
 So the `21023` payload as sent did not take the region-writing path (or this unit's
 handler ignores `segmentId`); `cleanId:[-3]` alone appears to have left the previous
-CleanArea shm selection intact, and `appointClean` ran that instead. Test ① needs a
-retry with a **positive** `cleanId` (an unused id, or a real stored id if the extra
-zone is acceptable) so the handler enters the region-building branch, plus a device-log
-check for the smart strings. Not tonight.
+CleanArea shm selection intact, and `appointClean` ran that instead.
+
+**Second probe, with a positive `cleanId` (2026-10-11, [field]): same negative.**
+On the richer post-driving map (dock `0x01`, east room `0x02`), from the dock:
+`21023 {"cleanId":[99],"segmentId":[2]}` then `21005 {"mode":"appointClean"}`. Both
+ACKed "ok" (trace seq 123/125 and 124/129, 09:09:16Z), but the robot again ran
+`sweep`/`subMode:"area"` and headed for the old area selection (stopped at
+(−3956,738)); `21017 stop` + `21012 start` docked it at (−5420,293). A positive
+`cleanId` is therefore not the missing piece — this unit's handler does not build the
+kind-6 smart regions from `segmentId` as sent, or it ignores the key. Next diagnostics
+(operator-gated): isolate `extraAreas` with a small same-room area region, then the
+same-room `mode:"point"` case; a device log during either would settle whether the
+region-writing branch runs at all.
 
 ## Manual driving from the dock: the first command is a back-out (2026-10-10, [field])
 
