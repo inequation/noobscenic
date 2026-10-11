@@ -123,3 +123,26 @@ database's `trace_ref` columns stay empty), no console and no `noobscenic
 devices|events|…|send` subcommands — while the protocols, the web UI and the command
 queue are unchanged. Asking for a compiled-out sink in `logging.wire` warns and
 records nothing rather than failing, so one config file works across builds.
+
+## Robot settings
+
+The settings that live on the robot itself, as opposed to the ones this project
+stores. The ⚙️ form shows both kinds side by side but treats them differently: the
+label is ours (a `PUT /api/robot/{id}/settings` row in SQLite, saved on Save), while
+volume, mute, the LED switch and the suction level are written to the device through
+`POST /api/robot/{id}/config` (`21024`/`21022` frames) or the realtime `21020` path
+for mute, and read back from the robot's own status echo (`vol`, `mute`, `led`,
+`workNoisy`). Nothing about them is persisted server-side, because the robot is the
+only copy — the page applies a change immediately and treats the next status push as
+the confirmation, which is why the form has no Save for these.
+
+## Consumables ("goods")
+
+The robot's cumulative-usage counters for its wearing parts, kept in
+`/tmp/Run/LastRecord/CleanInfo.json` on the device and queried with `21015` /
+reset with `21016` (FUNC_STATUS.md §7). They count *cleaning* seconds, not wall-clock
+time, so the page shows them as ages (`6 d 0 h 10 min`) with a ✨ button per part.
+The server caches the newest reply in the `goods` table (`GET
+/api/robot/{id}/goods`) and has no lifetime limits of its own — the firmware stores
+no thresholds, so nothing here claims a part is "due". Because `21016` always answers
+"ok", every reset is followed by a fresh `21015` read before the page believes it.

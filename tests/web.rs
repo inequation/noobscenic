@@ -328,6 +328,115 @@ async fn the_label_is_editable_validated_and_usable_as_the_id() {
 }
 
 #[tokio::test]
+async fn config_writes_only_the_allowlisted_settings() {
+    let (state, app) = setup("config").await;
+    adopt(&state).await;
+
+    let path = format!("/api/robot/{ID}/config");
+    for body in [
+        json!({"info": 21024, "cmd": "setVolume", "value": 7}),
+        json!({"info": 21024, "cmd": "setledswitch", "value": 0}),
+        json!({"info": 21022, "cmd": "strong"}),
+    ] {
+        let (status, value) = call_json(&app, post_json(&path, &body)).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(value["queued"].is_i64(), "{body}");
+    }
+    // The three rows carry exactly the wire payloads the robot expects.
+    let queued: Vec<(i64, String)> =
+        sqlx::query_as("SELECT info_type, payload FROM commands ORDER BY id")
+            .fetch_all(&state.db)
+            .await
+            .expect("queue");
+    assert_eq!(
+        queued,
+        vec![
+            (21024, "{\"cmd\":\"setVolume\",\"value\":7}".to_string()),
+            (21024, "{\"cmd\":\"setledswitch\",\"value\":0}".to_string()),
+            (21022, "{\"cmd\":\"strong\"}".to_string()),
+        ]
+    );
+
+    // Anything outside the allowlist never reaches the queue: an out-of-range
+    // volume, a bad LED value, the still-unverified water pump, noise as a suction
+    // name, and a value on a command that takes none.
+    for body in [
+        json!({"info": 21024, "cmd": "setVolume", "value": 11}),
+        json!({"info": 21024, "cmd": "setledswitch", "value": 2}),
+        json!({"info": 21024, "cmd": "setWaterPump", "value": 3}),
+        json!({"info": 21022, "cmd": "loud"}),
+        json!({"info": 21022, "cmd": "strong", "value": 1}),
+    ] {
+        let (status, _) = call_json(&app, post_json(&path, &body)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    }
+    let count: i64 = sqlx::query_scalar("SELECT count(1) FROM commands")
+        .fetch_one(&state.db)
+        .await
+        .expect("count");
+    assert_eq!(count, 3, "refused settings must not queue");
+
+    let (status, _) = call_json(&app, post_json("/api/robot/nobody/config", &json!({"info": 21024, "cmd": "setVolume", "value": 1}))).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    cleanup(state).await;
+}
+
+#[tokio::test]
+async fn goods_reads_caches_resets_and_needs_the_device_to_refresh() {
+    let (state, app) = setup("goods").await;
+    adopt(&state).await;
+
+    // Cached: nothing yet — the page shows dashes rather than invented ages.
+    let (status, value) = call_json(&app, get(&format!("/api/robot/{ID}/goods"))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(value["read_ms"].is_null());
+    assert!(value["parts"].is_null());
+
+    // Both the refresh and the reset ask the robot, so the device must be online.
+    let (status, _) = call_json(&app, post_form(&format!("/api/robot/{ID}/goods/refresh"), "")).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    let (status, _) = call_json(&app, post_json(&format!("/api/robot/{ID}/goods/reset"), &json!({"part": "mainBrush"}))).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+
+    let (tx, _rx) = tokio::sync::mpsc::channel(4);
+    state.registry.register(
+        SN,
+        noobscenic::channel_b::registry::handle("b-test", "127.0.0.1:1", tx),
+    );
+
+    let (status, _) = call_json(&app, post_form(&format!("/api/robot/{ID}/goods/refresh"), "")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(last_command(&state).await.0, 21015);
+
+    let (status, _) = call_json(&app, post_json(&format!("/api/robot/{ID}/goods/reset"), &json!({"part": "mainBrush"}))).await;
+    assert_eq!(status, StatusCode::OK);
+    let (info_type, payload) = last_command(&state).await;
+    assert_eq!(info_type, 21016);
+    assert_eq!(payload, "{\"mainBrush\":0}");
+
+    // `motor` and `dustBox` cannot be reset; only the six writable parts pass.
+    let (status, _) = call_json(&app, post_json(&format!("/api/robot/{ID}/goods/reset"), &json!({"part": "motor"}))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, _) = call_json(&app, post_json(&format!("/api/robot/{ID}/goods/reset"), &json!({}))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // The robot's `21015` reply lands through `cleanPack/response` and is cached.
+    let reply = format!(
+        "sn={SN}&infoType=21015&ts=1&userId=u&data={}",
+        "{\"infoType\":21015,\"data\":{\"mainBrush\":120,\"sideBrush\":60,\
+          \"filter\":3600,\"sensors\":30,\"battery\":7200}}"
+    );
+    let (status, _) = call_json(&app, post_form("/cleanPack/response", &reply)).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, value) = call_json(&app, get(&format!("/api/robot/{ID}/goods"))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(value["read_ms"].is_i64());
+    assert_eq!(value["parts"]["mainBrush"], 120);
+    assert_eq!(value["parts"]["sensors"], 30);
+    cleanup(state).await;
+}
+
+#[tokio::test]
 async fn the_map_endpoint_returns_the_stored_grid_and_frame() {
     let (state, app) = setup("map").await;
     adopt(&state).await;
@@ -481,6 +590,32 @@ async fn the_control_endpoint_writes_realtime_steering_frames() {
     state.registry.remove(SN, "b-test");
     let (status, _) = call_json(&app, post_form("/api/robot/Foo/control", "code=4000")).await;
     assert_eq!(status, StatusCode::CONFLICT);
+
+    cleanup(state).await;
+}
+
+#[tokio::test]
+async fn the_control_endpoint_also_carries_locate_and_mute() {
+    let (state, app) = setup("control-settings").await;
+    adopt(&state).await;
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+    state.registry.register(
+        SN,
+        noobscenic::channel_b::registry::handle("b-test", "127.0.0.1:1", tx),
+    );
+
+    // The locate sound is a frame pair and mute is a toggle, so all three ride the
+    // same realtime path as steering (FUNC_COMMANDS §6.2/§6.3).
+    for code in [3010, 3011, 3022] {
+        let (status, value) =
+            call_json(&app, post_form("/api/robot/Foo/control", &format!("code={code}"))).await;
+        assert_eq!(status, StatusCode::OK, "code {code}");
+        assert_eq!(value["code"], code);
+        let frame = rx.try_recv().expect("a frame was written");
+        assert_eq!(frame.frame["data"]["data"]["ctrlCode"], code);
+    }
+    assert!(rx.try_recv().is_err(), "exactly one frame per request");
 
     cleanup(state).await;
 }

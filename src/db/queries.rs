@@ -783,6 +783,44 @@ pub async fn record_zone_write(pool: &SqlitePool, sn: &str, payload: &str) -> Re
     .await?)
 }
 
+/// The newest `21015` goods reply — the consumables counters, in seconds of
+/// cleaning time (FUNC_STATUS.md §7). One row per device, read with `GET
+/// /api/robot/{id}/goods`.
+pub async fn load_goods(pool: &SqlitePool, sn: &str) -> Result<Option<(Option<i64>, Option<String>)>> {
+    Ok(sqlx::query_as(
+        "SELECT read_ms, payload FROM goods WHERE sn = ?",
+    )
+    .bind(sn)
+    .fetch_optional(pool)
+    .await?)
+}
+
+/// A goods reply that just came back from the robot (`21015`): it replaces the
+/// cached counters. The robot's reply is the only source, so there is no etag —
+/// `read_ms` is enough for the page's read-back-and-wait refresh.
+pub async fn store_goods(
+    pool: &SqlitePool,
+    sn: &str,
+    payload: &str,
+    trace_ref: Option<&str>,
+) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO goods (sn, read_ms, payload, trace_ref)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(sn) DO UPDATE SET
+             read_ms   = excluded.read_ms,
+             payload   = excluded.payload,
+             trace_ref = excluded.trace_ref",
+    )
+    .bind(sn)
+    .bind(now_ms())
+    .bind(payload)
+    .bind(trace_ref)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 /// Every device ever seen, for `devices`.
 pub async fn list_devices(
     pool: &SqlitePool,

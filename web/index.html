@@ -108,6 +108,24 @@ document.documentElement.dataset.theme =
                     background: var(--control); color: inherit; }
   #settings .actions { margin-top: auto; display: flex; justify-content: flex-end;
                        gap: 8px; }
+  /* The settings form grew past one screen: the middle scrolls, the actions stay. */
+  #settings-scroll { flex: 1; min-height: 0; overflow-y: auto; display: flex;
+                     flex-direction: column; gap: 8px; }
+  #settings h3 { margin: 10px 0 0; font-size: 13px; text-transform: uppercase;
+                 letter-spacing: 0.04em; color: var(--muted); }
+  #settings .row { display: flex; align-items: center; gap: 8px; }
+  #settings .row button { min-width: 0; padding: 6px 10px; }
+  #set-volume { flex: 1; min-width: 0; padding: 0; border: 0; background: none;
+                accent-color: var(--accent); }
+  #settings .keep { min-width: 2ch; text-align: right; font-size: 13px;
+                    color: var(--muted); }
+  #settings .caption { font-size: 13px; color: var(--muted); }
+  #identity { display: flex; flex-direction: column; gap: 6px; font-size: 14px; }
+  #identity div, #goods li { display: flex; align-items: center;
+                             justify-content: space-between; gap: 8px; }
+  #goods { list-style: none; margin: 0; padding: 0; display: flex;
+           flex-direction: column; gap: 6px; font-size: 14px; }
+  #goods button { min-width: 0; padding: 4px 8px; }
   #sent { min-width: 0; font-size: 13px; color: var(--muted);
           white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 </style>
@@ -128,6 +146,7 @@ document.documentElement.dataset.theme =
   <div class="drawer">
     <div class="tools">
       <button id="remote-open" title="Remote control">🕹️</button>
+      <button id="locate" title="Locate robot">📢</button>
       <button id="settings-open" title="Settings">⚙️</button>
     </div>
     <select id="command"></select>
@@ -146,8 +165,33 @@ document.documentElement.dataset.theme =
 </section>
 <section id="settings" hidden>
   <h2>Settings</h2>
-  <label for="settings-label">Label</label>
-  <input id="settings-label" maxlength="64" autocomplete="off" spellcheck="false">
+  <div id="settings-scroll">
+    <label for="settings-label">Label</label>
+    <input id="settings-label" maxlength="64" autocomplete="off" spellcheck="false">
+
+    <h3>Robot</h3>
+    <div class="row">
+      <button id="set-mute" title="Mute">🔊</button>
+      <input id="set-volume" type="range" min="0" max="10" step="1" title="Volume">
+      <span id="set-volume-value" class="keep">–</span>
+    </div>
+    <div class="row">
+      <button id="set-led" title="Off">🔵</button>
+    </div>
+    <div class="caption">Suction</div>
+    <div class="row" id="set-suction">
+      <button data-suction="quiet" title="Quiet (weakest)">quiet</button>
+      <button data-suction="auto" title="Auto">auto</button>
+      <button data-suction="strong" title="Strong">strong</button>
+      <button data-suction="max" title="Max (strongest)">max</button>
+    </div>
+
+    <h3>Identity</h3>
+    <div id="identity"></div>
+
+    <h3>Consumables</h3>
+    <ul id="goods"></ul>
+  </div>
   <div class="actions">
     <button id="settings-cancel" type="button">Cancel</button>
     <button id="settings-save" type="button">Save</button>
@@ -204,10 +248,18 @@ const primaryButton = document.getElementById("primary");
 const remoteSheet = document.getElementById("remote");
 const settingsPane = document.getElementById("settings");
 const settingsLabel = document.getElementById("settings-label");
+const locateButton = document.getElementById("locate");
+const muteButton = document.getElementById("set-mute");
+const volumeSlider = document.getElementById("set-volume");
+const volumeValue = document.getElementById("set-volume-value");
+const ledButton = document.getElementById("set-led");
+const identityBox = document.getElementById("identity");
+const goodsList = document.getElementById("goods");
 
 let robot = null;   // the {id} the API is addressed by
 let robotEntries = []; // the dropdown's data, latest from /api/robots
 let robotStatus = null; // newest 20001 payload, for the robot marker's pose
+let goodsState = { read_ms: null, parts: null }; // newest 21015 consumables reply
 let poseRev = null;     // "x,y,phi" of the last drawn pose
 let mapRev = null;  // "id:received_ms" of the drawn map
 let pathRev = null; // "id:span" of the drawn path
@@ -355,6 +407,40 @@ async function init() {
   primaryButton.onclick = () => {
     if (primaryButton.dataset.command) sendCommand(primaryButton.dataset.command);
   };
+  // Locate: the sound plays between 3010 and 3011. Hold to beep, with a hard cap
+  // so a missed release (or a closed tab) cannot leave it playing unattended.
+  let locateTimer = null;
+  const locateStop = () => {
+    if (!locateTimer) return;
+    clearTimeout(locateTimer);
+    locateTimer = null;
+    sendControl(3011);
+  };
+  locateButton.addEventListener("pointerdown", (event) => {
+    event.preventDefault();
+    locateButton.setPointerCapture(event.pointerId);
+    sendControl(3010);
+    locateTimer = setTimeout(locateStop, 15000);
+  });
+  locateButton.addEventListener("pointerup", locateStop);
+  locateButton.addEventListener("pointercancel", locateStop);
+  // Mute is a toggle on the robot, so one frame reaches the state the icon promises.
+  muteButton.onclick = () => sendControl(3022);
+  ledButton.onclick = () => {
+    const ledOn = robotStatus && robotStatus.led === 1;
+    queueConfig(21024, "setledswitch", ledOn ? 0 : 1);
+  };
+  volumeSlider.oninput = () => {
+    volumeValue.textContent = volumeSlider.value;
+  };
+  volumeSlider.onchange = () => queueConfig(21024, "setVolume", Number(volumeSlider.value));
+  for (const button of document.querySelectorAll("#set-suction button")) {
+    button.onclick = () => queueConfig(21022, button.dataset.suction);
+  }
+  goodsList.onclick = (event) => {
+    const part = event.target.dataset && event.target.dataset.part;
+    if (part) resetGoods(part);
+  };
   menuToggle.onclick = () => {
     const open = menu.classList.toggle("open");
     menuToggle.textContent = open ? "⦀" : "☰";
@@ -421,6 +507,7 @@ async function tick() {
     // The robot marker follows this poll (1.5 s, 300 ms while steering), so redraw
     // only when the pose actually moved.
     robotStatus = summary.status || null;
+    if (!settingsPane.hidden) renderSettings();
     const pose = robotStatus && Array.isArray(robotStatus.pos)
       ? robotStatus.pos.join(",") + "," + robotStatus.phi
       : "none";
@@ -505,19 +592,158 @@ function openRemote() {
   tick(); // fresh status as the pad opens
 }
 
-// Settings: a full-screen form over everything. Only the label is editable for now.
+// Settings: a full-screen form over everything. The label is ours to store; the
+// robot controls act on the device right away and are confirmed by the status
+// echo on the next poll (doc/PLAN.md §20.7).
 function openSettings() {
   menu.classList.remove("open");
   menuToggle.textContent = "☰";
   const entry = robotEntries.find((candidate) => candidate.id === robot);
   settingsLabel.value = (entry && entry.label) || (entry && entry.sn) || "";
   settingsPane.hidden = false;
+  renderSettings();
+  refreshGoods();
   settingsLabel.focus();
   settingsLabel.select();
 }
 
 function closeSettings() {
   settingsPane.hidden = true;
+}
+
+/// One allowlisted robot setting into the queue (`21022`/`21024`); the echo tells.
+async function queueConfig(info, cmd, value) {
+  try {
+    await api("/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ info, cmd, value }),
+    });
+  } catch (error) {
+    statusLine.textContent = "setting refused: " + error.message;
+  }
+}
+
+/// Paint the robot controls from the newest status push: icon = current state,
+/// tooltip = what clicking does (operator decision, 2026-10-11).
+function renderSettings() {
+  const status = robotStatus || {};
+  const muted = status.mute === 1;
+  muteButton.textContent = muted ? "🔇" : "🔊";
+  muteButton.title = muted ? "Unmute" : "Mute";
+  const ledOn = status.led === 1;
+  ledButton.textContent = ledOn ? "🔵" : "⚫";
+  ledButton.title = ledOn ? "Off" : "On";
+  if (status.vol != null && document.activeElement !== volumeSlider) {
+    volumeSlider.value = status.vol;
+  }
+  volumeValue.textContent = volumeSlider.value;
+  for (const button of document.querySelectorAll("#set-suction button")) {
+    button.classList.toggle("active", button.dataset.suction === status.workNoisy);
+  }
+  renderIdentity();
+}
+
+function renderIdentity() {
+  const entry = robotEntries.find((candidate) => candidate.id === robot) || {};
+  identityBox.innerHTML = "";
+  for (const [name, value] of [
+    ["Serial number", entry.sn || robot || "—"],
+    ["Last seen", fmtAgo(entry.last_seen_ms)],
+  ]) {
+    const row = document.createElement("div");
+    const label = document.createElement("span");
+    label.textContent = name;
+    const text = document.createElement("span");
+    text.textContent = value;
+    row.append(label, text);
+    identityBox.append(row);
+  }
+}
+
+/// Consumable counters are seconds of cleaning time, cumulative since the last
+/// reset (FUNC_STATUS §7); `21015` does not echo `mop` back, so it has no row.
+const GOODS_PARTS = [
+  ["mainBrush", "main brush"],
+  ["sideBrush", "side brush"],
+  ["filter", "filter"],
+  ["sensors", "sensors"],
+  ["battery", "battery"],
+];
+
+function renderGoods() {
+  const parts = goodsState.parts || {};
+  goodsList.innerHTML = "";
+  for (const [key, name] of GOODS_PARTS) {
+    const row = document.createElement("li");
+    const label = document.createElement("span");
+    label.textContent = name;
+    const age = document.createElement("span");
+    age.textContent = fmtDuration(parts[key]);
+    const reset = document.createElement("button");
+    reset.type = "button";
+    reset.textContent = "✨";
+    reset.title = "Reset";
+    reset.dataset.part = key;
+    row.append(label, age, reset);
+    goodsList.append(row);
+  }
+}
+
+/// Cached read, plus a `21015` refresh whose reply we wait for, like zones: the
+/// reset path reuses it because an `21016` "ok" proves nothing on its own.
+async function refreshGoods() {
+  try {
+    goodsState = await api("/goods");
+    renderGoods();
+    const seen = goodsState.read_ms || 0;
+    await api("/goods/refresh", { method: "POST" });
+    for (let attempt = 0; attempt < 8; attempt++) {
+      await sleep(750);
+      const data = await api("/goods");
+      if ((data.read_ms || 0) > seen || attempt === 7) {
+        goodsState = data;
+        renderGoods();
+        return;
+      }
+    }
+  } catch (error) {
+    statusLine.textContent = "consumables: " + error.message;
+  }
+}
+
+async function resetGoods(part) {
+  try {
+    await api("/goods/reset", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ part }),
+    });
+    await refreshGoods();
+  } catch (error) {
+    statusLine.textContent = "reset refused: " + error.message;
+  }
+}
+
+/// Seconds of cleaning time as something a human reads at a glance.
+function fmtDuration(seconds) {
+  if (seconds == null) return "—";
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return minutes + " min";
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return hours + " h " + (minutes % 60) + " min";
+  return Math.floor(hours / 24) + " d " + (hours % 24) + " h " + (minutes % 60) + " min";
+}
+
+/// A timestamp as an age. `null` (never seen) is not the same as "long ago".
+function fmtAgo(ms) {
+  if (ms == null) return "—";
+  const minutes = Math.floor((Date.now() - ms) / 60000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return minutes + " min ago";
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return hours + " h ago";
+  return Math.floor(hours / 24) + " d ago";
 }
 
 async function saveSettings() {

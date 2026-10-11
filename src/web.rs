@@ -70,7 +70,11 @@ const CATALOG: &[(&str, i64, &str)] = &[
 
 /// The realtime steering set: 3005–3008 move, 4000 leaves manual mode, 4001 zeroes
 /// the speed (FUNC_COMMANDS §2.1). Everything else is refused.
-const CONTROL_CODES: [i64; 6] = [3005, 3006, 3007, 3008, 4000, 4001];
+// Steering, plus the two settings actions that are realtime `21020` frames:
+// `3010`/`3011` start and stop the locate sound and `3022` toggles mute
+// (FUNC_COMMANDS §6.2/§6.3 — mute is a toggle, so only send it to reach the
+// state the client wants).
+const CONTROL_CODES: [i64; 9] = [3005, 3006, 3007, 3008, 4000, 4001, 3010, 3011, 3022];
 
 /// Which robots' APIs were touched recently enough to count as watched.
 #[derive(Default)]
@@ -259,6 +263,122 @@ pub async fn settings(
 pub async fn commands() -> Response {
     let names: Vec<&'static str> = CATALOG.iter().map(|(name, _, _)| *name).collect();
     Json(json!({"commands": names})).into_response()
+}
+
+#[derive(Deserialize)]
+pub struct ConfigForm {
+    /// The wire `infoType` the setting rides: `21022` suction, `21024` config.
+    info: i64,
+    /// The wire `data.cmd` name, e.g. `setVolume` or `strong`.
+    cmd: String,
+    /// The wire `data.value`, where the command takes one.
+    value: Option<i64>,
+}
+
+/// `POST /api/robot/{id}/config` — one robot-side setting, queued as `21022` or
+/// `21024` (doc/PLAN.md §20.7).
+///
+/// Deliberately an allowlist rather than a general "send anything" tunnel: the
+/// page only needs a handful of writes, and the console's `send` verb remains the
+/// operator path for experiments. The robot's next status push is the read-back;
+/// there is no reply worth waiting for.
+pub async fn config(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(form): Json<ConfigForm>,
+) -> Response {
+    let Some(sn) = resolve(&state, &id).await else {
+        return unknown(&id);
+    };
+    state.watchers.touch(&sn);
+
+    let payload = match (form.info, form.cmd.as_str(), form.value) {
+        (info_type::CONFIG, "setVolume", Some(value)) if (0..=10).contains(&value) => {
+            json!({"cmd": "setVolume", "value": value})
+        }
+        (info_type::CONFIG, "setledswitch", Some(value)) if value == 0 || value == 1 => {
+            json!({"cmd": "setledswitch", "value": value})
+        }
+        (info_type::SUCTION, "quiet" | "auto" | "strong" | "max", None) => {
+            json!({"cmd": form.cmd.clone()})
+        }
+        _ => {
+            return bad_request(
+                "unsupported setting: expected 21024 setVolume 0-10 / setledswitch 0-1, \
+                 or 21022 quiet|auto|strong|max",
+            );
+        }
+    };
+    match queries::insert_command(&state.db, &sn, form.info, &payload.to_string(), 0).await {
+        Ok(command_id) => Json(json!({"queued": command_id})).into_response(),
+        Err(error) => internal(error),
+    }
+}
+
+/// `GET /api/robot/{id}/goods` — the newest `21015` reply, cached like zones.
+pub async fn goods(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    let Some(sn) = resolve(&state, &id).await else {
+        return unknown(&id);
+    };
+    state.watchers.touch(&sn);
+
+    let stored = match queries::load_goods(&state.db, &sn).await {
+        Ok(stored) => stored,
+        Err(error) => return internal(error),
+    };
+    let (read_ms, payload) = stored.unwrap_or((None, None));
+    let parts: Value = payload
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or(Value::Null);
+    Json(json!({"read_ms": read_ms, "parts": parts})).into_response()
+}
+
+/// `POST /api/robot/{id}/goods/refresh` — ask the robot for its consumables
+/// (`21015`). The reply lands in the cache through `cleanPack/response`.
+pub async fn goods_refresh(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    let Some(sn) = resolve(&state, &id).await else {
+        return unknown(&id);
+    };
+    state.watchers.touch(&sn);
+    if !state.registry.is_online(&sn) {
+        return conflict("device is offline");
+    }
+    match queries::insert_command(&state.db, &sn, info_type::GOODS_READ, "{}", 0).await {
+        Ok(command_id) => Json(json!({"queued": command_id})).into_response(),
+        Err(error) => internal(error),
+    }
+}
+
+/// `POST /api/robot/{id}/goods/reset` — zero one consumable counter (`21016`).
+///
+/// `21016` always answers `"ok"`, so the page re-reads with `21015` afterwards
+/// (FUNC_STATUS §7.2); `motor` and `dustBox` cannot be reset and are refused here,
+/// while `mop` is accepted even though `21015` never echoes it back.
+pub async fn goods_reset(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<Value>,
+) -> Response {
+    let Some(sn) = resolve(&state, &id).await else {
+        return unknown(&id);
+    };
+    state.watchers.touch(&sn);
+    if !state.registry.is_online(&sn) {
+        return conflict("device is offline");
+    }
+    let Some(part) = body.get("part").and_then(Value::as_str) else {
+        return bad_request("missing part: the consumable to reset");
+    };
+    if !["battery", "filter", "mainBrush", "sideBrush", "sensors", "mop"].contains(&part) {
+        return bad_request("unknown consumable");
+    }
+    let mut object = serde_json::Map::new();
+    object.insert(part.to_string(), json!(0));
+    let payload = Value::Object(object).to_string();
+    match queries::insert_command(&state.db, &sn, info_type::GOODS_WRITE, &payload, 0).await {
+        Ok(command_id) => Json(json!({"queued": command_id, "part": part})).into_response(),
+        Err(error) => internal(error),
+    }
 }
 
 /// `GET /api/robot/{id}/summary` — everything the page polls: connection, latest
