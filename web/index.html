@@ -213,6 +213,7 @@ document.documentElement.dataset.theme =
 <footer>
   <div id="bar-main" class="bar">
     <button id="charge" class="big" title="Charge">⚡</button>
+    <button id="spot" class="big" title="Spot cleaning">🎯</button>
     <button id="primary" class="big" title="Unknown state" disabled>▶️</button>
     <button id="zones" class="big" title="Zone cleaning">🗺️</button>
   </div>
@@ -404,6 +405,9 @@ async function init() {
     button.addEventListener("contextmenu", (event) => event.preventDefault());
   }
   chargeButton.onclick = () => sendCommand("findCharge");
+  // Spot clean: rc 3001 makes the robot clean a 1.5 m square around wherever it
+  // stands right now (FUNC_MAP §6.3) — no travel first, so no position argument.
+  document.getElementById("spot").onclick = () => sendControl(3001);
   primaryButton.onclick = () => {
     if (primaryButton.dataset.command) sendCommand(primaryButton.dataset.command);
   };

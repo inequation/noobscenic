@@ -68,13 +68,18 @@ const CATALOG: &[(&str, i64, &str)] = &[
     ("pauseReturn", 21012, "{\"cmd\":\"pause\"}"),
 ];
 
-/// The realtime steering set: 3005–3008 move, 4000 leaves manual mode, 4001 zeroes
-/// the speed (FUNC_COMMANDS §2.1). Everything else is refused.
-// Steering, plus the two settings actions that are realtime `21020` frames:
-// `3010`/`3011` start and stop the locate sound and `3022` toggles mute
-// (FUNC_COMMANDS §6.2/§6.3 — mute is a toggle, so only send it to reach the
-// state the client wants).
-const CONTROL_CODES: [i64; 9] = [3005, 3006, 3007, 3008, 4000, 4001, 3010, 3011, 3022];
+// The one-shot actions that ride the realtime `21020` path, all refused otherwise:
+// steering 3005-3008, 4001 zero speed and 4000 leave manual mode (FUNC_COMMANDS
+// §2.1); the locate sound's 3010/3011 (§6.3); the mute toggle 3022 (§6.2 — a
+// toggle, so the client only sends it to reach the state the echo says it is not
+// in); and spot clean 3001 (FUNC_MAP §6.3).
+const CONTROL_CODES: [i64; 10] = [3001, 3005, 3006, 3007, 3008, 3010, 3011, 3022, 4000, 4001];
+
+/// The codes that mean "the client is driving": only these arm the
+/// leave-manual-mode watchdog. Mute, locate and spot clean are one-shot frames —
+/// arming the watchdog for them would make the server send a pointless `4000` two
+/// seconds later.
+const STEERING_CODES: [i64; 5] = [3005, 3006, 3007, 3008, 4001];
 
 /// Which robots' APIs were touched recently enough to count as watched.
 #[derive(Default)]
@@ -1066,10 +1071,12 @@ pub async fn control(
     );
     match handle.tx.send(registry::Outbound::frame(frame)).await {
         Ok(()) => {
-            // Arm the watchdog, unless this frame *is* the client leaving manual mode.
+            // Arm the watchdog for steering — unless this frame *is* the client
+            // leaving manual mode; one-shot frames (mute, locate, spot clean) do
+            // not arm it at all.
             if form.code == 4000 {
                 state.controls.clear(&sn);
-            } else {
+            } else if STEERING_CODES.contains(&form.code) {
                 state.controls.touch(&sn);
             }
             Json(json!({"code": form.code})).into_response()

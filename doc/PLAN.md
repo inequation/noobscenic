@@ -816,7 +816,7 @@ gating and the charging skip are covered by `tests/web.rs`.
 
 ### Phase 8 — Web UI, control depth (design: §20)
 - [x] pan and zoom for the map canvas, paths and zones included (§20.1)
-- [ ] spot clean button (§20.2)
+- [x] spot clean button (§20.2)
 - [ ] "more" menu: specialised cleaning modes (§20.3)
 - [x] manual steering pad with the ≤300 ms repeat, the 4001 release and the 4000 watchdog (§20.4)
 - [x] zone editor: 21004 → edit → 21003 round-trip for no-go, no-mop and clean zones (§20.5)
@@ -856,8 +856,9 @@ first live probe and the 2026-10-11 positive-`cleanId` retry were both ACKed "ok
 ran `subMode:"area"` instead of smart (the destination was not reached, so the old area
 target is unknown), so the smart path is not confirmed on this unit. Next
 (operator-gated): isolate `extraAreas` same-room and then test `mode:"point"`
-(FIELD_NOTES.md, RE_REQUEST_ZONE_CLEAN_ROOM.md). The spot clean button and the "more"
-menu are the two remaining items. Map backup export/restore is in too (§20.6): one staged slot is
+(FIELD_NOTES.md, RE_REQUEST_ZONE_CLEAN_ROOM.md). The "more" menu is the one remaining
+item; spot clean went in as the 🎯 button (§20.2) but has not been run live yet — it
+makes noise, so the operator gates it. Map backup export/restore is in too (§20.6): one staged slot is
 exported as an `NBMP` container and imported back for a `21025` restore, verified live
 end to end — the robot fetched the blob from us, md5-ok, installed it and pushed the
 follow-up `20002` 0.7 s later; a wrong md5 fails with `code:-3` and leaves the map
@@ -1094,9 +1095,17 @@ fragment so a bookmark remembers it.
 ### 20.2 Spot clean
 
 `21020 {"ctrlCode":3001}` spot-cleans a 1.5 m square around the robot (FUNC_MAP
-§6.3). The robot sends no reply to 21020, so the queue row simply stays `sent`; the
-UI watches `mode` instead. One button, and it can go through the normal queue — a
-second of latency is fine for a one-shot action.
+§6.3) — no travel first, so no target is sent. The robot sends no reply, so the UI
+watches `mode` instead of an ACK.
+
+**Status (2026-10-11):** the 🎯 button sits on the main bar between charge and the
+stateful play button. It rides the realtime path (the same `/control` writer as the
+steering pad, mute and locate), not the `commands` queue as first sketched: the
+queue has never carried a `21020` frame on this unit, while the realtime path is
+live-verified, and an immediate start reads better than a poll-delayed one. Since it
+is not steering it does not arm the leave-manual-mode watchdog (§20.4) — a pointless
+`4000` two seconds after a clean starts would be wrong. Not yet run live: starting a
+clean is loud, so the operator gates that.
 
 ### 20.3 The "more" menu (specialised modes)
 
@@ -1156,7 +1165,9 @@ Three facts shape the design:
 
 Safety: a server-side watchdog — no steering frame from a watched client for 2 s and
 the server sends 4000 itself, so a closed tab or dead Wi-Fi cannot leave the robot in
-manual mode (an explicit 4000 from the client clears the watch instead of arming it).
+manual mode (an explicit 4000 from the client clears the watch instead of arming it;
+only the steering codes 3005–3008 and 4001 arm it — mute, locate and spot clean are
+one-shot frames and must not produce a stray 4000 two seconds later).
 The UI is a four-button pad (`pointerdown`/`pointerup`/`pointercancel`, arrow keys on
 desktop) that shows when the robot is in `rfctrl`.
 

@@ -605,9 +605,10 @@ async fn the_control_endpoint_also_carries_locate_and_mute() {
         noobscenic::channel_b::registry::handle("b-test", "127.0.0.1:1", tx),
     );
 
-    // The locate sound is a frame pair and mute is a toggle, so all three ride the
-    // same realtime path as steering (FUNC_COMMANDS §6.2/§6.3).
-    for code in [3010, 3011, 3022] {
+    // The locate sound is a frame pair, mute is a toggle and spot clean is a
+    // one-shot: all four ride the same realtime path as steering
+    // (FUNC_COMMANDS §6.2/§6.3, FUNC_MAP §6.3).
+    for code in [3010, 3011, 3022, 3001] {
         let (status, value) =
             call_json(&app, post_form("/api/robot/Foo/control", &format!("code={code}"))).await;
         assert_eq!(status, StatusCode::OK, "code {code}");
@@ -661,6 +662,17 @@ async fn the_control_watchdog_leaves_manual_mode_when_the_client_goes_quiet() {
     assert!(
         rx.try_recv().is_err(),
         "an explicit leave must not be followed by a watchdog frame"
+    );
+
+    // One-shot frames (spot clean, mute, locate) must not arm the watchdog: they are
+    // not steering, so a `4000` two seconds later would be noise.
+    let _ = call_json(&app, post_form("/api/robot/Foo/control", "code=3001")).await;
+    let spot = rx.try_recv().expect("the spot-clean frame");
+    assert_eq!(spot.frame["data"]["data"]["ctrlCode"], 3001);
+    noobscenic::web::poll_control_watchdog_once(&state, 0).await;
+    assert!(
+        rx.try_recv().is_err(),
+        "a spot clean must not arm the leave-manual-mode watchdog"
     );
 
     cleanup(state).await;

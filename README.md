@@ -167,7 +167,7 @@ Planned, but not a priority at the moment:
 
 See [`doc/PLAN.md`](doc/PLAN.md) §14 for what these would look like.
 
-Status: re-homing, control, telemetry, maps, zones, backups and the web UI — with a
-settings form for volume, mute, LED, suction and consumable ages — all work, and the
-debug traces and the operator console are build-time features that are on by default
-and strippable with `--no-default-features`.
+Status: re-homing, control, telemetry, maps, zones, backups and the web UI — with spot
+cleaning and a settings form for volume, mute, LED, suction and consumable ages — all
+work, and the debug traces and the operator console are build-time features that are
+on by default and strippable with `--no-default-features`.
