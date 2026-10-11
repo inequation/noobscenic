@@ -190,12 +190,21 @@ async fn a_queued_command_reaches_the_device_in_the_documented_envelope() {
     let (row_state, sent_ms, trace_ref, _) = command_row(&state, id).await;
     assert_eq!(row_state, "sent");
     assert!(sent_ms.is_some(), "sent_ms must be stamped");
-    let trace_ref = trace_ref.expect("the writer stored the frame's trace reference");
-    let (file, seq) = trace_ref.split_once('#').expect("file#seq");
-    assert!(
-        state.config.wire_dir().join(file).exists() && !seq.is_empty(),
-        "trace_ref {trace_ref} must point at a real file"
-    );
+    if cfg!(any(feature = "debug-trace", feature = "debug-raw")) {
+        let trace_ref = trace_ref.expect("the writer stored the frame's trace reference");
+        let (file, seq) = trace_ref.split_once('#').expect("file#seq");
+        let points_at_a_file =
+            !seq.is_empty() && (file.is_empty() || state.config.wire_dir().join(file).exists());
+        assert!(
+            points_at_a_file,
+            "trace_ref {trace_ref} must point at a real file"
+        );
+    } else {
+        assert!(
+            trace_ref.is_none(),
+            "no trace sink is compiled in, so trace_ref must be NULL"
+        );
+    }
 
     server.abort();
     cleanup(state).await;
@@ -362,7 +371,14 @@ async fn an_encrypt_1_command_goes_out_as_aes_128_ecb() {
 
     let (row_state, _, trace_ref, _) = command_row(&state, id).await;
     assert_eq!(row_state, "sent");
-    assert!(trace_ref.is_some());
+    if cfg!(any(feature = "debug-trace", feature = "debug-raw")) {
+        assert!(trace_ref.is_some(), "the writer stored a trace reference");
+    } else {
+        assert!(
+            trace_ref.is_none(),
+            "no trace sink is compiled in, so trace_ref must be NULL"
+        );
+    }
 
     server.abort();
     cleanup(state).await;

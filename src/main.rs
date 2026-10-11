@@ -49,10 +49,13 @@ enum Command {
     /// Create or migrate the database, then exit.
     Migrate,
     /// Known devices: online state, last seen, version.
+    #[cfg(feature = "console")]
     Devices,
     /// One device's stored row, latest session and connection state.
+    #[cfg(feature = "console")]
     Device { sn: String },
     /// The newest semantic messages.
+    #[cfg(feature = "console")]
     Events {
         /// Device serial number (all devices unless given).
         sn: Option<String>,
@@ -60,10 +63,13 @@ enum Command {
         n: Option<i64>,
     },
     /// The newest stored map: dims, origin, dock, areas.
+    #[cfg(feature = "console")]
     Map { sn: String },
     /// An assembled clean path (the newest unless a path id is given).
+    #[cfg(feature = "console")]
     Path { sn: String, path_id: Option<i64> },
     /// Enqueue a command for the gateway to push (encrypt:0 by default).
+    #[cfg(feature = "console")]
     Send {
         sn: String,
         info_type: i64,
@@ -74,6 +80,7 @@ enum Command {
         encrypt: bool,
     },
     /// Queue state: pending/sent/acked/expired/failed.
+    #[cfg(feature = "console")]
     Commands {
         /// Device serial number (all devices unless given).
         sn: Option<String>,
@@ -119,6 +126,7 @@ async fn main() -> ExitCode {
             }
             Err(error) => Err(error),
         },
+        #[cfg(feature = "console")]
         verb => run_verb(config, verb).await,
     };
 
@@ -134,11 +142,13 @@ async fn main() -> ExitCode {
 
 /// A one-shot CLI run has no gateway of its own, so "online" can only mean "the
 /// server process you are talking to"; the console sees the live state.
+#[cfg(feature = "console")]
 const ONE_SHOT_NOTE: &str =
     "one-shot run: `online` is this process's own gateway; the console shows the live state";
 
 /// One-shot verbs run against the database directly (doc/PLAN.md §12): a `send` from
 /// a second terminal lands in the `commands` table, which a running gateway drains.
+#[cfg(feature = "console")]
 async fn run_verb(config: Config, verb: Command) -> noobscenic::error::Result<()> {
     use noobscenic::console;
 

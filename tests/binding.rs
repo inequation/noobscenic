@@ -114,12 +114,19 @@ async fn a_prebind_is_recorded_answered_and_idempotent() {
     assert_eq!(events.len(), 2, "both preBinds must be recorded");
     for (endpoint, trace_ref) in events {
         assert_eq!(endpoint, "/cleanPack/binding");
-        let reference = trace_ref.expect("trace_ref");
-        let (file, seq) = reference.split_once('#').expect("file#seq");
-        assert!(
-            !seq.is_empty() && state.config.wire_dir().join(file).exists(),
-            "trace_ref {reference} must point at a real file"
-        );
+        if cfg!(any(feature = "debug-trace", feature = "debug-raw")) {
+            let reference = trace_ref.expect("trace_ref");
+            let (file, seq) = reference.split_once('#').expect("file#seq");
+            assert!(
+                !seq.is_empty() && state.config.wire_dir().join(file).exists(),
+                "trace_ref {reference} must point at a real file"
+            );
+        } else {
+            assert!(
+                trace_ref.is_none(),
+                "no trace sink is compiled in, so trace_ref must be NULL"
+            );
+        }
     }
 
     cleanup(state).await;

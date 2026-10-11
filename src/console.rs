@@ -27,10 +27,24 @@ commands:
   send <sn> <infoType> <json>         enqueue a command (encrypt:0)
   send-enc <sn> <infoType> <json>     enqueue with encrypt:1 (needs the config flag)
   send-full <sn> <json>               send one raw inner message now (experiment)
-  trace on|off                        toggle the wire tap
+";
+/// The trace verb only exists when a sink is compiled in; a console-only build has
+/// nothing for it to toggle (doc/PLAN.md §21).
+#[cfg(any(feature = "debug-trace", feature = "debug-raw"))]
+const HELP_TRACE: &str = "  trace on|off                        toggle the wire tap\n";
+const HELP_TAIL: &str = "\
   style compact|styled                how channel-B frames are written
   pongs on|off                        answer 21006 pings (liveness experiment)
   quit                                shut the server down";
+
+/// `HELP` with the trace verb only when a trace sink is compiled in.
+fn help() -> String {
+    let mut text = String::from(HELP);
+    #[cfg(any(feature = "debug-trace", feature = "debug-raw"))]
+    text.push_str(HELP_TRACE);
+    text.push_str(HELP_TAIL);
+    text
+}
 
 const EVENTS_DEFAULT: i64 = 20;
 const COMMANDS_DEFAULT: i64 = 20;
@@ -52,7 +66,7 @@ pub fn spawn(state: AppState, shutdown: watch::Sender<()>) {
         while let Ok(Some(line)) = lines.next_line().await {
             match parse(&line) {
                 Command::Empty => {}
-                Command::Help => println!("{HELP}"),
+                Command::Help => println!("{}", help()),
                 Command::Devices => show_devices(&state).await,
                 Command::Device { sn } => show_device(&state, &sn).await,
                 Command::Events { sn, limit } => show_events(&state, sn.as_deref(), limit).await,
@@ -74,6 +88,7 @@ pub fn spawn(state: AppState, shutdown: watch::Sender<()>) {
                 Command::SendFull { sn, frame } => {
                     send_now(&state, &sn, "message", codec::envelope(0, frame)).await
                 }
+                #[cfg(any(feature = "debug-trace", feature = "debug-raw"))]
                 Command::Trace { on } => {
                     state.tap.set_enabled(on);
                     println!(
@@ -427,6 +442,7 @@ enum Command {
         sn: String,
         frame: Value,
     },
+    #[cfg(any(feature = "debug-trace", feature = "debug-raw"))]
     Trace {
         on: bool,
     },
@@ -515,6 +531,7 @@ fn parse(line: &str) -> Command {
                 _ => Command::Unknown(line.to_string()),
             }
         }
+        #[cfg(any(feature = "debug-trace", feature = "debug-raw"))]
         "trace" => match parts.next() {
             Some("on") => Command::Trace { on: true },
             Some("off") => Command::Trace { on: false },
@@ -689,11 +706,14 @@ mod tests {
                 limit: 3
             }
         );
-        assert_eq!(parse("trace on"), Command::Trace { on: true });
-        assert_eq!(parse("trace off"), Command::Trace { on: false });
-        assert_eq!(
-            parse("trace sideways"),
-            Command::Unknown("trace sideways".into())
-        );
+        #[cfg(any(feature = "debug-trace", feature = "debug-raw"))]
+        {
+            assert_eq!(parse("trace on"), Command::Trace { on: true });
+            assert_eq!(parse("trace off"), Command::Trace { on: false });
+            assert_eq!(
+                parse("trace sideways"),
+                Command::Unknown("trace sideways".into())
+            );
+        }
     }
 }

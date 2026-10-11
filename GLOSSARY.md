@@ -111,3 +111,15 @@ expired session, gets `code:102` — "your sid expired" — which makes the robo
 re-run `register` and pick up a fresh session. The empty case is what lets a robot
 that paired against the phase-1 catch-all (and therefore never got a session)
 upgrade itself to a real one on its next request, with no re-home and no reboot.
+
+## Build-time feature toggles
+
+The three Cargo features that can leave the server's non-essential surfaces out of
+the binary: `debug-trace` (the JSONL [wire](#wire) timeline), `debug-raw` (the
+verbatim raw byte sink) and `console` (the stdin/stdout operator console and the
+one-shot CLI verbs). All three are in `default`, so a plain build has every surface;
+`cargo build --no-default-features` produces the lean server — no trace files (the
+database's `trace_ref` columns stay empty), no console and no `noobscenic
+devices|events|…|send` subcommands — while the protocols, the web UI and the command
+queue are unchanged. Asking for a compiled-out sink in `logging.wire` warns and
+records nothing rather than failing, so one config file works across builds.

@@ -18,20 +18,27 @@
 use std::net::SocketAddr;
 
 use axum::Router;
+#[cfg(any(feature = "debug-trace", feature = "debug-raw"))]
 use axum::body::Body;
-use axum::extract::{ConnectInfo, Request, State};
-use axum::http::{HeaderMap, StatusCode, header};
+use axum::extract::{Request, State};
+#[cfg(any(feature = "debug-trace", feature = "debug-raw"))]
+use axum::extract::ConnectInfo;
+use axum::http::{StatusCode, header};
+#[cfg(any(feature = "debug-trace", feature = "debug-raw"))]
+use axum::http::HeaderMap;
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
-use serde_json::{Map, Value, json};
+use serde_json::json;
 use tokio::net::TcpListener;
 
 use crate::AppState;
 use crate::db::now_ms;
 use crate::error::Result;
 use crate::session::{self, Credential};
-use crate::wire::{Direction, Record, Recorded};
+use crate::wire::Recorded;
+#[cfg(any(feature = "debug-trace", feature = "debug-raw"))]
+use crate::wire::{Direction, Record};
 
 pub mod form;
 pub(crate) mod handlers;
@@ -42,7 +49,7 @@ pub mod multipart;
 const MAX_BODY_BYTES: usize = 16 * 1024 * 1024;
 
 pub fn router(state: AppState) -> Router {
-    Router::new()
+    let router = Router::new()
         // `/` is the web UI, except when the query is the device's OTA version
         // check — `web::index` splits on that (doc/PLAN.md §19).
         .route("/", get(crate::web::index))
@@ -68,6 +75,16 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/robot/{id}/zones/clean", post(crate::web::zones_clean))
         .route("/api/robot/{id}/settings", put(crate::web::settings))
+        .route("/api/robot/{id}/config", post(crate::web::config))
+        .route("/api/robot/{id}/goods", get(crate::web::goods))
+        .route(
+            "/api/robot/{id}/goods/refresh",
+            post(crate::web::goods_refresh),
+        )
+        .route(
+            "/api/robot/{id}/goods/reset",
+            post(crate::web::goods_reset),
+        )
         .route(
             "/api/robot/{id}/backup",
             get(crate::web::backup_export).post(crate::web::backup_import),
@@ -104,9 +121,14 @@ pub fn router(state: AppState) -> Router {
         .fallback(catch_all)
         // The gate sits inside the tap (the last layer added runs first), so the
         // `code:102` answers it produces are traced like every other response.
-        .layer(middleware::from_fn_with_state(state.clone(), cookie_gate))
-        .layer(middleware::from_fn_with_state(state.clone(), tap_traffic))
-        .with_state(state)
+        .layer(middleware::from_fn_with_state(state.clone(), cookie_gate));
+
+    // The tap layer, and the per-request body buffering it exists for, is only
+    // compiled when a trace sink is (doc/PLAN.md §21).
+    #[cfg(any(feature = "debug-trace", feature = "debug-raw"))]
+    let router = router.layer(middleware::from_fn_with_state(state.clone(), tap_traffic));
+
+    router.with_state(state)
 }
 
 pub async fn serve(
@@ -127,6 +149,7 @@ pub async fn serve(
 
 /// Buffer both bodies so the tap sees exactly what crossed the socket, and hand the
 /// request's trace reference to the handler so its database rows can point at it.
+#[cfg(any(feature = "debug-trace", feature = "debug-raw"))]
 async fn tap_traffic(State(state): State<AppState>, request: Request, next: Next) -> Response {
     let peer = request
         .extensions()
@@ -283,7 +306,10 @@ fn ok_envelope() -> impl IntoResponse {
     )
 }
 
-fn header_map(headers: &HeaderMap) -> Value {
+#[cfg(any(feature = "debug-trace", feature = "debug-raw"))]
+fn header_map(headers: &HeaderMap) -> serde_json::Value {
+    use serde_json::{Map, Value};
+
     let mut object = Map::new();
     for (name, value) in headers {
         object.insert(

@@ -84,8 +84,31 @@ fn trace_ref_is_usable(state: &AppState, reference: Option<&str>) -> bool {
     let Some((file, seq)) = reference.split_once('#') else {
         return false;
     };
-    let exists = state.config.wire_dir().join(file).exists();
-    exists && !seq.is_empty()
+    if seq.is_empty() {
+        return false;
+    }
+    if file.is_empty() {
+        // A raw-only build names the byte file by sequence alone; the date directory
+        // it landed in is not part of the reference (doc/PLAN.md §21).
+        return cfg!(feature = "debug-raw");
+    }
+    state.config.wire_dir().join(file).exists()
+}
+
+/// Every stored row carries a usable `trace_ref` when a sink is compiled in, and
+/// NULL when none is (doc/PLAN.md §21).
+fn assert_trace_ref(state: &AppState, reference: Option<&str>, what: &str) {
+    if cfg!(any(feature = "debug-trace", feature = "debug-raw")) {
+        assert!(
+            trace_ref_is_usable(state, reference),
+            "{what}: trace_ref {reference:?}"
+        );
+    } else {
+        assert!(
+            reference.is_none(),
+            "{what}: no trace sink is compiled in, got {reference:?}"
+        );
+    }
 }
 
 type MapRow = (
@@ -114,11 +137,7 @@ async fn a_status_push_becomes_an_event_row() {
             .expect("event row");
     assert_eq!(row.0, 20001);
     assert!(row.1.contains("\"mode\":\"dormant\""), "{}", row.1);
-    assert!(
-        trace_ref_is_usable(&state, row.2.as_deref()),
-        "trace_ref {:?}",
-        row.2
-    );
+    assert_trace_ref(&state, row.2.as_deref(), "status push");
 
     cleanup(state).await;
 }
@@ -162,7 +181,7 @@ async fn a_map_upload_is_decoded_and_stored_with_its_blob() {
         (Some(1500), Some(-2500)),
         "dock position in mm"
     );
-    assert!(trace_ref_is_usable(&state, row.6.as_deref()));
+    assert_trace_ref(&state, row.6.as_deref(), "map upload");
 
     cleanup(state).await;
 }
@@ -192,7 +211,7 @@ async fn clean_path_chunks_assemble_across_responses() {
         points,
         "[[1004.0,1000.0],[2008.0,2004.0],[3004.0,3000.0],[4008.0,4004.0]]"
     );
-    assert!(trace_ref_is_usable(&state, trace.as_deref()));
+    assert_trace_ref(&state, trace.as_deref(), "clean path");
 
     cleanup(state).await;
 }
@@ -221,7 +240,7 @@ async fn raw_uploads_are_stored_verbatim() {
     for (endpoint, fields, trace) in &rows {
         assert!(fields.contains("\"taskid\":\"7\""), "{fields}");
         assert!(fields.contains("\"anything\":true"), "{fields}");
-        assert!(trace_ref_is_usable(&state, trace.as_deref()), "{endpoint}");
+        assert_trace_ref(&state, trace.as_deref(), endpoint);
     }
 
     cleanup(state).await;

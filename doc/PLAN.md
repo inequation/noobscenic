@@ -865,17 +865,19 @@ remembering: the restore replaces the live map, path, zones and stored pose, so 
 current zone list has to be written back if it should survive.
 
 ### Phase 9 — Build-time feature toggles (design: §21)
-- [ ] `debug-trace`, `debug-raw` and `console` Cargo features declared, all in `default`
-- [ ] JSONL sink gated by `debug-trace`; with both trace features off no record is
+- [x] `debug-trace`, `debug-raw` and `console` Cargo features declared, all in `default`
+- [x] JSONL sink gated by `debug-trace`; with both trace features off no record is
   built and no request body is buffered for tracing
-- [ ] raw sink gated by `debug-raw`
-- [ ] console and the one-shot CLI verbs gated by `console`; `serve`/`migrate` remain
-- [ ] `cargo test` green for default, `--no-default-features`, each feature alone and
+- [x] raw sink gated by `debug-raw`
+- [x] console and the one-shot CLI verbs gated by `console`; `serve`/`migrate` remain
+- [x] `cargo test` green for default, `--no-default-features`, each feature alone and
   `debug-trace,debug-raw`
-- [ ] README build-variants note and GLOSSARY entry; lean-build size recorded in §18
+- [x] README build-variants note and GLOSSARY entry; lean-build size recorded in §18
 
 **Done when:** the default build behaves exactly as before, and any subset of the
 three features can be built without touching protocol behavior or the web UI.
+**Status (2026-10-11):** implemented and covered by the full feature matrix; the lean
+release binary is 588 KiB (6.7%) smaller (§18).
 
 ---
 
@@ -960,6 +962,11 @@ dependency, but the page is the *smallest* thing in a binary dominated by `sqlx`
 embedding altogether and serve `index.html` from disk (0 bytes of `.rodata`, page-cache
 managed). Decision for now: not implemented — revisit with `cargo bloat`/size numbers
 from the actual target so the effort goes to the largest object.
+
+**Sizes after §21 (release, 2026-10-11):** the default binary is 9,030,656 bytes;
+`--no-default-features` (no `debug-trace`, `debug-raw` or `console`) is 8,428,544
+bytes — the toggles remove ~588 KiB (6.7%) before any work on the embedded page. The
+gzip question above stays open; re-measure with `cargo bloat` before trimming deps.
 
 ---
 

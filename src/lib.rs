@@ -8,6 +8,7 @@ pub mod channel_a;
 pub mod channel_b;
 pub mod commands;
 pub mod config;
+#[cfg(feature = "console")]
 pub mod console;
 pub mod db;
 pub mod error;
@@ -68,7 +69,7 @@ pub async fn start(config: Config) -> Result<AppState> {
     if tap.is_enabled() {
         tracing::info!(dir = %config.wire_dir().display(), format = ?config.logging.wire.format,
             "wire tracing on");
-    } else {
+    } else if cfg!(any(feature = "debug-trace", feature = "debug-raw")) {
         tracing::warn!("wire tracing is off; traces are the point of this phase");
     }
 
@@ -96,7 +97,10 @@ pub async fn run(config: Config) -> Result<()> {
     let gateway = tokio::net::TcpListener::bind(gateway_bind).await?;
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
+    #[cfg(feature = "console")]
     console::spawn(state.clone(), shutdown_tx.clone());
+    #[cfg(not(feature = "console"))]
+    tracing::info!("operator console is not compiled in; Ctrl-C stops the server");
     // The command queue's poller — doc/PLAN.md §10.3. It runs headless, too: enqueue
     // through the CLI or `sqlite3` and the gateway still picks the row up.
     commands::spawn(state.clone(), shutdown_tx.subscribe());

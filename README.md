@@ -19,6 +19,8 @@ Status:
 - ☑️ maps, zones, paths - decoded, rendered, imported and exported,
 - ☑️ SQLite persistent storage,
 - ☑️ a web UI to control the robot.
+- ☑️ build-time toggles for the debug traces and the operator console, all on by
+  default.
 
 ℹ️ *The web UI is run from the server itself and is mobile-friendly. No separate
 mobile app is planned.*
@@ -62,6 +64,26 @@ To change settings, copy `config.example.json` to `config.json` (it is read from
 working directory; unknown keys are rejected). The interesting ones:
 `gateway.encrypt_commands` (allows `encrypt:1` command encryption),
 `logging.wire` (what gets captured), `http.bind` / `gateway.bind`, `console.enabled`.
+
+### Build variants
+
+The debug traces and the operator console are build-time Cargo features, all enabled
+by default, so a plain `cargo build` / `cargo run` is the full server described above:
+
+- `debug-trace` — the JSONL wire timeline (`var/traces/wire-*.jsonl`) and the
+  database `trace_ref`s that point into it,
+- `debug-raw` — the verbatim byte captures (`var/traces/raw/…`),
+- `console` — the operator console and the one-shot CLI verbs (`noobscenic devices`,
+  `noobscenic send …`).
+
+A lean build drops them all:
+
+    cargo build --release --no-default-features
+
+That server still serves the web UI, answers the robot and drains the command queue,
+but writes no traces (the `trace_ref` columns stay empty) and has no console or
+state/queue/send subcommands — stop it with Ctrl-C. Pick a subset with, for example,
+`--no-default-features --features console` or `--features debug-trace`.
 
 ### 2. Re-home (pair) the robot
 
@@ -144,3 +166,7 @@ Planned, but not a priority at the moment:
 - Exploit for uploading a homebrew firmware. Needs security research.
 
 See [`doc/PLAN.md`](doc/PLAN.md) §14 for what these would look like.
+
+Status: re-homing, control, telemetry, maps, zones, backups and the web UI all work,
+and the debug traces and the operator console are build-time features that are on by
+default and strippable with `--no-default-features`.

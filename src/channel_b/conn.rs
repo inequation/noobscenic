@@ -19,6 +19,7 @@ use crate::AppState;
 use crate::error::Result;
 use crate::proto;
 use crate::proto::info_type;
+#[cfg(any(feature = "debug-trace", feature = "debug-raw"))]
 use crate::wire::{Direction, Record};
 
 use super::codec::{self, Decoder};
@@ -136,29 +137,40 @@ async fn write_task(
     conn_id: String,
     peer: String,
 ) -> Result<()> {
+    #[cfg(not(any(feature = "debug-trace", feature = "debug-raw")))]
+    let _ = (&conn_id, &peer);
+
     while let Some(outbound) = rx.recv().await {
         let value = outbound.frame;
-        // Frames are enveloped (`{"encrypt":…,"data":{"infoType":…}}`), so the label
-        // lives in the inner message; fall back to the flat shape for readability.
-        let info_type = value.get("infoType").and_then(Value::as_i64).or_else(|| {
-            value
-                .get("data")
-                .and_then(|inner| inner.get("infoType"))
-                .and_then(Value::as_i64)
-        });
         let bytes = if state.frame_style.load(std::sync::atomic::Ordering::Relaxed) {
             codec::encode_json_styled(&value)
         } else {
             codec::encode_json(&value)
         };
 
-        let mut record = Record::new("B", Direction::Out, "frame", &bytes)
-            .conn_id(conn_id.clone())
-            .peer(peer.clone());
-        if let Some(info_type) = info_type {
-            record = record.meta("info_type", info_type);
-        }
-        let recorded = state.tap.record(record);
+        // The record, and the frame label it carries, only exist when a trace sink
+        // is compiled in (doc/PLAN.md §21).
+        #[cfg(any(feature = "debug-trace", feature = "debug-raw"))]
+        let recorded = {
+            // Frames are enveloped (`{"encrypt":…,"data":{"infoType":…}}`), so the
+            // label lives in the inner message; fall back to the flat shape.
+            let info_type = value.get("infoType").and_then(Value::as_i64).or_else(|| {
+                value
+                    .get("data")
+                    .and_then(|inner| inner.get("infoType"))
+                    .and_then(Value::as_i64)
+            });
+            let mut record = Record::new("B", Direction::Out, "frame", &bytes)
+                .conn_id(conn_id.clone())
+                .peer(peer.clone());
+            if let Some(info_type) = info_type {
+                record = record.meta("info_type", info_type);
+            }
+            state.tap.record(record)
+        };
+        #[cfg(not(any(feature = "debug-trace", feature = "debug-raw")))]
+        let recorded: Option<crate::wire::Recorded> = None;
+
         // A queued command's row keeps the reference to the exact bytes that sent
         // it (doc/PLAN.md §8); pongs and acks have no row to point at.
         if let (Some(id), Some(recorded)) = (outbound.command_id, recorded)
@@ -196,21 +208,26 @@ impl Conn {
 
         // The tap records frames the way they crossed the socket, delimiter
         // included, in both directions (doc/PLAN.md §8).
-        let mut trace_body = Vec::with_capacity(frame.len() + codec::DELIMITER.len());
-        trace_body.extend_from_slice(frame);
-        trace_body.extend_from_slice(codec::DELIMITER);
-        let mut record = Record::new("B", Direction::In, "frame", &trace_body)
-            .conn_id(self.conn_id.clone())
-            .peer(self.peer.clone());
-        if let Some(sn) = &self.sn {
-            record = record.sn(sn.clone());
-        }
-        if let Some(info_type) = info_type {
-            record = record.meta("info_type", info_type);
-        } else {
-            record = record.meta("content", "no infoType");
-        }
-        let recorded = self.state.tap.record(record);
+        #[cfg(any(feature = "debug-trace", feature = "debug-raw"))]
+        let recorded = {
+            let mut trace_body = Vec::with_capacity(frame.len() + codec::DELIMITER.len());
+            trace_body.extend_from_slice(frame);
+            trace_body.extend_from_slice(codec::DELIMITER);
+            let mut record = Record::new("B", Direction::In, "frame", &trace_body)
+                .conn_id(self.conn_id.clone())
+                .peer(self.peer.clone());
+            if let Some(sn) = &self.sn {
+                record = record.sn(sn.clone());
+            }
+            if let Some(info_type) = info_type {
+                record = record.meta("info_type", info_type);
+            } else {
+                record = record.meta("content", "no infoType");
+            }
+            self.state.tap.record(record)
+        };
+        #[cfg(not(any(feature = "debug-trace", feature = "debug-raw")))]
+        let recorded: Option<crate::wire::Recorded> = None;
 
         let Some(value) = parsed else {
             let text = String::from_utf8_lossy(frame).into_owned();
