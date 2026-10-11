@@ -34,7 +34,7 @@ document.documentElement.dataset.theme =
   header, footer { display: flex; align-items: center; gap: 8px;
                    padding: 8px 10px; background: var(--panel); }
   header { flex-wrap: wrap; }
-  footer { justify-content: center; }
+  footer { position: relative; justify-content: center; }
   #status { flex: 1 1 100%; min-width: 0; font-size: 13px; color: var(--muted);
             white-space: nowrap; overflow-x: auto; }
   main { flex: 1; position: relative; overflow: hidden; }
@@ -92,7 +92,7 @@ document.documentElement.dataset.theme =
   #rc-right   { grid-area: 1 / 1 / 3 / 2; }
   #rc-left    { grid-area: 1 / 3 / 3 / 4; }
   /* Every "leave/cancel" ❌ is this: small, in the top-right corner of its panel —
-     the remote drawer, the zones view and the zone editor all use it. */
+     the remote sheet, and the bottom bars (anchored to the footer panel). */
   .close { position: absolute; top: 6px; right: 8px; min-width: 0; z-index: 3;
            font-size: 14px; padding: 4px 8px; }
   #zone-types { display: flex; align-items: center; gap: 8px; padding: 6px 10px;
@@ -165,11 +165,7 @@ document.documentElement.dataset.theme =
          title="Zone name (at most 31 UTF-8 bytes — the robot's buffer)" disabled>
   <span id="zone-hint">drag to draw · tap to select · right-drag or two fingers to pan</span>
 </div>
-<main>
-  <canvas id="map" width="1" height="1"></canvas>
-  <button id="zone-exit" class="close" title="Leave zones" hidden>❌</button>
-  <button id="edit-cancel" class="close" title="Cancel editing" hidden>❌</button>
-</main>
+<main><canvas id="map" width="1" height="1"></canvas></main>
 <footer>
   <div id="bar-main" class="bar">
     <button id="charge" class="big" title="Charge">⚡</button>
@@ -181,12 +177,14 @@ document.documentElement.dataset.theme =
     <button id="backup-import" class="big" title="Import map">📥</button>
     <button id="zone-play" class="big" title="Clean selected">▶️</button>
     <button id="zone-edit" class="big" title="Edit zones">✏️</button>
+    <button id="zone-exit" class="close" title="Leave zones">❌</button>
   </div>
   <div id="bar-edit" class="bar" hidden>
     <button id="edit-undo" class="big" title="Undo">↶️</button>
     <button id="edit-resize" class="big" title="Resize" disabled>↔️</button>
     <button id="edit-delete" class="big" title="Delete the selected zone">🗑️</button>
     <button id="edit-save" class="big" title="Save zones">💾</button>
+    <button id="edit-cancel" class="close" title="Cancel editing">❌</button>
   </div>
 </footer>
 <input id="backup-file" type="file" accept=".nbmap" hidden>
@@ -642,8 +640,6 @@ function updateBars() {
   document.getElementById("bar-main").hidden = zonesView;
   document.getElementById("bar-zones").hidden = !zonesView || zonesEdit;
   document.getElementById("bar-edit").hidden = !zonesEdit;
-  document.getElementById("zone-exit").hidden = !zonesView || zonesEdit;
-  document.getElementById("edit-cancel").hidden = !zonesEdit;
   document.getElementById("zone-types").hidden = !zonesEdit;
   const play = document.getElementById("zone-play");
   play.disabled = zoneState.cleaning || zoneSelected.size === 0;
