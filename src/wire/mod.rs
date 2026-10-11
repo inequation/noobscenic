@@ -194,7 +194,7 @@ impl Tap {
                 );
             }
 
-            return Ok(Tap {
+            Ok(Tap {
                 inner: Some(Inner {
                     seq: AtomicU64::new(0),
                     enabled: AtomicBool::new(true),
@@ -211,7 +211,7 @@ impl Tap {
                     #[cfg(feature = "debug-raw")]
                     raw: raw::RawSink::new(raw_root),
                 }),
-            });
+            })
         }
     }
 
