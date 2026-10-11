@@ -332,6 +332,9 @@ that it is raw).
 A `noobscenic trace <file>` subcommand renders a JSONL trace as a readable timeline
 (`→`/`←` per frame, decoded `infoType` names, ping/pong latency).
 
+Both sinks — and the record-building call sites that feed them — are also Cargo
+features, all enabled by default; see §21 for the build-time toggles.
+
 ---
 
 ## 9. Channel A — HTTP
@@ -600,6 +603,9 @@ gateway picks it up on its next poll (§10.3).
 A JSON API can be added later if something wants to drive this remotely (§18); it is
 not needed to reach v1, and building it now would be speculative.
 
+The console and its one-shot verbs are the `console` Cargo feature (§21) — an
+advanced control surface, not a debug feature.
+
 ---
 
 ## 13. `tools/rehome.py` — channel C client
@@ -857,6 +863,19 @@ follow-up `20002` 0.7 s later; a wrong md5 fails with `code:-3` and leaves the m
 untouched, and a loopback `Host` is refused with guidance. Live side effect worth
 remembering: the restore replaces the live map, path, zones and stored pose, so the
 current zone list has to be written back if it should survive.
+
+### Phase 9 — Build-time feature toggles (design: §21)
+- [ ] `debug-trace`, `debug-raw` and `console` Cargo features declared, all in `default`
+- [ ] JSONL sink gated by `debug-trace`; with both trace features off no record is
+  built and no request body is buffered for tracing
+- [ ] raw sink gated by `debug-raw`
+- [ ] console and the one-shot CLI verbs gated by `console`; `serve`/`migrate` remain
+- [ ] `cargo test` green for default, `--no-default-features`, each feature alone and
+  `debug-trace,debug-raw`
+- [ ] README build-variants note and GLOSSARY entry; lean-build size recorded in §18
+
+**Done when:** the default build behaves exactly as before, and any subset of the
+three features can be built without touching protocol behavior or the web UI.
 
 ---
 
@@ -1236,3 +1255,49 @@ every clean (operator decision, 2026-10-10).
   relocalises), while `CleanInfo.json`, `MapList.json` and the clean stats survive.
   An import therefore replaces whatever zones the robot had — keep the current list
   and write it back if needed.
+
+---
+
+## 21. Build-time feature toggles
+
+The debugging surfaces and the operator console are Cargo features. All three are in
+`default`, so `cargo build` / `cargo run` / `cargo install` produce exactly the server
+described above; the flags exist so a lean box (§18) can leave a surface out of the
+binary entirely.
+
+| Feature | Kind | What it gates |
+|---|---|---|
+| `debug-trace` | debug | the wire tap's JSONL sink (`wire-*.jsonl`), the `trace_ref` file references it produces, and the record-building sites that feed it |
+| `debug-raw` | debug | the verbatim raw sink (`traces/raw/…`) |
+| `console` | advanced control | the stdin/stdout operator console (§12), the one-shot CLI verbs (`devices`, `device`, `events`, `map`, `path`, `send`, `commands`) and the experiment verbs (`send-full`, `style`, `pongs`) |
+
+The console is a control surface, not a debug feature: it is grouped separately here
+and in the README, and it can be built with or without the trace sinks.
+
+| Build | Traces | `trace_ref` | Console / CLI |
+|---|---|---|---|
+| default | JSONL + raw per config | `file#seq` | full |
+| `--no-default-features` | none | NULL | `serve` / `migrate` |
+| `--features debug-trace` | JSONL only | `file#seq` | `serve` / `migrate` |
+| `--features debug-raw` | raw only | `#seq` | `serve` / `migrate` |
+| `--features console` | none | NULL | full |
+
+Semantics when a feature is compiled out:
+
+* The config schema does not change. `logging.wire`, `console.enabled` and
+  `--no-wire-trace` parse in every build; asking for a sink the binary does not carry
+  logs one warning and records nothing, so a config file stays valid across builds.
+* Database `trace_ref` columns stay in the schema and are simply NULL when nothing
+  records; the raw-only build keeps today's `#seq` reference, which does not name a
+  file.
+* `Tap`, `Record` and `Recorded` keep their public shape in every build, so the
+  handlers, `proto::dispatch` and the tests compile unchanged; the record-building
+  call sites in `channel_a` and `channel_b` are `cfg`-gated, so a stripped build does
+  no per-request body copy for tracing and no per-frame trace `Vec`.
+* Without `console` the process has no stdin loop and no state/queue/send
+  subcommands; Ctrl-C is the shutdown path. The web UI and the HTTP API are not
+  affected by any of the three features.
+
+Verification is the feature-combination test matrix: default, `--no-default-features`,
+each feature alone, and `debug-trace,debug-raw`. Default runs keep the existing
+trace-file assertions; stripped runs assert the trace-free behavior instead.
