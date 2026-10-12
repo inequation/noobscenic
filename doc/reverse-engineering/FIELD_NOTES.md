@@ -349,6 +349,30 @@ regions from `segmentId` as sent, or it ignores the key. Next diagnostics
 same-room `mode:"point"` case; a device log during either would settle whether the
 region-writing branch runs at all.
 
+## Inline `extraAreas` and point mode: live-confirmed same-room (2026-10-12, [field])
+
+Two probes from the dock, both with `cleanId:[-3]` (stored forbid zones only) plus an
+inline region, then `21005 {"mode":"appointClean"}`. If `extraAreas` were ignored, the
+forbid-only selection would default to the whole-home total region, so the small-region
+result is unambiguous.
+
+* **`mode:"area"` is consumed and honoured.** `extraAreas:[{vertexs:[[-4200,1000],
+  [-3800,1000],[-3800,1400],[-4200,1400]],active:"normal",mode:"area"}]` (trace seq
+  105/106, 08:25:49Z) produced `subMode:"area"`; the robot drove to the inline
+  rectangle, cleaned it (`cleanTime` 25 s), then `backcharge` and docked at
+  (−5408,279) by 08:26:52Z. No whole-home fallback.
+* **`mode:"point"` is a real `--point` job.** `extraAreas:[{vertexs:[[-4100,900],
+  [-3900,900],[-3900,1100],[-4100,1100]],active:"normal",mode:"point"}]` (trace seq
+  516/518, 08:27:40Z) produced `subMode:"point"` immediately; the robot drove to
+  (−4090,956) — about 10 cm from the (−4000,1000) centre — spot-cleaned briefly
+  (`cleanTime` 5 s), then `backcharge` and docked at (−5394,343) by 08:28:35Z.
+  `cleanArea` stayed 0, so the counter is not a useful measure for the short point job;
+  the trajectory and `cleanTime` are the evidence.
+
+Both runs were inside the dock's label (`0x01`). The decisive cross-room point test
+(park at the label boundary, target a point in the other label) has not been run yet;
+it needs the operator to position the robot. Traces: `wire-2026-10-12.jsonl`.
+
 ## Manual driving from the dock: the first command is a back-out (2026-10-10, [field])
 
 The robot parks **facing the dock** — at our dock that is south on the map, `phi ≈

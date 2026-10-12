@@ -1135,6 +1135,12 @@ Shipped subset (2026-10-11): suction, mute and locate live in the settings form 
 the drawer (§20.7) rather than in a menu sheet, and the consumables view is there too;
 this table stays as the wire reference for the rest of the menu.
 
+**Live-verified 2026-10-12:** same-room inline `extraAreas` regions are real. A
+0.4×0.4 m `mode:"area"` region produced a normal `subMode:"area"` job that drove to it
+and cleaned it instead of falling back to whole-home; a small `mode:"point"` region
+produced `subMode:"point"`, drove to (−4090,956) for the (−4000,1000) target, and
+spot-cleaned briefly. Cross-room point targeting is still untested (FIELD_NOTES.md).
+
 ### 20.4 Manual steering (remote control)
 
 `21020 data.ctrlCode`: 3005 forward (+0.3 m/s), 3006 backward (−0.1 m/s), 3007 rotate
