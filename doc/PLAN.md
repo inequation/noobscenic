@@ -292,7 +292,10 @@ CREATE TABLE uploads_raw (            -- uploadLogs / uploadStats / uploadSingle
 
 Map grids are kept **as received** (LZ4 block, plus `width`/`height`/`lz4_len`) and
 decoded on demand. That keeps rows small and keeps the decoding replaceable: a later
-correction to the cell semantics costs nothing but a re-decode.
+correction to the cell semantics costs nothing but a re-decode. Only the **newest**
+grid per device is kept — every reader orders by `received_ms DESC`, the NBMP backup
+slot (§20.6) and the robot's own backup are the archival mechanisms, and migration
+`0009` prunes the history older databases accumulated.
 
 ---
 

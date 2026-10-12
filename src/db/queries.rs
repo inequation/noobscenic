@@ -223,6 +223,11 @@ pub async fn insert_event(
 }
 
 /// The 20002 grid, stored as received (LZ4 block); decode is a separate step.
+///
+/// Only the newest grid per device is kept: every reader serves the latest row, and
+/// the NBMP backup slot (`map_backups`, doc/PLAN.md §20.6) is the archival mechanism.
+/// Keeping a device's history here just grew the database by ~5.6 KiB per upload
+/// (2026-10-12).
 pub async fn insert_map_upload(
     pool: &SqlitePool,
     sn: &str,
@@ -236,11 +241,13 @@ pub async fn insert_map_upload(
         .and_then(|pos| Some((*pos.first()?, *pos.get(1)?)))
         .map(|(x, y)| (Some(x), Some(y)))
         .unwrap_or((None, None));
-    sqlx::query(
+    let mut tx = pool.begin().await?;
+    let id: i64 = sqlx::query_scalar(
         "INSERT INTO map_uploads (sn, map_id, auto_area_id, path_id, width, height, resolution,
                                   x_min, y_min, lz4_len, cells_lz4, dock_x, dock_y, dock_phi,
                                   dock_state, areas_json, trace_ref, received_ms)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         RETURNING id",
     )
     .bind(sn)
     .bind(upload.map_id)
@@ -260,8 +267,14 @@ pub async fn insert_map_upload(
     .bind(serde_json::to_string(&upload.area).unwrap_or_else(|_| "[]".to_string()))
     .bind(trace_ref)
     .bind(now_ms())
-    .execute(pool)
+    .fetch_one(&mut *tx)
     .await?;
+    sqlx::query("DELETE FROM map_uploads WHERE sn = ? AND id <> ?")
+        .bind(sn)
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
     Ok(())
 }
 

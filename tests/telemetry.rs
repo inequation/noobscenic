@@ -187,6 +187,45 @@ async fn a_map_upload_is_decoded_and_stored_with_its_blob() {
 }
 
 #[tokio::test]
+async fn map_uploads_keep_only_the_newest_grid_per_device() {
+    let (state, app) = setup("map-latest").await;
+    let map = base64::engine::general_purpose::STANDARD.encode(tiny_lz4_grid());
+    let body_for = |sn: &str, map_id: i64| {
+        let message = json!({
+            "infoType": 20002,
+            "data": {
+                "SN": sn, "mapId": map_id, "autoAreaId": 3, "pathId": 9,
+                "width": 4, "height": 4, "resolution": 0.05, "x_min": -1.0, "y_min": -2.0,
+                "lz4_len": tiny_lz4_grid().len(), "area": [],
+                "map": map.clone(), "base64_len": map.len(),
+                "chargeHandlePos": [1500, -2500], "chargeHandlePhi": 3141,
+                "chargeHandleState": "find",
+            }
+        });
+        format!("sn={sn}&ts=1&data={message}")
+    };
+    for (sn, map_id) in [("TELE", 77), ("TELE", 78), ("OTHER", 5)] {
+        let body = body_for(sn, map_id);
+        let (status, response) = call(&app, post("/cleanPack/uploadEvents", &body)).await;
+        assert_eq!(status, StatusCode::OK, "{sn}/{map_id}");
+        assert_eq!(response["code"], 0, "{sn}/{map_id}");
+    }
+
+    let rows: Vec<(String, i64)> =
+        sqlx::query_as("SELECT sn, map_id FROM map_uploads ORDER BY sn, id")
+            .fetch_all(&state.db)
+            .await
+            .expect("map rows");
+    assert_eq!(
+        rows,
+        vec![("OTHER".to_string(), 5), ("TELE".to_string(), 78)],
+        "one live grid per device, and it is the newest upload"
+    );
+
+    cleanup(state).await;
+}
+
+#[tokio::test]
 async fn clean_path_chunks_assemble_across_responses() {
     let (state, app) = setup("path").await;
 
