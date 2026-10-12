@@ -891,6 +891,29 @@ three features can be built without touching protocol behavior or the web UI.
 **Status (2026-10-11):** implemented and covered by the full feature matrix; the lean
 release binary is 588 KiB (6.7%) smaller (§18).
 
+### Phase 10 — Router deployment (ASUS RT-AC68U, FreshTomato)
+- [x] target picked from the K26ARM facts (kernel 2.6.36, uClibc, no VFP):
+  `armv7-unknown-linux-musleabi`; rationale and the rejected alternatives in
+  `doc/ROUTER_BUILD.md`
+- [x] cross toolchain verified end-to-end from Windows: rustc 1.98.1 + `rustup
+  target add` + cargo-zigbuild 0.23.4 + zig 0.17.0; the bundled SQLite compiles
+  through the zig C toolchain
+- [x] all four feature combinations cross-build; sizes recorded in §18
+- [x] artifact verified: `elf32-littlearm` `ET_EXEC`, EABI5 soft-float header
+  flags, statically linked (no `PT_INTERP`/`DT_NEEDED`), no `Tag_ABI_VFP_args`
+- [x] syscall audit against the 2.6.36 ARM table: only `statx` and
+  `clock_gettime64` post-date it, both with their legacy fallbacks present in the
+  binary
+- [x] `[profile.router]` (release + `panic=abort`) added so a panic cannot reach
+  libunwind's VFP save/restore stubs
+- [ ] on-device smoke test: run from the USB stick on the RT-AC68U, robot
+  handshake, web UI, memory and USB writes
+
+**Done when:** the binary built this way runs on the RT-AC68U from the USB stick and
+the robot shows `online`.
+**Status (2026-10-12):** build, artifact and syscall checks all pass; the on-router
+smoke test is the only item left (checklist in `doc/ROUTER_BUILD.md`).
+
 ---
 
 ## 16. Known unknowns
@@ -979,6 +1002,12 @@ from the actual target so the effort goes to the largest object.
 `--no-default-features` (no `debug-trace`, `debug-raw` or `console`) is 8,428,544
 bytes — the toggles remove ~588 KiB (6.7%) before any work on the embedded page. The
 gzip question above stays open; re-measure with `cargo bloat` before trimming deps.
+
+**ARM/RT-AC68U (2026-10-12):** the Phase 10 cross-builds (`doc/ROUTER_BUILD.md`) are
+6,027,360 bytes for the `router` profile with `--no-default-features --features
+console`, 7,259,848 bytes for the same features on the plain release profile,
+6,986,976 bytes for `--no-default-features`, and 7,323,216 bytes for the full
+default build.
 
 ---
 

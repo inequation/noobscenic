@@ -34,3 +34,10 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 
 [dev-dependencies]
 tower = { version = "0.5.3", default-features = false, features = ["util"] }
+
+# The router build (doc/ROUTER_BUILD.md): a FreshTomato K26ARM kernel has no
+# VFP, and libunwind's ARM register save/restore stubs use it, so a panic must
+# not unwind. panic=abort also drops ~1.2 MB from the binary.
+[profile.router]
+inherits = "release"
+panic = "abort"

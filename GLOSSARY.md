@@ -157,3 +157,11 @@ folded in as `-3`), followed by `21005 {"mode":"appointClean"}`; the robot's own
 task plans the route, drives there and spot-cleans. The square is never saved to the
 robot's zone list — it exists only for that one job, which is why the UI calls it
 temporary.
+
+## Router build
+
+The statically linked ARMv7 soft-float binary for the ASUS RT-AC68U on FreshTomato
+(target `armv7-unknown-linux-musleabi`), built from the `router` Cargo profile and
+documented in `doc/ROUTER_BUILD.md`. It carries its own libc (musl) and embeds the
+web page and the migrations, so the USB stick only needs the one executable plus a
+writable data directory.

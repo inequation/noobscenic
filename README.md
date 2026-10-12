@@ -171,4 +171,6 @@ Status: re-homing, control, telemetry, maps, zones, backups and the web UI — w
 cleaning both around the robot and placed anywhere on the map, plus a settings form
 for volume, mute, LED, suction and consumable ages — all work, and the debug traces
 and the operator console are build-time features that are on by default and
-strippable with `--no-default-features`.
+strippable with `--no-default-features`, and a static soft-float ARMv7 build for the
+ASUS RT-AC68U on FreshTomato cross-compiles and passes its ELF and syscall checks
+(`doc/ROUTER_BUILD.md`), with the on-router smoke test still pending.
