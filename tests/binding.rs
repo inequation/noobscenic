@@ -111,7 +111,14 @@ async fn a_prebind_is_recorded_answered_and_idempotent() {
             .fetch_all(&state.db)
             .await
             .expect("events");
+    #[cfg(feature = "event-history")]
     assert_eq!(events.len(), 2, "both preBinds must be recorded");
+    #[cfg(not(feature = "event-history"))]
+    assert_eq!(
+        events.len(),
+        1,
+        "without event history only the newest preBind survives"
+    );
     for (endpoint, trace_ref) in events {
         assert_eq!(endpoint, "/cleanPack/binding");
         if cfg!(any(feature = "debug-trace", feature = "debug-raw")) {

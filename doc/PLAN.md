@@ -297,6 +297,12 @@ grid per device is kept — every reader orders by `received_ms DESC`, the NBMP 
 slot (§20.6) and the robot's own backup are the archival mechanisms, and migration
 `0009` prunes the history older databases accumulated.
 
+**Event retention.** `events` normally keeps every semantic message (the console's
+`events` verb and post-mortem debugging). With the `event-history` feature off (§21)
+only the newest `20001` status and the newest bind/unbind row per device are kept:
+everything else is dropped before insert, and `prune_events_latest_only` reduces an
+existing table at startup.
+
 ---
 
 ## 8. Logging & wire tracing
@@ -885,19 +891,22 @@ suction are written straight to the device and confirmed by the status echo, eac
 consumable reset re-reads the counters, and locate moved to the side drawer.
 
 ### Phase 9 — Build-time feature toggles (design: §21)
-- [x] `debug-trace`, `debug-raw` and `console` Cargo features declared, all in `default`
+- [x] `debug-trace`, `debug-raw`, `console` and `event-history` Cargo features declared, all in `default`
 - [x] JSONL sink gated by `debug-trace`; with both trace features off no record is
   built and no request body is buffered for tracing
 - [x] raw sink gated by `debug-raw`
 - [x] console and the one-shot CLI verbs gated by `console`; `serve`/`migrate` remain
+- [x] `event-history` gates the full `events` log and verb; off, only the newest
+  status and bind/unbind row per device are kept
 - [x] `cargo test` green for default, `--no-default-features`, each feature alone and
   `debug-trace,debug-raw`
 - [x] README build-variants note and GLOSSARY entry; lean-build size recorded in §18
 
 **Done when:** the default build behaves exactly as before, and any subset of the
-three features can be built without touching protocol behavior or the web UI.
-**Status (2026-10-11):** implemented and covered by the full feature matrix; the lean
-release binary is 588 KiB (6.7%) smaller (§18).
+features can be built without touching protocol behavior or the web UI.
+**Status (2026-10-12):** implemented and covered by the feature matrix; the lean
+release binary is 588 KiB (6.7%) smaller (§18), and `event-history` additionally
+shrinks the database to the two rows per device day-to-day operation reads.
 
 ### Phase 10 — Router deployment (ASUS RT-AC68U, FreshTomato)
 - [x] target picked from the K26ARM facts (kernel 2.6.36, uClibc, no VFP):
@@ -1434,7 +1443,7 @@ path is live-verified; the UI flow itself still needs an operator-gated live run
 ## 21. Build-time feature toggles
 
 The debugging surfaces, the operator console and the CLI's comfort features are Cargo
-features. All four are in `default`, so `cargo build` / `cargo run` / `cargo install`
+features. All five are in `default`, so `cargo build` / `cargo run` / `cargo install`
 produce exactly the server described above; the flags exist so a lean box (§18) can
 leave a surface out of the binary entirely.
 
@@ -1442,7 +1451,8 @@ leave a surface out of the binary entirely.
 |---|---|---|
 | `debug-trace` | debug | the wire tap's JSONL sink (`wire-*.jsonl`), the `trace_ref` file references it produces, and the record-building sites that feed it |
 | `debug-raw` | debug | the verbatim raw sink (`traces/raw/…`) |
-| `console` | advanced control | the stdin/stdout operator console (§12), the one-shot CLI verbs (`devices`, `device`, `events`, `map`, `path`, `send`, `commands`) and the experiment verbs (`send-full`, `style`, `pongs`) |
+| `console` | advanced control | the stdin/stdout operator console (§12), the one-shot CLI verbs (`devices`, `device`, `map`, `path`, `send`, `commands`, plus `events` with `event-history`) and the experiment verbs (`send-full`, `style`, `pongs`) |
+| `event-history` | behaviour | the full `events` table history and the `events` console/CLI verb. Off, only the newest status (`20001`) and bind/unbind row per device are kept — everything else is dropped on insert and pruned at startup |
 | `cli-ux` | comfort | clap's colour and typo suggestions; help, usage and error context stay in either way. The router build's flags (§15 Phase 10) leave it out — measured 13 KB on that binary |
 
 The console is a control surface, not a debug feature: it is grouped separately here
@@ -1458,6 +1468,9 @@ and in the README, and it can be built with or without the trace sinks.
 
 `cli-ux` is orthogonal to the table: it is in `default` and out of every
 `--no-default-features` build.
+`event-history` is orthogonal too: `default` has it, every `--no-default-features`
+build does not (the router build included), and `--features event-history` adds it to
+a stripped build.
 
 Semantics when a feature is compiled out:
 
@@ -1471,6 +1484,10 @@ Semantics when a feature is compiled out:
   handlers, `proto::dispatch` and the tests compile unchanged; the record-building
   call sites in `channel_a` and `channel_b` are `cfg`-gated, so a stripped build does
   no per-request body copy for tracing and no per-frame trace `Vec`.
+* Without `event-history` the `events` table is a two-row-per-device cache:
+  `insert_event` drops everything that is not the newest status or bind/unbind row,
+  `db::connect` prunes an existing table at startup, and the `events` console/CLI
+  verb is not compiled in. The protocol and the web UI are unaffected.
 * Without `console` the process has no stdin loop and no state/queue/send
   subcommands; Ctrl-C is the shutdown path. The web UI and the HTTP API are not
   affected by any of these features.

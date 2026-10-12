@@ -142,6 +142,86 @@ async fn a_status_push_becomes_an_event_row() {
     cleanup(state).await;
 }
 
+/// With `event-history` off the table is a two-row cache per device: the newest
+/// status and the newest bind/unbind row, and nothing else.
+#[cfg(not(feature = "event-history"))]
+#[tokio::test]
+async fn events_keep_only_the_newest_status_and_bind_rows() {
+    let (state, app) = setup("status-lean").await;
+    for mode in ["dormant", "sweep"] {
+        let body = format!(
+            "sn=TELE&ts=1&data={{\"infoType\":20001,\"data\":{{\"mode\":\"{mode}\",\"elec\":99}}}}"
+        );
+        let (status, response) = call(&app, post("/cleanPack/uploadEvents", &body)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(response["code"], 0);
+    }
+    // A non-status, non-bind message is dropped instead of stored.
+    let body = "sn=TELE&ts=1&data={\"infoType\":20003,\"data\":{\"code\":6023}}";
+    let (status, _) = call(&app, post("/cleanPack/uploadEvents", body)).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Bind and unbind rows prune to the newest one.
+    for endpoint in ["/cleanPack/binding", "//cleanPack/unbinding"] {
+        noobscenic::db::queries::insert_event(
+            &state.db,
+            "TELE",
+            "A",
+            Some(endpoint),
+            None,
+            None,
+            None,
+            None,
+            None,
+            "{\"userId\":\"u\"}",
+            None,
+        )
+        .await
+        .expect("bind event");
+    }
+
+    let status: (i64, String) = sqlx::query_as(
+        "SELECT info_type, payload FROM events WHERE sn = 'TELE' AND info_type = 20001",
+    )
+    .fetch_one(&state.db)
+    .await
+    .expect("status row");
+    assert_eq!(status.0, 20001);
+    assert!(
+        status.1.contains("\"mode\":\"sweep\""),
+        "the newest status wins: {}",
+        status.1
+    );
+    let binds: Vec<String> = sqlx::query_scalar(
+        "SELECT endpoint FROM events WHERE sn = 'TELE' AND info_type IS NULL",
+    )
+    .fetch_all(&state.db)
+    .await
+    .expect("bind rows");
+    assert_eq!(binds, vec!["//cleanPack/unbinding"], "the newest bind wins");
+    let count: i64 = sqlx::query_scalar("SELECT count(1) FROM events WHERE sn = 'TELE'")
+        .fetch_one(&state.db)
+        .await
+        .expect("count");
+    assert_eq!(count, 2, "one status and one bind row per device");
+
+    // A row written by a feature-on build is removed by the startup prune.
+    sqlx::query(
+        "INSERT INTO events (sn, channel, direction, info_type, payload, received_ms)
+         VALUES ('TELE', 'A', 'in', 20003, '{}', ?)",
+    )
+    .bind(noobscenic::db::now_ms())
+    .execute(&state.db)
+    .await
+    .expect("history row");
+    let pruned = noobscenic::db::queries::prune_events_latest_only(&state.db)
+        .await
+        .expect("prune");
+    assert_eq!(pruned, 1, "the history row was pruned");
+
+    cleanup(state).await;
+}
+
 #[tokio::test]
 async fn a_map_upload_is_decoded_and_stored_with_its_blob() {
     let (state, app) = setup("map").await;

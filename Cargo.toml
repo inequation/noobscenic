@@ -6,10 +6,14 @@ license = "MIT"
 
 [features]
 # All on by default: a plain build is the full server (doc/PLAN.md §21).
-default = ["debug-trace", "debug-raw", "console", "cli-ux"]
+default = ["debug-trace", "debug-raw", "console", "cli-ux", "event-history"]
 # Debug surfaces: the JSONL timeline and the verbatim raw byte sink.
 debug-trace = []
 debug-raw = []
+# The full `events` table history and the `events` console/CLI verb. Off, the table
+# keeps only the newest status and bind/unbind row per device — everything
+# day-to-day operation reads.
+event-history = []
 # An advanced control surface, not a debug feature: the stdin console and the
 # one-shot CLI verbs.
 console = []

@@ -166,11 +166,19 @@ async fn unhandled_frames_are_persisted_and_the_link_survives() {
             .fetch_all(&state.db)
             .await
             .expect("events rows");
-    assert_eq!(rows.len(), 2, "both odd frames must be persisted: {rows:?}");
-    assert_eq!(rows[0].0, Some(31337));
-    assert!(rows[0].1.contains("\"x\":1"), "{}", rows[0].1);
-    assert_eq!(rows[1].0, None);
-    assert_eq!(rows[1].1, "not json");
+    #[cfg(feature = "event-history")]
+    {
+        assert_eq!(rows.len(), 2, "both odd frames must be persisted: {rows:?}");
+        assert_eq!(rows[0].0, Some(31337));
+        assert!(rows[0].1.contains("\"x\":1"), "{}", rows[0].1);
+        assert_eq!(rows[1].0, None);
+        assert_eq!(rows[1].1, "not json");
+    }
+    #[cfg(not(feature = "event-history"))]
+    assert!(
+        rows.is_empty(),
+        "without event history odd frames are not persisted: {rows:?}"
+    );
 
     cleanup(state, server).await;
 }

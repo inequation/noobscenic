@@ -16,11 +16,16 @@ use crate::AppState;
 use crate::channel_b::codec;
 use crate::db::queries;
 
-const HELP: &str = "\
+const HELP_HEAD: &str = "\
 commands:
   devices                             known devices: online state, last seen, version
   device <sn>                         stored row + latest session + connection
-  events [<sn>] [n]                   newest n semantic messages (default 20)
+";
+/// The `events` verb needs the history it lists; the lean build keeps two rows per
+/// device and compiles the verb out.
+#[cfg(feature = "event-history")]
+const HELP_EVENTS: &str = "  events [<sn>] [n]                   newest n semantic messages (default 20)\n";
+const HELP_MID: &str = "\
   map <sn>                            newest map: dims, origin, dock, areas
   path <sn> [<path_id>]               assembled clean path summary
   commands [<sn>] [n]                 queue state: pending/sent/acked/expired/failed
@@ -39,13 +44,17 @@ const HELP_TAIL: &str = "\
 
 /// `HELP` with the trace verb only when a trace sink is compiled in.
 fn help() -> String {
-    let mut text = String::from(HELP);
+    let mut text = String::from(HELP_HEAD);
+    #[cfg(feature = "event-history")]
+    text.push_str(HELP_EVENTS);
+    text.push_str(HELP_MID);
     #[cfg(any(feature = "debug-trace", feature = "debug-raw"))]
     text.push_str(HELP_TRACE);
     text.push_str(HELP_TAIL);
     text
 }
 
+#[cfg(feature = "event-history")]
 const EVENTS_DEFAULT: i64 = 20;
 const COMMANDS_DEFAULT: i64 = 20;
 const PREVIEW: usize = 120;
@@ -69,6 +78,7 @@ pub fn spawn(state: AppState, shutdown: watch::Sender<()>) {
                 Command::Help => println!("{}", help()),
                 Command::Devices => show_devices(&state).await,
                 Command::Device { sn } => show_device(&state, &sn).await,
+                #[cfg(feature = "event-history")]
                 Command::Events { sn, limit } => show_events(&state, sn.as_deref(), limit).await,
                 Command::Map { sn } => show_map(&state, &sn).await,
                 Command::Path { sn, path_id } => show_path(&state, &sn, path_id).await,
@@ -193,6 +203,7 @@ pub async fn show_device(state: &AppState, sn: &str) {
 }
 
 /// `events [<sn>] [n]` — the newest semantic messages, oldest of the batch first.
+#[cfg(feature = "event-history")]
 pub async fn show_events(state: &AppState, sn: Option<&str>, limit: i64) {
     match queries::recent_events(&state.db, sn, limit).await {
         Err(error) => println!("could not read events: {error}"),
@@ -413,6 +424,7 @@ enum Command {
     Device {
         sn: String,
     },
+    #[cfg(feature = "event-history")]
     Events {
         sn: Option<String>,
         limit: i64,
@@ -468,6 +480,7 @@ fn parse(line: &str) -> Command {
             Some(sn) if !sn.is_empty() => Command::Device { sn: sn.to_string() },
             _ => Command::Unknown(line.to_string()),
         },
+        #[cfg(feature = "event-history")]
         "events" => {
             let rest: Vec<&str> = parts.collect();
             match filter_limit(&rest, EVENTS_DEFAULT) {
@@ -649,6 +662,7 @@ mod tests {
         assert_eq!(parse("devices"), Command::Devices);
         assert_eq!(parse("device SN"), Command::Device { sn: "SN".into() });
         assert_eq!(parse("device"), Command::Unknown("device".into()));
+        #[cfg(feature = "event-history")]
         assert_eq!(
             parse("events"),
             Command::Events {
@@ -656,6 +670,7 @@ mod tests {
                 limit: 20
             }
         );
+        #[cfg(feature = "event-history")]
         assert_eq!(
             parse("events SN"),
             Command::Events {
@@ -663,7 +678,9 @@ mod tests {
                 limit: 20
             }
         );
+        #[cfg(feature = "event-history")]
         assert_eq!(parse("events 5"), Command::Events { sn: None, limit: 5 });
+        #[cfg(feature = "event-history")]
         assert_eq!(
             parse("events SN 5"),
             Command::Events {
@@ -671,6 +688,7 @@ mod tests {
                 limit: 5
             }
         );
+        #[cfg(feature = "event-history")]
         assert_eq!(
             parse("events SN not-a-number"),
             Command::Unknown("events SN not-a-number".into())

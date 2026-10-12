@@ -74,7 +74,9 @@ by default, so a plain `cargo build` / `cargo run` is the full server described 
   database `trace_ref`s that point into it,
 - `debug-raw` — the verbatim byte captures (`var/traces/raw/…`),
 - `console` — the operator console and the one-shot CLI verbs (`noobscenic devices`,
-  `noobscenic send …`).
+  `noobscenic send …`),
+- `event-history` — the full `events` table history and the `events` console verb;
+  without it the table keeps only the newest status and bind/unbind row per device.
 
 A lean build drops them all:
 
@@ -82,8 +84,9 @@ A lean build drops them all:
 
 That server still serves the web UI, answers the robot and drains the command queue,
 but writes no traces (the `trace_ref` columns stay empty) and has no console or
-state/queue/send subcommands — stop it with Ctrl-C. Pick a subset with, for example,
-`--no-default-features --features console` or `--features debug-trace`.
+state/queue/send subcommands, no `events` verb and a two-row-per-device `events`
+table — stop it with Ctrl-C. Pick a subset with, for example, `--no-default-features
+--features console` or `--features debug-trace`.
 
 ### 2. Re-home (pair) the robot
 
@@ -169,8 +172,8 @@ See [`doc/PLAN.md`](doc/PLAN.md) §14 for what these would look like.
 
 Status: re-homing, control, telemetry, maps, zones, backups and the web UI — with spot
 cleaning both around the robot and placed anywhere on the map, plus a settings form
-for volume, mute, LED, suction and consumable ages — all work, and the debug traces
-and the operator console are build-time features that are on by default and
-strippable with `--no-default-features`, and a static soft-float ARMv7 build for the
+for volume, mute, LED, suction and consumable ages — all work, and the debug traces,
+the operator console and the full event history are build-time features that are on
+by default and strippable with `--no-default-features`, and a static soft-float ARMv7 build for the
 ASUS RT-AC68U on FreshTomato cross-compiles and passes its ELF and syscall checks
 (`doc/ROUTER_BUILD.md`), with the on-router smoke test still pending.

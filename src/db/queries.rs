@@ -186,7 +186,36 @@ pub async fn revoke_session(pool: &SqlitePool, cookie: &str) -> Result<()> {
     Ok(())
 }
 
+/// The four endpoint spellings the robot uses for its bind request (with and without
+/// the extra leading slash). Shared by `bind_events` and the history pruning.
+const BIND_ENDPOINTS: [&str; 4] = [
+    "/cleanPack/binding",
+    "//cleanPack/binding",
+    "/cleanPack/unbinding",
+    "//cleanPack/unbinding",
+];
+
+#[cfg(not(feature = "event-history"))]
+fn is_bind_endpoint(endpoint: &str) -> bool {
+    BIND_ENDPOINTS.contains(&endpoint)
+}
+
+/// The bind endpoints as a SQL `IN` list — the values are constants, not input.
+fn bind_endpoint_list() -> String {
+    BIND_ENDPOINTS
+        .iter()
+        .map(|endpoint| format!("'{endpoint}'"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// Every semantic message that has no dedicated table lands here verbatim.
+///
+/// With `event-history` off, only the two rows day-to-day operation reads survive:
+/// the newest status (`20001` — the UI and the path poller) and the newest bind/unbind
+/// record (the id recovery) per device. Everything else is dropped before it reaches
+/// the table, and a database written with the feature on is pruned at startup
+/// (`prune_events_latest_only`).
 #[allow(clippy::too_many_arguments)]
 pub async fn insert_event(
     pool: &SqlitePool,
@@ -201,10 +230,22 @@ pub async fn insert_event(
     payload: &str,
     trace_ref: Option<&str>,
 ) -> Result<()> {
-    sqlx::query(
+    #[cfg(not(feature = "event-history"))]
+    {
+        let status = info_type == Some(crate::proto::info_type::STATUS);
+        if !status && !endpoint.is_some_and(is_bind_endpoint) {
+            return Ok(());
+        }
+    }
+
+    let mut tx = pool.begin().await?;
+    // `id` is only read by the pruning below; a history build has no prune.
+    #[allow(unused_variables)]
+    let id: i64 = sqlx::query_scalar(
         "INSERT INTO events (sn, channel, direction, endpoint, info_type, event_code, task_id,
                              user_id, device_ts, payload, trace_ref, received_ms)
-         VALUES (?, ?, 'in', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, 'in', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         RETURNING id",
     )
     .bind(sn)
     .bind(channel)
@@ -217,8 +258,32 @@ pub async fn insert_event(
     .bind(payload)
     .bind(trace_ref)
     .bind(now_ms())
-    .execute(pool)
+    .fetch_one(&mut *tx)
     .await?;
+
+    #[cfg(not(feature = "event-history"))]
+    {
+        if info_type == Some(crate::proto::info_type::STATUS) {
+            sqlx::query("DELETE FROM events WHERE sn = ? AND info_type = ? AND id <> ?")
+                .bind(sn)
+                .bind(crate::proto::info_type::STATUS)
+                .bind(id)
+                .execute(&mut *tx)
+                .await?;
+        } else {
+            let sql = format!(
+                "DELETE FROM events WHERE sn = ? AND id <> ? AND endpoint IN ({})",
+                bind_endpoint_list()
+            );
+            sqlx::query(sqlx::AssertSqlSafe(sql))
+                .bind(sn)
+                .bind(id)
+                .execute(&mut *tx)
+                .await?;
+        }
+    }
+
+    tx.commit().await?;
     Ok(())
 }
 
@@ -632,14 +697,66 @@ pub async fn unbound_devices(pool: &SqlitePool) -> Result<Vec<String>> {
 pub async fn bind_events(
     pool: &SqlitePool,
 ) -> Result<Vec<(Option<String>, String, Option<String>, i64)>> {
-    Ok(sqlx::query_as(
+    let sql = format!(
         "SELECT sn, endpoint, payload, received_ms FROM events
-         WHERE endpoint IN ('/cleanPack/binding', '//cleanPack/binding',
-                            '/cleanPack/unbinding', '//cleanPack/unbinding')
-         ORDER BY id",
+         WHERE endpoint IN ({}) ORDER BY id",
+        bind_endpoint_list()
+    );
+    Ok(sqlx::query_as(sqlx::AssertSqlSafe(sql))
+        .fetch_all(pool)
+        .await?)
+}
+
+/// With `event-history` off: reduce a database written with it on to what day-to-day
+/// operation reads — the newest status and the newest bind/unbind row per device.
+/// Idempotent; `db::connect` runs it once per start.
+#[cfg(not(feature = "event-history"))]
+pub async fn prune_events_latest_only(pool: &SqlitePool) -> Result<u64> {
+    let bind_list = bind_endpoint_list();
+    let mut tx = pool.begin().await?;
+    let mut removed = 0;
+
+    // Everything that is neither a status nor a bind/unbind row is history.
+    let sql = format!(
+        "DELETE FROM events
+         WHERE (info_type IS NULL OR info_type <> ?)
+           AND (endpoint IS NULL OR endpoint NOT IN ({bind_list}))"
+    );
+    removed += sqlx::query(sqlx::AssertSqlSafe(sql))
+        .bind(crate::proto::info_type::STATUS)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+
+    // Older status rows per device.
+    removed += sqlx::query(
+        "DELETE FROM events
+         WHERE info_type = ?
+           AND id NOT IN (SELECT max(id) FROM events WHERE info_type = ? GROUP BY sn)",
     )
-    .fetch_all(pool)
-    .await?)
+    .bind(crate::proto::info_type::STATUS)
+    .bind(crate::proto::info_type::STATUS)
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+
+    // Older bind/unbind rows per device. Legacy NULL-sn rows are left alone: their
+    // device cannot be told apart, and the recovery walk still needs them.
+    let sql = format!(
+        "DELETE FROM events
+         WHERE endpoint IN ({bind_list}) AND sn IS NOT NULL
+           AND id NOT IN (
+               SELECT max(id) FROM events
+               WHERE endpoint IN ({bind_list}) AND sn IS NOT NULL GROUP BY sn
+           )"
+    );
+    removed += sqlx::query(sqlx::AssertSqlSafe(sql))
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+
+    tx.commit().await?;
+    Ok(removed)
 }
 
 /// Adopt a recovered `setID` id, but only where nothing has been recorded yet.

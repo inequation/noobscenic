@@ -32,6 +32,18 @@ pub async fn connect(url: &str, max_connections: u32) -> Result<SqlitePool> {
         .await?;
 
     MIGRATOR.run(&pool).await?;
+
+    #[cfg(not(feature = "event-history"))]
+    match queries::prune_events_latest_only(&pool).await {
+        Ok(0) => {}
+        Ok(pruned) => {
+            tracing::info!(
+                pruned,
+                "pruned event history to the newest status and bind rows"
+            )
+        }
+        Err(error) => tracing::error!(%error, "could not prune the events table"),
+    }
     Ok(pool)
 }
 
