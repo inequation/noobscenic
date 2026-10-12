@@ -146,3 +146,14 @@ The server caches the newest reply in the `goods` table (`GET
 /api/robot/{id}/goods`) and has no lifetime limits of its own — the firmware stores
 no thresholds, so nothing here claims a part is "due". Because `21016` always answers
 "ok", every reset is followed by a fresh `21015` read before the page believes it.
+
+## Placed spot cleaning
+
+The web UI's 🎯 mode: instead of cleaning a fixed square around wherever the robot
+stands (the instant spot clean, `21020 {"ctrlCode":3001}`), the operator drags a
+temporary 1.5 m square to a point on the map and presses ▶️. The server sends the
+square's centre as an inline `mode:"point"` region in `21023` (with stored no-go zones
+folded in as `-3`), followed by `21005 {"mode":"appointClean"}`; the robot's own clean
+task plans the route, drives there and spot-cleans. The square is never saved to the
+robot's zone list — it exists only for that one job, which is why the UI calls it
+temporary.

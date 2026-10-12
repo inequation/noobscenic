@@ -822,6 +822,7 @@ gating and the charging skip are covered by `tests/web.rs`.
 - [x] zone editor: 21004 → edit → 21003 round-trip for no-go, no-mop and clean zones (§20.5)
 - [x] one-slot map backup: export the newest received `.bkmap`, import one back and restore it (§20.6)
 - [x] robot settings form: volume/mute/LED/suction, identity, consumables ages and reset; locate in the drawer (§20.7)
+- [x] placed spot cleaning: drag a 1.5 m temporary square and start a `mode:"point"` clean (§20.8)
 
 **Done when:** a phone can steer the robot, spot-clean it, pick a specialised mode
 and draw a no-go zone, all on the same page.
@@ -854,12 +855,17 @@ doorway/planner grid as the alternative (the label boundary coincides with the m
 passage). The designed cross-room path is `21023` with `segmentId` → smart mode; the
 first live probe and the 2026-10-11 positive-`cleanId` retry were both ACKed "ok" but
 ran `subMode:"area"` instead of smart (the destination was not reached, so the old area
-target is unknown), so the smart path is not confirmed on this unit. Next
-probe: cross-room *point* targeting; the 2026-10-12 run settled the same-room half —
-an inline `extraAreas` area region cleaned in place and a `mode:"point"` region drove
-to its target and spot-cleaned briefly (§20.3, FIELD_NOTES.md). The "more" menu is the one remaining
-item; spot clean went in as the 🎯 button (§20.2) but has not been run live yet — it
-makes noise, so the operator gates it. Map backup export/restore is in too (§20.6): one staged slot is
+target is unknown), so the smart path is not confirmed on this unit. The 2026-10-12
+run settled the same-room half — an inline `extraAreas` area region cleaned in place
+and a `mode:"point"` region drove to its target and spot-cleaned briefly — and a
+short cross-label hop also reached its target within ~6 cm with no `-2605`; a longer
+cross-room point target is still untested (§20.3, FIELD_NOTES.md). The "more" menu is the one remaining
+item. The instant spot clean (rc 3001 around the robot, §20.2) moved to the drawer as
+🧽; the bar's 🎯 is placed spot cleaning (§20.8) — a draggable 1.5 m temporary square
+whose centre goes out as an inline `mode:"point"` region followed by `appointClean`.
+It reuses the live-verified same-room point path (§20.3) but this UI flow has not been
+run live yet; it makes noise, so the operator gates it. Map backup export/restore is
+in too (§20.6): one staged slot is
 exported as an `NBMP` container and imported back for a `21025` restore, verified live
 end to end — the robot fetched the blob from us, md5-ok, installed it and pushed the
 follow-up `20002` 0.7 s later; a wrong md5 fails with `code:-3` and leaves the map
@@ -1140,7 +1146,9 @@ this table stays as the wire reference for the rest of the menu.
 0.4×0.4 m `mode:"area"` region produced a normal `subMode:"area"` job that drove to it
 and cleaned it instead of falling back to whole-home; a small `mode:"point"` region
 produced `subMode:"point"`, drove to (−4090,956) for the (−4000,1000) target, and
-spot-cleaned briefly. Cross-room point targeting is still untested (FIELD_NOTES.md).
+spot-cleaned briefly. A short cross-label hop (0.265 m across the boundary) reached
+the other label within ~6 cm with no `-2605`; a longer cross-room point target is
+still untested (FIELD_NOTES.md).
 
 ### 20.4 Manual steering (remote control)
 
@@ -1341,6 +1349,29 @@ The label is the one field that is ours, so Save/Cancel keep applying to it alon
 * 📢 **Locate** sits in the side drawer between remote control and settings: hold to
   play (rc `3010` on press, `3011` on release), capped client-side at 15 s so a
   missed release cannot leave the robot beeping.
+
+### 20.8 Placed spot cleaning
+
+The robot's own point clean, aimed by the operator. The instant spot clean
+(`21020 {"ctrlCode":3001}`, §20.2) can only clean around wherever the robot stands;
+the placed variant sends an inline `mode:"point"` region at a chosen world point
+instead, so the robot's own clean task plans the route, drives there and spot-cleans
+(live same-room 2026-10-12, FIELD_NOTES.md). The wire sequence is the zone-clean pair
+from `ZONE_CLEAN.md`: `21023 {"cleanId":[-3],"extraAreas":[{…,"mode":"point"}]}`
+followed by `21005 {"mode":"appointClean"}`. Stored forbid zones ride along as `-3`
+so no-go areas stay active.
+
+The square is 1.5 m — the size the firmware itself builds for its point regions
+(FUNC_MAP.md §4/§6.3) — and its centre is the coordinate the robot is sent to. The UI
+is a 🎯 mode: the button shows a temporary square in the deep-clean colour, initially
+at the robot's pose (or the dock, or the map centre), the operator drags it anywhere
+on the map, and ▶️ queues the pair. The square never enters the robot's stored zone
+list; it exists only for the one job. A short cross-label hop has been verified live
+(0.265 m across the boundary, reached within ~6 cm, §20.5); longer cross-room point
+targets are still untested.
+
+**Implemented 2026-10-12:** `POST /api/robot/{id}/spot` and the UI above. The live
+run is pending with the operator.
 
 ---
 

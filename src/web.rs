@@ -912,6 +912,83 @@ pub async fn zones_clean(
     Json(json!({"queued": selection_command, "start": start_command})).into_response()
 }
 
+/// The square the firmware itself builds for a spot clean (FUNC_MAP.md §4/§6.3:
+/// 1.5 m, i.e. ±750 mm around the point).
+const SPOT_SIDE_MM: i64 = 1_500;
+
+/// `POST /api/robot/{id}/spot` — placed spot cleaning: clean around an arbitrary
+/// world point (`21023` point region + `appointClean`).
+///
+/// The sequence is the same one `zones_clean` uses, with the target carried inline
+/// instead of as stored ids: `21023` writes the CleanArea selection and
+/// `21005 {"mode":"appointClean"}` starts from it (ZONE_CLEAN.md). A `mode:"point"`
+/// region makes the robot plan the route itself and spot-clean at the point — live
+/// 2026-10-12: `subMode:"point"`, it drove to the requested coordinates and cleaned
+/// (FIELD_NOTES.md). Stored forbid zones ride along as `-3` so no-go areas stay
+/// active.
+pub async fn spot_clean(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<Value>,
+) -> Response {
+    let Some(sn) = resolve(&state, &id).await else {
+        return unknown(&id);
+    };
+    state.watchers.touch(&sn);
+    if !state.registry.is_online(&sn) {
+        return conflict("device is offline");
+    }
+    if cleaning_in_progress(&state, &sn).await {
+        return conflict("a clean is already running");
+    }
+    let (Some(x), Some(y)) = (
+        body.get("x").and_then(Value::as_i64),
+        body.get("y").and_then(Value::as_i64),
+    ) else {
+        return bad_request("missing x/y: the spot centre in millimetres");
+    };
+
+    let half = SPOT_SIDE_MM / 2;
+    let region = json!({
+        "vertexs": [
+            [x - half, y - half],
+            [x + half, y - half],
+            [x + half, y + half],
+            [x - half, y + half],
+        ],
+        "active": "normal",
+        "mode": "point",
+    });
+    let selection = json!({"cleanId": [-3], "extraAreas": [region]}).to_string();
+    let selection_command =
+        match queries::insert_command(&state.db, &sn, info_type::ZONE_CLEAN, &selection, 0).await {
+            Ok(command_id) => command_id,
+            Err(error) => return internal(error),
+        };
+    // Enqueued second, so it is pushed second (the poller keeps insertion order).
+    let start_command = match queries::insert_command(
+        &state.db,
+        &sn,
+        info_type::CLEAN,
+        "{\"mode\":\"appointClean\"}",
+        0,
+    )
+    .await
+    {
+        Ok(command_id) => command_id,
+        Err(error) => return internal(error),
+    };
+    tracing::info!(
+        sn = %sn,
+        selection_command,
+        start_command,
+        x,
+        y,
+        "spot clean queued (21023 point + appointClean)"
+    );
+    Json(json!({"queued": selection_command, "start": start_command})).into_response()
+}
+
 /// A clean in progress blocks zone edits and zone-clean starts (operator decision,
 /// 2026-10-08). `FindChargerAndWash` counts as part of the job it interrupted.
 async fn cleaning_in_progress(state: &AppState, sn: &str) -> bool {

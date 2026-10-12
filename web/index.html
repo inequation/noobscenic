@@ -75,7 +75,7 @@ document.documentElement.dataset.theme =
           transform: translateX(-100%); transition: transform 150ms ease; }
   #menu.open { transform: none; }
   #menu .drawer { display: flex; flex-direction: column; gap: 8px; padding: 10px; }
-  .tools { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .tools { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
   .tools button { min-width: 0; font-size: 22px; line-height: 1; padding: 10px; }
   #remote { position: fixed; left: 0; right: 0; bottom: 0; z-index: 4;
             background: var(--panel); border-top: 1px solid var(--border);
@@ -95,10 +95,10 @@ document.documentElement.dataset.theme =
      the remote sheet, and the bottom bars (anchored to the footer panel). */
   .close { position: absolute; top: 6px; right: 8px; min-width: 0; z-index: 3;
            font-size: 14px; padding: 4px 8px; }
-  #zone-types { display: flex; align-items: center; gap: 8px; padding: 6px 10px;
-                background: var(--panel); border-bottom: 1px solid var(--border); }
-  #zone-hint { min-width: 0; font-size: 12px; color: var(--muted); overflow: hidden;
-               white-space: nowrap; text-overflow: ellipsis; }
+  #zone-types, #spot-hint { display: flex; align-items: center; gap: 8px; padding: 6px 10px;
+                            background: var(--panel); border-bottom: 1px solid var(--border); }
+  #zone-hint, #spot-hint span { min-width: 0; font-size: 12px; color: var(--muted); overflow: hidden;
+                                white-space: nowrap; text-overflow: ellipsis; }
   #settings { position: fixed; inset: 0; z-index: 6; display: flex;
               flex-direction: column; padding: 14px; background: var(--bg); }
   #settings h2 { margin: 0 0 14px; font-size: 18px; }
@@ -147,6 +147,7 @@ document.documentElement.dataset.theme =
     <div class="tools">
       <button id="remote-open" title="Remote control">🕹️</button>
       <button id="locate" title="Locate robot">📢</button>
+      <button id="spot-here" title="Spot cleaning around the robot">🧽</button>
       <button id="settings-open" title="Settings">⚙️</button>
     </div>
     <select id="command"></select>
@@ -209,13 +210,20 @@ document.documentElement.dataset.theme =
          title="Zone name (at most 31 UTF-8 bytes — the robot's buffer)" disabled>
   <span id="zone-hint">drag to draw · tap to select · right-drag or two fingers to pan</span>
 </div>
+<div id="spot-hint" hidden>
+  <span>Drag the square to place it · ▶️ starts the point spot clean</span>
+</div>
 <main><canvas id="map" width="1" height="1"></canvas></main>
 <footer>
   <div id="bar-main" class="bar">
     <button id="charge" class="big" title="Charge">⚡</button>
-    <button id="spot" class="big" title="Spot cleaning">🎯</button>
+    <button id="spot" class="big" title="Placed spot cleaning">🎯</button>
     <button id="primary" class="big" title="Unknown state" disabled>▶️</button>
     <button id="zones" class="big" title="Zone cleaning">🗺️</button>
+  </div>
+  <div id="bar-spot" class="bar" hidden>
+    <button id="spot-play" class="big" title="Start spot cleaning">▶️</button>
+    <button id="spot-exit" class="close" title="Leave spot placement">❌</button>
   </div>
   <div id="bar-zones" class="bar" hidden>
     <button id="backup-export" class="big" title="Export map">📤</button>
@@ -316,6 +324,13 @@ const ZONE_MIN_MM = 100;   // the server refuses anything thinner than two 50 mm
 const ZONE_NAME_BYTES = 31;      // the robot's name/tag buffer is 32 bytes incl. NUL
 let zoneCleanIds = new Set();    // the zones the running clean was started with
 let zoneCleanSeen = false;       // the robot has been observed cleaning since then
+// Placed spot cleaning (doc/PLAN.md §20.8): a temporary 1.5 m square the operator
+// drags on the map; ▶️ sends its centre as an inline `mode:"point"` region. The robot
+// plans the route and drives there itself (live 2026-10-12, FIELD_NOTES.md).
+const SPOT_SIDE_MM = 1_500;      // FUNC_MAP.md §4/§6.3: the robot's spot square
+let spotView = false;
+let spotCenter = null;           // [x, y] mm
+let spotDrag = null;             // {from:[x,y], original:[x,y]} while dragging
 
 async function json(url, options) {
   const response = await fetch(url, options);
@@ -405,9 +420,14 @@ async function init() {
     button.addEventListener("contextmenu", (event) => event.preventDefault());
   }
   chargeButton.onclick = () => sendCommand("findCharge");
-  // Spot clean: rc 3001 makes the robot clean a 1.5 m square around wherever it
-  // stands right now (FUNC_MAP §6.3) — no travel first, so no position argument.
-  document.getElementById("spot").onclick = () => sendControl(3001);
+  // Spot cleaning around the robot: rc 3001 makes it clean a 1.5 m square around
+  // wherever it stands right now (FUNC_MAP §6.3) — no travel first, so no argument.
+  document.getElementById("spot-here").onclick = () => sendControl(3001);
+  // Placed spot cleaning: 🎯 enters a placement mode with a draggable 1.5 m square;
+  // ▶️ sends the square's centre as an inline point target (doc/PLAN.md §20.8).
+  document.getElementById("spot").onclick = openSpot;
+  document.getElementById("spot-exit").onclick = closeSpot;
+  document.getElementById("spot-play").onclick = startSpotClean;
   primaryButton.onclick = () => {
     if (primaryButton.dataset.command) sendCommand(primaryButton.dataset.command);
   };
@@ -817,6 +837,75 @@ function holdStop(sendZero) {
   if (sendZero && wasHolding) sendControl(4001);
 }
 
+// ── Placed spot cleaning ──────────────────────────────────────────────────────────
+
+/// 🎯: enter the placement mode. The square starts at the robot's pose (or the dock,
+/// or the middle of the map) and the operator drags it; it never resizes.
+function openSpot() {
+  zonesView = false;
+  zonesEdit = false;
+  zoneResize = false;
+  zoneDraft = null;
+  spotView = true;
+  if (!spotCenter) spotCenter = defaultSpotCentre();
+  menu.classList.remove("open");
+  menuToggle.textContent = "☰";
+  updateBars();
+  draw();
+}
+
+function closeSpot() {
+  spotView = false;
+  spotDrag = null;
+  updateBars();
+  draw();
+}
+
+function defaultSpotCentre() {
+  if (robotStatus && Array.isArray(robotStatus.pos) && robotStatus.pos.length >= 2) {
+    return [Number(robotStatus.pos[0]) || 0, Number(robotStatus.pos[1]) || 0];
+  }
+  if (base && base.dock_x != null && base.dock_y != null) {
+    return [base.dock_x, base.dock_y];
+  }
+  if (base) {
+    return [
+      Math.round(((base.x_min || 0) + ((base.width || 0) * (base.resolution || 0.05)) / 2) * 1000),
+      Math.round(((base.y_min || 0) + ((base.height || 0) * (base.resolution || 0.05)) / 2) * 1000),
+    ];
+  }
+  return [0, 0];
+}
+
+function spotVertices() {
+  const [x, y] = spotCenter;
+  const half = SPOT_SIDE_MM / 2;
+  return [
+    [x - half, y - half],
+    [x + half, y - half],
+    [x + half, y + half],
+    [x - half, y + half],
+  ];
+}
+
+/// ▶️: send the square's centre as an inline `mode:"point"` region. The server queues
+/// the `21023` + `appointClean` pair; the robot plans the route itself.
+async function startSpotClean() {
+  if (!spotCenter) return;
+  try {
+    const reply = await api("/spot", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ x: spotCenter[0], y: spotCenter[1] }),
+    });
+    statusLine.textContent = "spot clean started at " + spotCenter.join(", ") + " mm";
+    sentLine.textContent = "queued #" + reply.queued + " and #" + reply.start;
+    closeSpot();
+  } catch (error) {
+    statusLine.textContent = "spot clean refused: " + error.message;
+  }
+}
+
 // ── Zones ────────────────────────────────────────────────────────────────────────
 
 function zonesUrl(suffix = "") {
@@ -824,6 +913,8 @@ function zonesUrl(suffix = "") {
 }
 
 async function openZones() {
+  spotView = false;
+  spotDrag = null;
   zonesView = true;
   zonesEdit = false;
   zoneSelected.clear();
@@ -869,10 +960,18 @@ async function loadZones(refresh) {
 }
 
 function updateBars() {
-  document.getElementById("bar-main").hidden = zonesView;
+  document.getElementById("bar-main").hidden = zonesView || spotView;
   document.getElementById("bar-zones").hidden = !zonesView || zonesEdit;
   document.getElementById("bar-edit").hidden = !zonesEdit;
+  document.getElementById("bar-spot").hidden = !spotView;
+  document.getElementById("spot-hint").hidden = !spotView;
   document.getElementById("zone-types").hidden = !zonesEdit;
+  // The server refuses a second job; mirror that on the button for a cleaner click.
+  const spotPlay = document.getElementById("spot-play");
+  const cleaning = ["sweep", "FindChargerAndWash", "DustCenterWorking"]
+    .includes((robotStatus || {}).mode);
+  spotPlay.disabled = cleaning;
+  spotPlay.title = cleaning ? "A clean is running" : "Start spot cleaning";
   const play = document.getElementById("zone-play");
   play.disabled = zoneState.cleaning || zoneSelected.size === 0;
   play.title = zoneState.cleaning
@@ -1266,6 +1365,7 @@ function draw() {
     robotMarker(px, py, phi);
   }
   drawZones();
+  drawSpot();
 }
 
 function drawZones() {
@@ -1344,6 +1444,33 @@ function drawZones() {
     ctx.fillStyle = "rgb(240,240,245)";
     ctx.fillText(text, x, y);
   }
+}
+
+/// The placed spot square, in screen space so its outline and centre marker keep
+/// their size at any zoom. Same colour as a deep-clean zone (doc/PLAN.md §20.8).
+function drawSpot() {
+  if (!spotView || !spotCenter || !base || !view) return;
+  const dpr = window.devicePixelRatio || 1;
+  const screen = spotVertices().map(([x, y]) => mapToScreen(...toPixel(x / 1000, y / 1000)));
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.beginPath();
+  screen.forEach(([x, y], index) => (index ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
+  ctx.closePath();
+  ctx.fillStyle = TYPE_COLOURS.deep;
+  ctx.fill();
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = ink("rgb(255,255,255)", "rgb(12,18,34)");
+  ctx.stroke();
+  // The centre marker is where the robot is sent; a dot reads better than a cross
+  // over the map's own cells.
+  const [cx, cy] = mapToScreen(...toPixel(spotCenter[0] / 1000, spotCenter[1] / 1000));
+  ctx.beginPath();
+  ctx.arc(cx, cy, 4, 0, Math.PI * 2);
+  ctx.fillStyle = ink("rgb(255,255,255)", "rgb(12,18,34)");
+  ctx.fill();
+  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = ink("rgb(12,18,34)", "rgb(255,255,255)");
+  ctx.stroke();
 }
 
 /// Resize mode's affordance: a dashed outline around the selected zone and the eight
@@ -1569,6 +1696,7 @@ function pointerPair() {
 }
 
 function startPinch() {
+  spotDrag = null;
   const [a, b] = pointerPair();
   const rect = canvas.getBoundingClientRect();
   pinch = {
@@ -1612,14 +1740,25 @@ function pinchMove() {
 canvas.addEventListener("pointerdown", (event) => {
   if (event.pointerType === "mouse" && event.button !== 0 && event.button !== 2) return;
   canvas.setPointerCapture(event.pointerId);
-  // In the zone editor a left drag draws or moves; right drag and (elsewhere) left
-  // drag pan. Two fingers always pinch/pan.
-  const pan = event.button === 2 || !(zonesView && zonesEdit);
+  // In the zone editor a left drag draws or moves; in spot placement a left press
+  // inside the square moves it, while a press outside pans; right drag and (elsewhere)
+  // left drag pan. Two fingers always pinch/pan.
+  const pan = event.button === 2 || !((zonesView && zonesEdit) || spotView);
   pointers.set(event.pointerId, { x: event.clientX, y: event.clientY, moved: 0, pan });
   canvas.classList.add("panning");
   if (pointers.size === 2) {
     startPinch();
   } else if (pointers.size === 1 && !pan) {
+    if (spotView) {
+      const point = pointerMillimetres(event);
+      if (!point) return;
+      if (spotCenter && pointInPolygon(point, spotVertices())) {
+        spotDrag = { from: point, original: [spotCenter[0], spotCenter[1]] };
+      } else {
+        pointers.get(event.pointerId).pan = true;
+      }
+      return;
+    }
     const point = pointerMillimetres(event);
     if (!point) return;
     // In resize mode the corners are deliberately not grabbable — that is the whole
@@ -1663,6 +1802,16 @@ canvas.addEventListener("pointerdown", (event) => {
 canvas.addEventListener("pointermove", (event) => {
   const point = pointers.get(event.pointerId);
   if (!point || !view) return;
+  if (spotDrag) {
+    const mapped = pointerMillimetres(event);
+    if (!mapped) return;
+    spotCenter = [
+      spotDrag.original[0] + mapped[0] - spotDrag.from[0],
+      spotDrag.original[1] + mapped[1] - spotDrag.from[1],
+    ];
+    draw();
+    return;
+  }
   if (zoneDrag) {
     const mapped = pointerMillimetres(event);
     if (!mapped) return;
@@ -1712,6 +1861,10 @@ function endPointer(event) {
   pointers.delete(event.pointerId);
   if (pointers.size < 2) pinch = null;
   if (pointers.size === 0) canvas.classList.remove("panning");
+  if (spotDrag) {
+    spotDrag = null;
+    return;
+  }
   if (zoneDrag) {
     zoneDrag = null;
     return;

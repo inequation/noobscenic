@@ -871,6 +871,77 @@ async fn zone_edits_and_zone_cleans_are_blocked_while_a_clean_runs() {
     cleanup(state).await;
 }
 
+#[tokio::test]
+async fn placed_spot_clean_queues_the_point_pair() {
+    let (state, app) = setup("spot-clean").await;
+    adopt(&state).await;
+
+    // Offline: the device cannot take a job.
+    let (status, _) = call_json(
+        &app,
+        post_json("/api/robot/Foo/spot", &json!({"x": -4000, "y": 1000})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+
+    let (tx, _rx) = tokio::sync::mpsc::channel(4);
+    state.registry.register(
+        SN,
+        noobscenic::channel_b::registry::handle("b-test", "127.0.0.1:1", tx),
+    );
+    store_status(&state, "fullcharge").await;
+
+    // Both coordinates are required; a partial request queues nothing.
+    let (status, _) = call_json(&app, post_json("/api/robot/Foo/spot", &json!({"x": -4000}))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    let (status, queued) = call_json(
+        &app,
+        post_json("/api/robot/Foo/spot", &json!({"x": -4000, "y": 1000})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(queued["queued"].is_i64());
+    assert!(queued["start"].is_i64());
+
+    let rows: Vec<(i64, i64, String)> =
+        sqlx::query_as("SELECT id, info_type, payload FROM commands ORDER BY id DESC LIMIT 2")
+            .fetch_all(&state.db)
+            .await
+            .expect("the queued pair");
+    let start = &rows[0];
+    let selection = &rows[1];
+    assert_eq!(start.1, 21005, "the start goes last");
+    assert_eq!(start.2, "{\"mode\":\"appointClean\"}");
+    assert_eq!(selection.1, 21023);
+    let payload: Value = serde_json::from_str(&selection.2).expect("payload JSON");
+    assert_eq!(
+        payload["cleanId"],
+        json!([-3]),
+        "stored forbid zones stay active"
+    );
+    let region = &payload["extraAreas"][0];
+    assert_eq!(region["mode"], "point");
+    assert_eq!(region["active"], "normal");
+    assert_eq!(
+        region["vertexs"],
+        json!([[-4750, 250], [-3250, 250], [-3250, 1750], [-4750, 1750]]),
+        "the 1.5 m spot square around the requested centre"
+    );
+    assert!(selection.0 < start.0, "insertion order is preserved");
+
+    // A clean in progress refuses a second job.
+    store_status(&state, "sweep").await;
+    let (status, _) = call_json(
+        &app,
+        post_json("/api/robot/Foo/spot", &json!({"x": 0, "y": 0})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+
+    cleanup(state).await;
+}
+
 /// The robot's clean-record upload: multipart, with a binary `.bkmap` part and the
 /// md5 the robot computed for it (BACKUP_MAP.md §A5).
 fn multipart_upload(blob: &[u8], declared_md5: &str) -> (String, Vec<u8>) {

@@ -74,6 +74,7 @@ pub fn router(state: AppState) -> Router {
             post(crate::web::zones_refresh),
         )
         .route("/api/robot/{id}/zones/clean", post(crate::web::zones_clean))
+        .route("/api/robot/{id}/spot", post(crate::web::spot_clean))
         .route("/api/robot/{id}/settings", put(crate::web::settings))
         .route("/api/robot/{id}/config", post(crate::web::config))
         .route("/api/robot/{id}/goods", get(crate::web::goods))
