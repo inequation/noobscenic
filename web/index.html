@@ -1210,21 +1210,6 @@ function zoneAt(point) {
   return -1;
 }
 
-/// The zone vertex under the pointer, in canvas pixels (fat targets for fingers).
-function vertexAt(event) {
-  if (zoneEditIndex < 0 || !view) return -1;
-  const rect = canvas.getBoundingClientRect();
-  const x = event.clientX - rect.left;
-  const y = event.clientY - rect.top;
-  const vertices = zoneState.zones[zoneEditIndex].vertexs || [];
-  for (let index = 0; index < vertices.length; index++) {
-    const [col, row] = toPixel(vertices[index][0] / 1000, vertices[index][1] / 1000);
-    const [px, py] = mapToScreen(col, row);
-    if (Math.hypot(px - x, py - y) < 14) return index;
-  }
-  return -1;
-}
-
 /// The selected zone's axis-aligned bounds, in millimetres.
 function zoneBounds(zone) {
   const xs = zone.vertexs.map(([x]) => x);
@@ -1410,11 +1395,6 @@ function drawZones() {
         ]);
       }
     }
-    if (zonesEdit && index === zoneEditIndex) {
-      const radius = 7 / view.scale;
-      ctx.fillStyle = ink("rgb(255,255,255)", "rgb(12,18,34)");
-      points.forEach(([x, y]) => ctx.fillRect(x - radius / 2, y - radius / 2, radius, radius));
-    }
   });
   if (zoneDraft) {
     const [x1, y1] = toPixel(zoneDraft.from[0] / 1000, zoneDraft.from[1] / 1000);
@@ -1483,9 +1463,12 @@ function drawSpot() {
   ctx.stroke();
 }
 
-/// Resize mode's affordance: a dashed outline around the selected zone and the eight
-/// sector labels. Drawn in screen space (so the labels keep their size at any zoom),
-/// which is why it comes last — it leaves the transform in CSS pixels.
+/// Resize mode's affordance: a dashed outline around the selected zone, drawn in
+/// screen space so it keeps its width at any zoom — which is why it comes last, it
+/// leaves the transform in CSS pixels. The 3×3 sector partition behind
+/// `resizeRegion` is deliberately unlabelled (operator decision, 2026-10-12), and
+/// with corner-grabbing gone the vertices get no handles either: a side or corner
+/// drag is the one way to resize.
 function drawResizeGuides(zone) {
   const bounds = zoneBounds(zone);
   const [x0, y0] = mapToScreen(...toPixel(bounds.minX / 1000, bounds.minY / 1000));
@@ -1501,25 +1484,6 @@ function drawResizeGuides(zone) {
   ctx.strokeStyle = "rgba(255,255,255,0.85)";
   ctx.strokeRect(left - 16, top - 16, right - left + 32, bottom - top + 32);
   ctx.setLineDash([]);
-  ctx.fillStyle = "rgba(255,255,255,0.9)";
-  ctx.font = "11px system-ui, sans-serif";
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  const cx = (left + right) / 2;
-  const cy = (top + bottom) / 2;
-  const pad = 23;
-  for (const [text, x, y] of [
-    ["NW", left - pad, top - pad],
-    ["N", cx, top - pad],
-    ["NE", right + pad, top - pad],
-    ["W", left - pad, cy],
-    ["E", right + pad, cy],
-    ["SW", left - pad, bottom + pad],
-    ["S", cx, bottom + pad],
-    ["SE", right + pad, bottom + pad],
-  ]) {
-    ctx.fillText(text, x, y);
-  }
 }
 
 // The same frame mapping tools/map2png.py validated: cell centres sit half a
@@ -1771,35 +1735,31 @@ canvas.addEventListener("pointerdown", (event) => {
     }
     const point = pointerMillimetres(event);
     if (!point) return;
-    // In resize mode the corners are deliberately not grabbable — that is the whole
-    // point — so a press outside the selected rectangle always resizes instead of
-    // creating a new zone, and vertex handles are ignored.
-    const vertex = zoneResize ? -1 : vertexAt(event);
-    if (vertex >= 0) {
-      zoneDrag = { kind: "vertex", vertex, snapshot: false };
-    } else {
-      const hit = zoneAt(point);
-      if (zoneResize && zoneEditIndex >= 0 && hit !== zoneEditIndex) {
-        if (hit >= 0) {
-          // A different zone under the finger: select it rather than resizing.
-          selectZone(hit);
-          draw();
-          return;
-        }
-        const region = resizeRegion(point, zoneBounds(zoneState.zones[zoneEditIndex]));
-        if (region) {
-          zoneDrag = { kind: "resize", region, snapshot: false };
-          return;
-        }
-      }
+    // In resize mode a press on the selected rectangle moves it, a press on another
+    // zone selects that one, and anything outside falls into the 3×3 sectors and
+    // resizes — a new zone is never drawn by accident. Corners are not grabbable:
+    // the sector drag is the only resize, so no vertex handles are drawn or hit.
+    const hit = zoneAt(point);
+    if (zoneResize && zoneEditIndex >= 0 && hit !== zoneEditIndex) {
       if (hit >= 0) {
+        // A different zone under the finger: select it rather than resizing.
         selectZone(hit);
-        zoneDrag = { kind: "move", index: hit, from: point, original: JSON.parse(JSON.stringify(zoneState.zones[hit].vertexs)), snapshot: false };
-      } else {
-        zoneDraft = { from: point, to: point };
+        draw();
+        return;
       }
-      updateBars();
+      const region = resizeRegion(point, zoneBounds(zoneState.zones[zoneEditIndex]));
+      if (region) {
+        zoneDrag = { kind: "resize", region, snapshot: false };
+        return;
+      }
     }
+    if (hit >= 0) {
+      selectZone(hit);
+      zoneDrag = { kind: "move", index: hit, from: point, original: JSON.parse(JSON.stringify(zoneState.zones[hit].vertexs)), snapshot: false };
+    } else {
+      zoneDraft = { from: point, to: point };
+    }
+    updateBars();
   } else if (pointers.size === 1 && zonesView && !zonesEdit) {
     // Picker mode: a drag pans, but a tap (no movement) toggles the zone under it.
     const point = pointerMillimetres(event);
@@ -1830,9 +1790,7 @@ canvas.addEventListener("pointermove", (event) => {
       snapshotZones();
       zoneDrag.snapshot = true;
     }
-    if (zoneDrag.kind === "vertex") {
-      zoneState.zones[zoneEditIndex].vertexs[zoneDrag.vertex] = [x, y];
-    } else if (zoneDrag.kind === "resize") {
+    if (zoneDrag.kind === "resize") {
       resizeZone(zoneState.zones[zoneEditIndex], zoneDrag.region, [x, y]);
     } else {
       const dx = x - zoneDrag.from[0];
