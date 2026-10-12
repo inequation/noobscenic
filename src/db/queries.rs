@@ -937,13 +937,16 @@ pub async fn record_zone_write(pool: &SqlitePool, sn: &str, payload: &str) -> Re
 /// The newest `21015` goods reply — the consumables counters, in seconds of
 /// cleaning time (FUNC_STATUS.md §7). One row per device, read with `GET
 /// /api/robot/{id}/goods`.
-pub async fn load_goods(pool: &SqlitePool, sn: &str) -> Result<Option<(Option<i64>, Option<String>)>> {
-    Ok(sqlx::query_as(
-        "SELECT read_ms, payload FROM goods WHERE sn = ?",
+pub async fn load_goods(
+    pool: &SqlitePool,
+    sn: &str,
+) -> Result<Option<(Option<i64>, Option<String>)>> {
+    Ok(
+        sqlx::query_as("SELECT read_ms, payload FROM goods WHERE sn = ?")
+            .bind(sn)
+            .fetch_optional(pool)
+            .await?,
     )
-    .bind(sn)
-    .fetch_optional(pool)
-    .await?)
 }
 
 /// A goods reply that just came back from the robot (`21015`): it replaces the

@@ -376,7 +376,14 @@ async fn config_writes_only_the_allowlisted_settings() {
         .expect("count");
     assert_eq!(count, 3, "refused settings must not queue");
 
-    let (status, _) = call_json(&app, post_json("/api/robot/nobody/config", &json!({"info": 21024, "cmd": "setVolume", "value": 1}))).await;
+    let (status, _) = call_json(
+        &app,
+        post_json(
+            "/api/robot/nobody/config",
+            &json!({"info": 21024, "cmd": "setVolume", "value": 1}),
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     cleanup(state).await;
 }
@@ -393,9 +400,20 @@ async fn goods_reads_caches_resets_and_needs_the_device_to_refresh() {
     assert!(value["parts"].is_null());
 
     // Both the refresh and the reset ask the robot, so the device must be online.
-    let (status, _) = call_json(&app, post_form(&format!("/api/robot/{ID}/goods/refresh"), "")).await;
+    let (status, _) = call_json(
+        &app,
+        post_form(&format!("/api/robot/{ID}/goods/refresh"), ""),
+    )
+    .await;
     assert_eq!(status, StatusCode::CONFLICT);
-    let (status, _) = call_json(&app, post_json(&format!("/api/robot/{ID}/goods/reset"), &json!({"part": "mainBrush"}))).await;
+    let (status, _) = call_json(
+        &app,
+        post_json(
+            &format!("/api/robot/{ID}/goods/reset"),
+            &json!({"part": "mainBrush"}),
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::CONFLICT);
 
     let (tx, _rx) = tokio::sync::mpsc::channel(4);
@@ -404,20 +422,42 @@ async fn goods_reads_caches_resets_and_needs_the_device_to_refresh() {
         noobscenic::channel_b::registry::handle("b-test", "127.0.0.1:1", tx),
     );
 
-    let (status, _) = call_json(&app, post_form(&format!("/api/robot/{ID}/goods/refresh"), "")).await;
+    let (status, _) = call_json(
+        &app,
+        post_form(&format!("/api/robot/{ID}/goods/refresh"), ""),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(last_command(&state).await.0, 21015);
 
-    let (status, _) = call_json(&app, post_json(&format!("/api/robot/{ID}/goods/reset"), &json!({"part": "mainBrush"}))).await;
+    let (status, _) = call_json(
+        &app,
+        post_json(
+            &format!("/api/robot/{ID}/goods/reset"),
+            &json!({"part": "mainBrush"}),
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     let (info_type, payload) = last_command(&state).await;
     assert_eq!(info_type, 21016);
     assert_eq!(payload, "{\"mainBrush\":0}");
 
     // `motor` and `dustBox` cannot be reset; only the six writable parts pass.
-    let (status, _) = call_json(&app, post_json(&format!("/api/robot/{ID}/goods/reset"), &json!({"part": "motor"}))).await;
+    let (status, _) = call_json(
+        &app,
+        post_json(
+            &format!("/api/robot/{ID}/goods/reset"),
+            &json!({"part": "motor"}),
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    let (status, _) = call_json(&app, post_json(&format!("/api/robot/{ID}/goods/reset"), &json!({}))).await;
+    let (status, _) = call_json(
+        &app,
+        post_json(&format!("/api/robot/{ID}/goods/reset"), &json!({})),
+    )
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 
     // The robot's `21015` reply lands through `cleanPack/response` and is cached.
@@ -609,8 +649,11 @@ async fn the_control_endpoint_also_carries_locate_and_mute() {
     // one-shot: all four ride the same realtime path as steering
     // (FUNC_COMMANDS §6.2/§6.3, FUNC_MAP §6.3).
     for code in [3010, 3011, 3022, 3001] {
-        let (status, value) =
-            call_json(&app, post_form("/api/robot/Foo/control", &format!("code={code}"))).await;
+        let (status, value) = call_json(
+            &app,
+            post_form("/api/robot/Foo/control", &format!("code={code}")),
+        )
+        .await;
         assert_eq!(status, StatusCode::OK, "code {code}");
         assert_eq!(value["code"], code);
         let frame = rx.try_recv().expect("a frame was written");
@@ -1390,7 +1433,10 @@ async fn the_path_poller_retires_an_unacked_fetch_instead_of_wedging() {
         .fetch_one(&state.db)
         .await
         .expect("count");
-    assert_eq!(count, 1, "a fresh in-flight request still holds the poller off");
+    assert_eq!(
+        count, 1,
+        "a fresh in-flight request still holds the poller off"
+    );
 
     // Backdated past the poller's stale threshold, the next pass retires it and
     // queues a replacement instead of skipping forever.

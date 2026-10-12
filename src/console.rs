@@ -24,7 +24,8 @@ commands:
 /// The `events` verb needs the history it lists; the lean build keeps two rows per
 /// device and compiles the verb out.
 #[cfg(feature = "event-history")]
-const HELP_EVENTS: &str = "  events [<sn>] [n]                   newest n semantic messages (default 20)\n";
+const HELP_EVENTS: &str =
+    "  events [<sn>] [n]                   newest n semantic messages (default 20)\n";
 const HELP_MID: &str = "\
   map <sn>                            newest map: dims, origin, dock, areas
   path <sn> [<path_id>]               assembled clean path summary

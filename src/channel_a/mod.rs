@@ -20,12 +20,12 @@ use std::net::SocketAddr;
 use axum::Router;
 #[cfg(any(feature = "debug-trace", feature = "debug-raw"))]
 use axum::body::Body;
-use axum::extract::{Request, State};
 #[cfg(any(feature = "debug-trace", feature = "debug-raw"))]
 use axum::extract::ConnectInfo;
-use axum::http::{StatusCode, header};
+use axum::extract::{Request, State};
 #[cfg(any(feature = "debug-trace", feature = "debug-raw"))]
 use axum::http::HeaderMap;
+use axum::http::{StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
@@ -82,10 +82,7 @@ pub fn router(state: AppState) -> Router {
             "/api/robot/{id}/goods/refresh",
             post(crate::web::goods_refresh),
         )
-        .route(
-            "/api/robot/{id}/goods/reset",
-            post(crate::web::goods_reset),
-        )
+        .route("/api/robot/{id}/goods/reset", post(crate::web::goods_reset))
         .route(
             "/api/robot/{id}/backup",
             get(crate::web::backup_export).post(crate::web::backup_import),

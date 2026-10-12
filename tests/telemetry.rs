@@ -192,12 +192,11 @@ async fn events_keep_only_the_newest_status_and_bind_rows() {
         "the newest status wins: {}",
         status.1
     );
-    let binds: Vec<String> = sqlx::query_scalar(
-        "SELECT endpoint FROM events WHERE sn = 'TELE' AND info_type IS NULL",
-    )
-    .fetch_all(&state.db)
-    .await
-    .expect("bind rows");
+    let binds: Vec<String> =
+        sqlx::query_scalar("SELECT endpoint FROM events WHERE sn = 'TELE' AND info_type IS NULL")
+            .fetch_all(&state.db)
+            .await
+            .expect("bind rows");
     assert_eq!(binds, vec!["//cleanPack/unbinding"], "the newest bind wins");
     let count: i64 = sqlx::query_scalar("SELECT count(1) FROM events WHERE sn = 'TELE'")
         .fetch_one(&state.db)

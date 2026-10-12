@@ -380,7 +380,16 @@ pub async fn goods_reset(
     let Some(part) = body.get("part").and_then(Value::as_str) else {
         return bad_request("missing part: the consumable to reset");
     };
-    if !["battery", "filter", "mainBrush", "sideBrush", "sensors", "mop"].contains(&part) {
+    if ![
+        "battery",
+        "filter",
+        "mainBrush",
+        "sideBrush",
+        "sensors",
+        "mop",
+    ]
+    .contains(&part)
+    {
         return bad_request("unknown consumable");
     }
     let mut object = serde_json::Map::new();
