@@ -1009,13 +1009,16 @@ bytes — the toggles remove ~588 KiB (6.7%) before any work on the embedded pag
 gzip question above stays open; re-measure with `cargo bloat` before trimming deps.
 
 **ARM/RT-AC68U (2026-10-12):** the Phase 10 cross-builds (`doc/ROUTER_BUILD.md`) are
-3,239,024 bytes for the `router` profile with `--no-default-features --features
-console`, 6,751,152 bytes for the same features on the plain release profile,
-6,493,864 bytes for `--no-default-features`, and 6,829,104 bytes for the full
+3,226,176 bytes for the `router` profile with `--no-default-features --features
+console`, 6,721,016 bytes for the same features on the plain release profile,
+6,464,744 bytes for `--no-default-features`, and 6,829,168 bytes for the full
 default build. That is the second pass: fat LTO, one codegen unit, `-Oz` and
 dropping `tracing-subscriber`'s `env-filter` feature (regex-automata/regex-syntax)
 removed 42–46%; `cargo bloat` attribution and the remaining options are in
 `doc/ROUTER_BUILD.md`.
+
+The `cli-ux` split (§21) saves a further 13–30 KB on the
+`--no-default-features` builds.
 
 ---
 
@@ -1427,16 +1430,17 @@ path is live-verified; the UI flow itself still needs an operator-gated live run
 
 ## 21. Build-time feature toggles
 
-The debugging surfaces and the operator console are Cargo features. All three are in
-`default`, so `cargo build` / `cargo run` / `cargo install` produce exactly the server
-described above; the flags exist so a lean box (§18) can leave a surface out of the
-binary entirely.
+The debugging surfaces, the operator console and the CLI's comfort features are Cargo
+features. All four are in `default`, so `cargo build` / `cargo run` / `cargo install`
+produce exactly the server described above; the flags exist so a lean box (§18) can
+leave a surface out of the binary entirely.
 
 | Feature | Kind | What it gates |
 |---|---|---|
 | `debug-trace` | debug | the wire tap's JSONL sink (`wire-*.jsonl`), the `trace_ref` file references it produces, and the record-building sites that feed it |
 | `debug-raw` | debug | the verbatim raw sink (`traces/raw/…`) |
 | `console` | advanced control | the stdin/stdout operator console (§12), the one-shot CLI verbs (`devices`, `device`, `events`, `map`, `path`, `send`, `commands`) and the experiment verbs (`send-full`, `style`, `pongs`) |
+| `cli-ux` | comfort | clap's colour and typo suggestions; help, usage and error context stay in either way. The router build's flags (§15 Phase 10) leave it out — measured 13 KB on that binary |
 
 The console is a control surface, not a debug feature: it is grouped separately here
 and in the README, and it can be built with or without the trace sinks.
@@ -1448,6 +1452,9 @@ and in the README, and it can be built with or without the trace sinks.
 | `--features debug-trace` | JSONL only | `file#seq` | `serve` / `migrate` |
 | `--features debug-raw` | raw only | `#seq` | `serve` / `migrate` |
 | `--features console` | none | NULL | full |
+
+`cli-ux` is orthogonal to the table: it is in `default` and out of every
+`--no-default-features` build.
 
 Semantics when a feature is compiled out:
 
@@ -1463,7 +1470,7 @@ Semantics when a feature is compiled out:
   no per-request body copy for tracing and no per-frame trace `Vec`.
 * Without `console` the process has no stdin loop and no state/queue/send
   subcommands; Ctrl-C is the shutdown path. The web UI and the HTTP API are not
-  affected by any of the three features.
+  affected by any of these features.
 
 Verification is the feature-combination test matrix: default, `--no-default-features`,
 each feature alone, and `debug-trace,debug-raw`. Default runs keep the existing

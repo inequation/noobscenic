@@ -6,20 +6,25 @@ license = "MIT"
 
 [features]
 # All on by default: a plain build is the full server (doc/PLAN.md §21).
-default = ["debug-trace", "debug-raw", "console"]
+default = ["debug-trace", "debug-raw", "console", "cli-ux"]
 # Debug surfaces: the JSONL timeline and the verbatim raw byte sink.
 debug-trace = []
 debug-raw = []
 # An advanced control surface, not a debug feature: the stdin console and the
 # one-shot CLI verbs.
 console = []
+# Colour and typo suggestions for the interactive CLI. The router build
+# (doc/ROUTER_BUILD.md) leaves it out because its flag set is
+# `--no-default-features --features console`; help, usage and error context stay
+# in either way.
+cli-ux = ["clap/color", "clap/suggestions"]
 
 [dependencies]
 aes = "0.9.3"
 axum = "0.8.9"
 base64 = "0.23.1"
 chrono = "0.4.45"
-clap = { version = "4.6.6", features = ["derive"] }
+clap = { version = "4.6.6", default-features = false, features = ["std", "help", "usage", "error-context", "derive"] }
 lz4_flex = "0.14.0"
 md-5 = "0.11.0"
 rand = "0.10.2"

@@ -120,7 +120,7 @@ on this kernel. With abort a panic never enters the unwinder. Do **not** set
 `RUST_BACKTRACE=1` on the router: a captured backtrace calls those stubs.
 
 `lto = "fat"`, `codegen-units = 1` and `opt-level = "z"` are the 2026-10-12 size
-pass: 6.03 MB → 3.24 MB on the deployment build, with the artifact checks below
+pass: 6.03 MB → 3.23 MB on the deployment build, with the artifact checks below
 re-run afterwards. `-Oz` also reaches the bundled SQLite C code, because cc-rs
 follows the profile's optimization level. The workload is I/O-bound, so the
 codegen quality given up here does not matter.
@@ -135,15 +135,17 @@ All four configurations cross-build (`cargo zigbuild`, zig 0.17.0):
 
 | build | bytes |
 |---|---|
-| `--profile router --no-default-features --features console` | 3,239,024 |
-| `--release --no-default-features --features console` | 6,751,152 |
-| `--release --no-default-features` | 6,493,864 |
-| `--release` (full server) | 6,829,104 |
+| `--profile router --no-default-features --features console` | 3,226,176 |
+| `--release --no-default-features --features console` | 6,721,016 |
+| `--release --no-default-features` | 6,464,744 |
+| `--release` (full server) | 6,829,168 |
 
-After the size pass: the router profile adds fat LTO, one codegen unit and `-Oz`,
-and every build dropped `tracing-subscriber`'s `env-filter` feature. That alone
-removed ~0.5 MB from the plain `--release` builds (it was pulling in
-`regex-syntax`, `regex-automata` and `matchers`). The filter is now
+After the size pass: the router profile adds fat LTO, one codegen unit and `-Oz`;
+every build dropped `tracing-subscriber`'s `env-filter` feature (~0.5 MB from the
+plain `--release` builds, which were pulling in `regex-syntax`, `regex-automata`
+and `matchers`); and the `--no-default-features` builds leave out the new
+`cli-ux` feature (clap's colour and typo suggestions — 30 KB on plain release,
+13 KB on the router binary). The filter is now
 `tracing_subscriber::filter::Targets` with a small parser in `src/main.rs`:
 levels, `target=level` and bare targets still work; regex targets no longer do.
 
@@ -205,14 +207,15 @@ FTS3/FTS5/RTREE), `noobscenic` 19.9%, `std` 12.7%, `sqlx_sqlite` 8.3%,
 Options, roughly in order of payoff per unit of risk:
 
 * **Done:** fat LTO + one codegen unit + `-Oz` (−42% measured) and dropping
-  `env-filter` (−0.27 MB on the router build, −0.5 MB on plain `--release`).
-* **clap** (`clap_builder` alone 232 KB, plus `anstream`/`anstyle`/
-  `terminal_size`): it parses the five global flags and the `serve`/`migrate`
-  subcommands as well as the console verbs, so it cannot simply be gated away
-  when `console` is on. Cheapest first step is `default-features = false` with
-  only `derive`/`std`/`help`/`usage` (drops colour, suggestions and terminal
-  detection); hand-rolling the whole parser saves the full ~250–300 KB but costs
-  error-message quality and needs its own tests.
+  `env-filter` (−0.27 MB on the router build, −0.5 MB on plain `--release`), plus
+  the router-only `cli-ux` slim (−13 KB here, −30 KB on plain release).
+* **clap** (`clap_builder` alone 232 KB): the cheap half is done — `cli-ux` is in
+  `default` and out of every `--no-default-features` build, so the router flags
+  keep help/usage/error context but drop `color`/`suggestions` and their
+  `anstream`/`strsim` chain. The remaining ~200 KB needs hand-rolling the five
+  global flags and `serve`/`migrate` (plus the console verbs, or moving them to
+  their own feature so a router build can leave clap out entirely); that costs
+  help/error-message quality and interface churn.
 * **sqlx → rusqlite** (~540 KB of `sqlx_sqlite`/`sqlx_core`, plus `url`/`idna`/ICU
   data): pros — smaller, no async pool machinery around a synchronous C library,
   fewer crates. Cons — rusqlite is blocking, so the pool becomes
