@@ -860,12 +860,12 @@ run settled the same-room half — an inline `extraAreas` area region cleaned in
 and a `mode:"point"` region drove to its target and spot-cleaned briefly — and a
 short cross-label hop also reached its target within ~6 cm with no `-2605`; a longer
 cross-room point target is still untested (§20.3, FIELD_NOTES.md). The "more" menu is the one remaining
-item. The instant spot clean (rc 3001 around the robot, §20.2) moved to the drawer as
-🧽; the bar's 🎯 is placed spot cleaning (§20.8) — a draggable 1.5 m temporary square
-whose centre goes out as an inline `mode:"point"` region followed by `appointClean`.
-It reuses the live-verified same-room point path (§20.3) but this UI flow has not been
-run live yet; it makes noise, so the operator gates it. Map backup export/restore is
-in too (§20.6): one staged slot is
+item. The instant spot clean stays the bar's 🎯 (rc 3001 around the robot, §20.2),
+and the zone-cleaning view gained a placed spot cleaning 🎯 (§20.8) — a draggable
+1.5 m temporary square whose centre goes out as an inline `mode:"point"` region
+followed by `appointClean`. It reuses the live-verified same-room point path (§20.3)
+but this UI flow has not been run live yet; it makes noise, so the operator gates it.
+Map backup export/restore is in too (§20.6): one staged slot is
 exported as an `NBMP` container and imported back for a `21025` restore, verified live
 end to end — the robot fetched the blob from us, md5-ok, installed it and pushed the
 follow-up `20002` 0.7 s later; a wrong md5 fails with `code:-3` and leaves the map
@@ -1391,11 +1391,12 @@ followed by `21005 {"mode":"appointClean"}`. Stored forbid zones ride along as `
 so no-go areas stay active.
 
 The square is 1.5 m — the size the firmware itself builds for its point regions
-(FUNC_MAP.md §4/§6.3) — and its centre is the coordinate the robot is sent to. The UI
-is a 🎯 mode: the button shows a temporary square in the deep-clean colour, initially
-at the robot's pose (or the dock, or the map centre), the operator drags it anywhere
-on the map, and ▶️ queues the pair. The square never enters the robot's stored zone
-list; it exists only for the one job. A short cross-label hop has been verified live
+(FUNC_MAP.md §4/§6.3) — and its centre is the coordinate the robot is sent to. The
+zone-cleaning view's 🎯 opens the mode: it shows a temporary square in the deep-clean
+colour, initially at the robot's pose (or the dock, or the map centre), the operator
+drags it anywhere on the map, and ▶️ queues the pair. The main bar's 🎯 stays the
+instant spot clean from §20.2. The square never enters the robot's stored zone list;
+it exists only for the one job. A short cross-label hop has been verified live
 (0.265 m across the boundary, reached within ~6 cm, §20.5); longer cross-room point
 targets are still untested.
 

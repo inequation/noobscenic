@@ -75,7 +75,7 @@ document.documentElement.dataset.theme =
           transform: translateX(-100%); transition: transform 150ms ease; }
   #menu.open { transform: none; }
   #menu .drawer { display: flex; flex-direction: column; gap: 8px; padding: 10px; }
-  .tools { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+  .tools { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
   .tools button { min-width: 0; font-size: 22px; line-height: 1; padding: 10px; }
   #remote { position: fixed; left: 0; right: 0; bottom: 0; z-index: 4;
             background: var(--panel); border-top: 1px solid var(--border);
@@ -147,7 +147,6 @@ document.documentElement.dataset.theme =
     <div class="tools">
       <button id="remote-open" title="Remote control">🕹️</button>
       <button id="locate" title="Locate robot">📢</button>
-      <button id="spot-here" title="Spot cleaning around the robot">🧽</button>
       <button id="settings-open" title="Settings">⚙️</button>
     </div>
     <select id="command"></select>
@@ -217,7 +216,7 @@ document.documentElement.dataset.theme =
 <footer>
   <div id="bar-main" class="bar">
     <button id="charge" class="big" title="Charge">⚡</button>
-    <button id="spot" class="big" title="Placed spot cleaning">🎯</button>
+    <button id="spot" class="big" title="Spot cleaning">🎯</button>
     <button id="primary" class="big" title="Unknown state" disabled>▶️</button>
     <button id="zones" class="big" title="Zone cleaning">🗺️</button>
   </div>
@@ -228,6 +227,7 @@ document.documentElement.dataset.theme =
   <div id="bar-zones" class="bar" hidden>
     <button id="backup-export" class="big" title="Export map">📤</button>
     <button id="backup-import" class="big" title="Import map">📥</button>
+    <button id="spot-place" class="big" title="Placed spot cleaning">🎯</button>
     <button id="zone-play" class="big" title="Clean selected">▶️</button>
     <button id="zone-edit" class="big" title="Edit zones">✏️</button>
     <button id="zone-exit" class="close" title="Leave zones">❌</button>
@@ -420,13 +420,13 @@ async function init() {
     button.addEventListener("contextmenu", (event) => event.preventDefault());
   }
   chargeButton.onclick = () => sendCommand("findCharge");
-  // Spot cleaning around the robot: rc 3001 makes it clean a 1.5 m square around
-  // wherever it stands right now (FUNC_MAP §6.3) — no travel first, so no argument.
-  document.getElementById("spot-here").onclick = () => sendControl(3001);
-  // Placed spot cleaning: 🎯 enters a placement mode with a draggable 1.5 m square;
-  // ▶️ sends the square's centre as an inline point target (doc/PLAN.md §20.8).
-  document.getElementById("spot").onclick = openSpot;
-  document.getElementById("spot-exit").onclick = closeSpot;
+  // Spot cleaning: rc 3001 makes it clean a 1.5 m square around wherever it stands
+  // right now (FUNC_MAP §6.3) — no travel first, so no position argument.
+  document.getElementById("spot").onclick = () => sendControl(3001);
+  // Placed spot cleaning lives in the zone-cleaning view (doc/PLAN.md §20.8): its 🎯
+  // opens a placement mode, ▶️ sends the square's centre as an inline point target.
+  document.getElementById("spot-place").onclick = openSpot;
+  document.getElementById("spot-exit").onclick = () => closeSpot(true);
   document.getElementById("spot-play").onclick = startSpotClean;
   primaryButton.onclick = () => {
     if (primaryButton.dataset.command) sendCommand(primaryButton.dataset.command);
@@ -839,8 +839,9 @@ function holdStop(sendZero) {
 
 // ── Placed spot cleaning ──────────────────────────────────────────────────────────
 
-/// 🎯: enter the placement mode. The square starts at the robot's pose (or the dock,
-/// or the middle of the map) and the operator drags it; it never resizes.
+/// The zone view's 🎯: enter the placement mode. The square starts at the robot's
+/// pose (or the dock, or the middle of the map) and the operator drags it; it never
+/// resizes.
 function openSpot() {
   zonesView = false;
   zonesEdit = false;
@@ -848,15 +849,19 @@ function openSpot() {
   zoneDraft = null;
   spotView = true;
   if (!spotCenter) spotCenter = defaultSpotCentre();
-  menu.classList.remove("open");
-  menuToggle.textContent = "☰";
   updateBars();
   draw();
 }
 
-function closeSpot() {
+/// Leave the placement mode. `returnToZones` is the ❌ path — ▶️ goes back to the
+/// map so the operator can watch the job.
+function closeSpot(returnToZones = false) {
   spotView = false;
   spotDrag = null;
+  if (returnToZones) {
+    zonesView = true;
+    zonesEdit = false;
+  }
   updateBars();
   draw();
 }
@@ -966,6 +971,11 @@ function updateBars() {
   document.getElementById("bar-spot").hidden = !spotView;
   document.getElementById("spot-hint").hidden = !spotView;
   document.getElementById("zone-types").hidden = !zonesEdit;
+  // The placed-spot entry sits in the zone picker; a running clean blocks it the
+  // same way the picker's own play button is blocked.
+  const spotPlace = document.getElementById("spot-place");
+  spotPlace.disabled = zoneState.cleaning;
+  spotPlace.title = zoneState.cleaning ? "A clean is running" : "Placed spot cleaning";
   // The server refuses a second job; mirror that on the button for a cleaner click.
   const spotPlay = document.getElementById("spot-play");
   const cleaning = ["sweep", "FindChargerAndWash", "DustCenterWorking"]
