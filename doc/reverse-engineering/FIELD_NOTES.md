@@ -369,9 +369,14 @@ result is unambiguous.
   `cleanArea` stayed 0, so the counter is not a useful measure for the short point job;
   the trajectory and `cleanTime` are the evidence.
 
-Both runs were inside the dock's label (`0x01`). The decisive cross-room point test
-(park at the label boundary, target a point in the other label) has not been run yet;
-it needs the operator to position the robot. Traces: `wire-2026-10-12.jsonl`.
+Both of those runs were inside the dock's label (`0x01`). The decisive cross-room
+point test was run later the same day: the robot was parked at (2512,−51) in the east
+room's label (`0x02`), and a point target at (2280,−180) — 0.265 m west/south across
+the label boundary, in `0x01` — produced `subMode:"point"`. The robot travelled to
+(2337,−162), about 6 cm from the target, with **no `-2605`**, then `backcharge` and
+docked at (−5395,272). Point mode therefore crosses the label boundary on this short
+hop; a longer cross-room point target is still untested. Traces:
+`wire-2026-10-12.jsonl`.
 
 ## Manual driving from the dock: the first command is a back-out (2026-10-10, [field])
 
