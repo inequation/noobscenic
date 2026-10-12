@@ -135,10 +135,10 @@ All four configurations cross-build (`cargo zigbuild`, zig 0.17.0):
 
 | build | bytes |
 |---|---|
-| `--profile router --no-default-features --features console` | 3,226,176 |
-| `--release --no-default-features --features console` | 6,721,016 |
-| `--release --no-default-features` | 6,464,744 |
-| `--release` (full server) | 6,829,168 |
+| `--profile router --no-default-features --features console` | 3,232,224 |
+| `--release --no-default-features --features console` | 6,969,592 |
+| `--release --no-default-features` | 6,721,936 |
+| `--release` (full server) | 7,006,056 |
 
 After the size pass: the router profile adds fat LTO, one codegen unit and `-Oz`;
 every build dropped `tracing-subscriber`'s `env-filter` feature (~0.5 MB from the
@@ -148,6 +148,9 @@ and `matchers`); and the `--no-default-features` builds leave out the new
 13 KB on the router binary). The filter is now
 `tracing_subscriber::filter::Targets` with a small parser in `src/main.rs`:
 levels, `target=level` and bare targets still work; regex targets no longer do.
+These move with new query shapes: the same day's event-history work added
+180–260 KB to the plain `--release` builds (sqlx's generic query code duplicates
+across codegen units without LTO) but only ~6 KB to the LTO router build.
 
 The artifact (checked with the `llvm-tools` component):
 
@@ -236,6 +239,30 @@ Options, roughly in order of payoff per unit of risk:
   cargo/rustc feature, and it makes panics print nothing at all — no message, no
   location, no backtrace.
 * **Linker:** `-Wl,--icf=all` is worth trying for a percent or two.
+
+## RAM, not file size
+
+File size is a poor RAM proxy: `.text`/`.rodata` are demand-paged in from the USB
+stick, and the writable static footprint is small — ~21 KB `.bss` plus ~84 KB
+`.data`/`.data.rel.ro` in the size-first build. The RAM that matters is allocated
+at runtime:
+
+* **SQLite**: the default pool is two connections (`database.max_connections`),
+  each with a 1 MiB page cache (`PRAGMA cache_size = -1000`), so the engine's
+  cache stays around 2 MiB instead of the 2 MiB-per-connection × 5-connection
+  default (~10 MiB). `PRAGMA journal_size_limit = 4194304` caps the `-wal` file
+  after a checkpoint so it cannot grow between checkpoints on the stick.
+* **Transient buffers**: `gateway.max_frame_bytes` (8 MiB) is an upper bound, not
+  a reservation — the channel-B decoder grows its buffer as bytes arrive and
+  errors past the cap. A `/api/robot/{id}/map` fetch materialises the grid plus
+  its base64 and JSON (~130 KB for the current 318×169 map) for the duration of
+  that request; the UI's ~1.5 s poll is the much smaller summary.
+* **Threads**: tokio uses the core count (two here); stacks are virtual until
+  touched.
+
+Measure it on the device: `grep VmRSS /proc/$(pidof noobscenic)/status` and
+`free`. Expect a few tens of MB, dominated by SQLite and the allocator rather
+than by the executable.
 
 ## Deploying from the USB stick
 

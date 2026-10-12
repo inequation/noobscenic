@@ -20,11 +20,18 @@ pub async fn connect(url: &str, max_connections: u32) -> Result<SqlitePool> {
         std::fs::create_dir_all(&parent)?;
     }
 
+    // RAM is the constraint on the router, not disk (doc/ROUTER_BUILD.md):
+    // SQLite defaults to a 2 MiB page cache per connection, so 1 MiB per
+    // connection with the two-connection default stays bounded, and the `-wal`
+    // file on the USB stick is capped after checkpoint instead of growing
+    // between them.
     let options = SqliteConnectOptions::from_str(url)?
         .create_if_missing(true)
         .journal_mode(SqliteJournalMode::Wal)
         .foreign_keys(true)
-        .busy_timeout(Duration::from_secs(5));
+        .busy_timeout(Duration::from_secs(5))
+        .pragma("cache_size", "-1000")
+        .pragma("journal_size_limit", "4194304");
 
     let pool = SqlitePoolOptions::new()
         .max_connections(max_connections)
@@ -103,6 +110,16 @@ mod tests {
         let pool = connect(&format!("sqlite://{}", path.display()), 1)
             .await
             .unwrap();
+        let cache: i64 = sqlx::query_scalar("PRAGMA cache_size")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(cache, -1000, "1 MiB page cache per connection");
+        let limit: i64 = sqlx::query_scalar("PRAGMA journal_size_limit")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(limit, 4 * 1024 * 1024, "WAL capped after checkpoint");
         sqlx::query("INSERT INTO devices (sn, bind_state, first_seen_ms, last_seen_ms) VALUES (?, 'unbound', ?, ?)")
             .bind("TESTSN")
             .bind(now_ms())

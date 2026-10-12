@@ -48,6 +48,8 @@ impl Default for Config {
 pub struct Database {
     /// Defaults to `sqlite://<data_dir>/noobscenic.db`.
     pub url: Option<String>,
+    /// Each connection allocates its own page cache; two is plenty here and
+    /// keeps the pool's RAM bounded (doc/ROUTER_BUILD.md).
     pub max_connections: u32,
 }
 
@@ -55,7 +57,7 @@ impl Default for Database {
     fn default() -> Self {
         Database {
             url: None,
-            max_connections: 5,
+            max_connections: 2,
         }
     }
 }
@@ -386,7 +388,7 @@ mod tests {
         // The exact shape printed in doc/PLAN.md §6.
         let text = r#"{
           "data_dir": "./var",
-          "database": { "url": "sqlite://./var/noobscenic.db", "max_connections": 5 },
+          "database": { "url": "sqlite://./var/noobscenic.db", "max_connections": 2 },
           "http":    { "bind": "0.0.0.0:8080", "tls": null },
           "gateway": { "bind": "0.0.0.0:8081", "advertise": null,
                        "ping_timeout_secs": 120, "max_frame_bytes": 8388608,
@@ -402,6 +404,7 @@ mod tests {
                                  "retain_days": 14, "redact_secrets": false } }
         }"#;
         let config: Config = serde_json::from_str(text).expect("documented example must parse");
+        assert_eq!(config.database.max_connections, 2);
         assert_eq!(config.gateway.ping_timeout_secs, 120);
         assert!(config.logging.wire.format.jsonl() && config.logging.wire.format.raw());
     }

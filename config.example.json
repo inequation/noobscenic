@@ -1,6 +1,6 @@
 {
   "data_dir": "./var",
-  "database": { "url": null, "max_connections": 5 },
+  "database": { "url": null, "max_connections": 2 },
 
   "http":    { "bind": "0.0.0.0:8080", "tls": null },
   "gateway": { "bind": "0.0.0.0:8081",

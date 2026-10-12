@@ -190,7 +190,7 @@ soup beyond that.
 ```json
 {
   "data_dir": "./var",
-  "database": { "url": "sqlite://./var/noobscenic.db", "max_connections": 5 },
+  "database": { "url": "sqlite://./var/noobscenic.db", "max_connections": 2 },
 
   "http":    { "bind": "0.0.0.0:8080", "tls": null },
   "gateway": { "bind": "0.0.0.0:8081",
@@ -241,9 +241,12 @@ soup beyond that.
 ## 7. Persistence (SQLite via sqlx)
 
 Opened with `SqliteConnectOptions`: `create_if_missing(true)`, `journal_mode(Wal)`,
-`foreign_keys(true)`, `busy_timeout(5s)`. Timestamps are `INTEGER` epoch millis
-(server clock; the device's own `ts`/`createtime` are kept verbatim as text next to
-them, because the robot's clock is not trustworthy before it syncs).
+`foreign_keys(true)`, `busy_timeout(5s)`, plus `cache_size(-1000)` (1 MiB per
+connection) and `journal_size_limit(4 MiB)`; the default pool is two connections,
+which bounds the engine's RAM on the router (`doc/ROUTER_BUILD.md`). Timestamps
+are `INTEGER` epoch millis (server clock; the device's own `ts`/`createtime` are
+kept verbatim as text next to them, because the robot's clock is not trustworthy
+before it syncs).
 
 ```sql
 -- 0001_init.sql (sketch)
