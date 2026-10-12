@@ -1281,11 +1281,12 @@ both ACKed "ok" but ran `subMode:"area"` instead of smart; the destination was n
 reached, so the old area target is unknown, and the smart path is not confirmed on this
 unit. Live 2026-10-12: a small same-room inline `extraAreas` region cleaned in place,
 and `mode:"point"` drove to the requested coordinates and spot-cleaned — same-room
-inline targets work for both kinds (§20.3, FIELD_NOTES.md). Still open: cross-room
-*point* targeting (the next operator-gated probe) and the `segmentId` → smart path.
-Until then the picker should warn that cross-room area cleans are not supported or
-verified rather than claim a settled room mask. FIELD_NOTES.md,
-RE_REQUEST_ZONE_CLEAN_ROOM.md.
+inline targets work for both kinds (§20.3, FIELD_NOTES.md). A short cross-label point
+hop (0.265 m across the boundary) reached its target within ~6 cm with no `-2605`, so
+point mode crosses labels at least at short range; longer cross-room targets and the
+`segmentId` → smart path are still open. Until then the picker should warn that
+cross-room *area* cleans are not supported or verified rather than claim a settled
+room mask. FIELD_NOTES.md, RE_REQUEST_ZONE_CLEAN_ROOM.md.
 
 Names are editable in the editor's strip and auto-assigned as `Zone <n>` for new
 rectangles. The 31-byte `name`/`tag` and 30-byte `mode` limits from FUNC_MAP §4 are
