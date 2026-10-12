@@ -43,7 +43,7 @@ pub async fn drain_once(state: &AppState) {
     let ttl_ms = state.config.gateway.command_ttl_secs as i64 * 1000;
     match queries::expire_commands(&state.db, now_ms() - ttl_ms).await {
         Ok(0) => {}
-        Ok(expired) => tracing::info!(expired, "command queue: expired stale pending commands"),
+        Ok(expired) => tracing::info!(expired, "command queue: expired stale commands"),
         Err(error) => tracing::error!(%error, "command queue: could not expire stale commands"),
     }
 

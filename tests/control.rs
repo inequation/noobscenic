@@ -272,6 +272,36 @@ async fn a_stale_pending_command_expires_instead_of_firing() {
 }
 
 #[tokio::test]
+async fn a_sent_command_whose_ack_never_came_expires() {
+    let (addr, state, server) = gateway("ttl-sent").await;
+    let (mut sock, mut decoder) = connect(addr).await;
+
+    let id = enqueue(&state, 21011, "{\"startPos\":0,\"mask\":0}").await;
+    noobscenic::commands::drain_once(&state).await;
+    let _ = read_frames(&mut sock, &mut decoder, 1).await;
+
+    // The ACK never arrives (a server restart or a dropped reply). A `sent` row must
+    // not stay live forever: a stale 21011 wedges the path poller.
+    let old = noobscenic::db::now_ms() - 400_000;
+    sqlx::query("UPDATE commands SET state = 'sent', sent_ms = ?, created_ms = ? WHERE id = ?")
+        .bind(old)
+        .bind(old)
+        .bind(id)
+        .execute(&state.db)
+        .await
+        .expect("backdate the sent row");
+
+    noobscenic::commands::drain_once(&state).await;
+
+    let (row_state, _, _, _) = command_row(&state, id).await;
+    assert_eq!(row_state, "expired");
+
+    drop(decoder);
+    server.abort();
+    cleanup(state).await;
+}
+
+#[tokio::test]
 async fn a_response_acks_the_newest_sent_command_and_a_mismatch_acks_nothing() {
     let (addr, state, server) = gateway("ack").await;
     let (mut sock, mut decoder) = connect(addr).await;

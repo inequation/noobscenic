@@ -50,6 +50,12 @@ const WATCHER_TTL_MS: i64 = 5_000;
 /// The presence-gated path poller's cadence while someone is watching.
 const PATH_POLL_INTERVAL: Duration = Duration::from_secs(5);
 
+/// How long one `21011` fetch may sit pending/sent before the path poller retires it
+/// and tries again. Three poll intervals is generous for a request the robot normally
+/// acks in ~200 ms; without this, one lost ACK (a server restart mid-flight, a dropped
+/// reply) blocks every later path fetch — the 2026-10-12 stale `sent` row.
+const PATH_REQUEST_STALE_MS: i64 = 15_000;
+
 /// How long after the last control frame the watchdog steps in and leaves manual mode
 /// (doc/PLAN.md §20.4). The robot would wait 30 s of its own accord; a closed tab or a
 /// dead Wi-Fi should not leave it in `rfctrl` that long.
@@ -1254,17 +1260,51 @@ pub async fn poll_paths_once(state: &AppState) {
         {
             continue;
         }
-        match queries::has_active_command(&state.db, &sn, info_type::PATH).await {
-            Ok(false) => {}
-            Ok(true) => continue,
+        // One fetch at a time. A request that has gone unacked for too long is
+        // retired: a lost reply must not wedge every later poll (2026-10-12).
+        match queries::active_command(&state.db, &sn, info_type::PATH).await {
+            Ok(None) => {}
+            Ok(Some((id, sent_ms, created_ms))) => {
+                let since = now_ms() - sent_ms.unwrap_or(created_ms);
+                if since < PATH_REQUEST_STALE_MS {
+                    continue;
+                }
+                match queries::fail_command(&state.db, id, "path poll timed out; no ACK").await {
+                    Ok(()) => tracing::warn!(
+                        sn = %sn,
+                        command_id = id,
+                        stale_ms = since,
+                        "path poller: retired an unacked 21011 request"
+                    ),
+                    Err(error) => {
+                        tracing::error!(%error, sn = %sn, command_id = id,
+                            "path poller: could not retire a stale request");
+                        continue;
+                    }
+                }
+            }
             Err(error) => {
                 tracing::error!(%error, sn = %sn, "path poller: could not check the queue");
                 continue;
             }
         }
+        // A new job has its own path id: the old assembly's next index is meaningless
+        // (and its at-end request is the one the robot failed to answer), so ask the
+        // new path from its start.
+        let current_path = match queries::latest_map_path_id(&state.db, &sn).await {
+            Ok(path_id) => path_id,
+            Err(error) => {
+                tracing::error!(%error, sn = %sn, "path poller: could not read the map path id");
+                continue;
+            }
+        };
         let start_pos = match queries::clean_path_summary(&state.db, &sn, None).await {
-            Ok(Some((_, points_json, _, _, _))) => {
-                crate::path::Assembly::from_json(&points_json).next_index()
+            Ok(Some((stored_id, points_json, _, _, _))) => {
+                if current_path.is_some_and(|current| current != stored_id) {
+                    0
+                } else {
+                    crate::path::Assembly::from_json(&points_json).next_index()
+                }
             }
             Ok(None) => 0,
             Err(error) => {

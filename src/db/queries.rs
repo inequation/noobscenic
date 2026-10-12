@@ -363,13 +363,17 @@ pub async fn insert_command(
     .await?)
 }
 
-/// Expire pending commands older than `cutoff_ms`, so a command enqueued while the
-/// robot was away cannot fire hours later when it reconnects.
+/// Expire commands older than `cutoff_ms`: `pending` rows that never went out, and
+/// `sent` rows whose ACK never came back. Without the latter, a server restart or a
+/// lost reply leaves a row in `sent` forever — and a stale `21011` row blocks the
+/// path poller (2026-10-12).
 pub async fn expire_commands(pool: &SqlitePool, cutoff_ms: i64) -> Result<u64> {
     let result = sqlx::query(
         "UPDATE commands SET state = 'expired', error = 'ttl'
-         WHERE state = 'pending' AND created_ms < ?",
+         WHERE (state = 'pending' AND created_ms < ?)
+            OR (state = 'sent' AND COALESCE(sent_ms, created_ms) < ?)",
     )
+    .bind(cutoff_ms)
     .bind(cutoff_ms)
     .execute(pool)
     .await?;
@@ -672,6 +676,18 @@ pub async fn latest_map_meta(
     .await?)
 }
 
+/// The newest map upload's `path_id` — the robot's current job path. The path poller
+/// compares it with the stored path to notice that a new job has started.
+pub async fn latest_map_path_id(pool: &SqlitePool, sn: &str) -> Result<Option<i64>> {
+    Ok(sqlx::query_scalar(
+        "SELECT path_id FROM map_uploads WHERE sn = ? ORDER BY received_ms DESC LIMIT 1",
+    )
+    .bind(sn)
+    .fetch_optional(pool)
+    .await?
+    .flatten())
+}
+
 /// The newest map with its compressed grid, for `GET /api/robot/{id}/map`.
 #[allow(clippy::type_complexity)]
 pub async fn latest_map_row(
@@ -703,18 +719,23 @@ pub async fn latest_map_row(
     .await?)
 }
 
-/// Is a command of this type already waiting or on its way? The path poller uses
-/// this to keep at most one `21011` request in flight.
-pub async fn has_active_command(pool: &SqlitePool, sn: &str, info_type: i64) -> Result<bool> {
-    let count: i64 = sqlx::query_scalar(
-        "SELECT count(1) FROM commands
-         WHERE sn = ? AND info_type = ? AND state IN ('pending', 'sent')",
+/// The oldest live command of one `infoType` for a device, if any: `(id, sent_ms,
+/// created_ms)`. The path poller uses this to retire a request that has gone
+/// unacked instead of letting it block every later poll.
+pub async fn active_command(
+    pool: &SqlitePool,
+    sn: &str,
+    info_type: i64,
+) -> Result<Option<(i64, Option<i64>, i64)>> {
+    Ok(sqlx::query_as(
+        "SELECT id, sent_ms, created_ms FROM commands
+         WHERE sn = ? AND info_type = ? AND state IN ('pending', 'sent')
+         ORDER BY id LIMIT 1",
     )
     .bind(sn)
     .bind(info_type)
-    .fetch_one(pool)
-    .await?;
-    Ok(count > 0)
+    .fetch_optional(pool)
+    .await?)
 }
 
 /// The newest known zone list (`AreaSetting`) for a device.

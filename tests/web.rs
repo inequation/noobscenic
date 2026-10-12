@@ -1242,6 +1242,166 @@ async fn the_path_poller_fetches_only_while_watched_and_never_while_charging() {
     cleanup(state).await;
 }
 
+#[tokio::test]
+async fn the_path_poller_asks_from_zero_when_the_map_has_a_new_path() {
+    let (state, _app) = setup("poller-newpath").await;
+    adopt(&state).await;
+    let (tx, _rx) = tokio::sync::mpsc::channel(1);
+    state.registry.register(
+        SN,
+        noobscenic::channel_b::registry::handle("b-test", "127.0.0.1:1", tx),
+    );
+    // The stored path belongs to an old job: the old logic would ask from index 1.
+    noobscenic::db::queries::upsert_clean_path(
+        &state.db,
+        SN,
+        42,
+        Some(ID),
+        1,
+        "[[100.0,200.0]]",
+        false,
+        None,
+    )
+    .await
+    .expect("old path row");
+    // The newest map carries a new path id, so the job has restarted.
+    let upload: noobscenic::map::MapUpload = serde_json::from_value(json!({
+        "mapId": 7, "pathId": 43, "width": 10, "height": 10,
+    }))
+    .expect("map upload");
+    noobscenic::db::queries::insert_map_upload(&state.db, SN, &upload, &[], None)
+        .await
+        .expect("map upload row");
+    noobscenic::db::queries::insert_event(
+        &state.db,
+        SN,
+        "A",
+        Some("/cleanPack/uploadEvents"),
+        Some(20001),
+        None,
+        None,
+        Some(ID),
+        None,
+        "{\"mode\":\"sweep\"}",
+        None,
+    )
+    .await
+    .expect("status event");
+
+    state.watchers.touch(SN);
+    noobscenic::web::poll_paths_once(&state).await;
+
+    let payload: String = sqlx::query_scalar(
+        "SELECT payload FROM commands WHERE info_type = 21011 ORDER BY id DESC LIMIT 1",
+    )
+    .fetch_one(&state.db)
+    .await
+    .expect("path command");
+    let payload: Value = serde_json::from_str(&payload).expect("payload JSON");
+    assert_eq!(
+        payload,
+        json!({"startPos": 0, "mask": 0}),
+        "a new map path restarts the fetch at zero"
+    );
+
+    cleanup(state).await;
+}
+
+#[tokio::test]
+async fn the_path_poller_retires_an_unacked_fetch_instead_of_wedging() {
+    let (state, _app) = setup("poller-stale").await;
+    adopt(&state).await;
+    let (tx, _rx) = tokio::sync::mpsc::channel(1);
+    state.registry.register(
+        SN,
+        noobscenic::channel_b::registry::handle("b-test", "127.0.0.1:1", tx),
+    );
+    noobscenic::db::queries::upsert_clean_path(
+        &state.db,
+        SN,
+        42,
+        Some(ID),
+        1,
+        "[[100.0,200.0]]",
+        false,
+        None,
+    )
+    .await
+    .expect("path row");
+    noobscenic::db::queries::insert_event(
+        &state.db,
+        SN,
+        "A",
+        Some("/cleanPack/uploadEvents"),
+        Some(20001),
+        None,
+        None,
+        Some(ID),
+        None,
+        "{\"mode\":\"sweep\"}",
+        None,
+    )
+    .await
+    .expect("status event");
+
+    // A 21011 the server sent but never got an ACK for. Fresh, it keeps the poller
+    // from stacking another request.
+    let stale = noobscenic::db::queries::insert_command(
+        &state.db,
+        SN,
+        21011,
+        "{\"startPos\":1,\"mask\":0}",
+        0,
+    )
+    .await
+    .expect("stale row");
+    let now = noobscenic::db::now_ms();
+    sqlx::query("UPDATE commands SET state = 'sent', sent_ms = ?, created_ms = ? WHERE id = ?")
+        .bind(now)
+        .bind(now)
+        .bind(stale)
+        .execute(&state.db)
+        .await
+        .expect("mark sent");
+
+    state.watchers.touch(SN);
+    noobscenic::web::poll_paths_once(&state).await;
+    let count: i64 = sqlx::query_scalar("SELECT count(1) FROM commands WHERE info_type = 21011")
+        .fetch_one(&state.db)
+        .await
+        .expect("count");
+    assert_eq!(count, 1, "a fresh in-flight request still holds the poller off");
+
+    // Backdated past the poller's stale threshold, the next pass retires it and
+    // queues a replacement instead of skipping forever.
+    sqlx::query("UPDATE commands SET sent_ms = ? WHERE id = ?")
+        .bind(now - 60_000)
+        .bind(stale)
+        .execute(&state.db)
+        .await
+        .expect("backdate");
+    noobscenic::web::poll_paths_once(&state).await;
+
+    let (old_state, old_error): (String, Option<String>) =
+        sqlx::query_as("SELECT state, error FROM commands WHERE id = ?")
+            .bind(stale)
+            .fetch_one(&state.db)
+            .await
+            .expect("old row");
+    assert_eq!(old_state, "failed");
+    assert!(
+        old_error.unwrap_or_default().contains("no ACK"),
+        "the retired row says why"
+    );
+    let count: i64 = sqlx::query_scalar("SELECT count(1) FROM commands WHERE info_type = 21011")
+        .fetch_one(&state.db)
+        .await
+        .expect("count");
+    assert_eq!(count, 2, "a replacement request was queued");
+
+    cleanup(state).await;
+}
+
 /// The catch-all stored the preBind as the raw form body before the phase-6 handler
 /// existed; the recovery turns it into a real `bind_user`.
 async fn store_bind_event(state: &AppState, endpoint: &str, payload: &str) {

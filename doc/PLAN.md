@@ -1088,6 +1088,12 @@ device is online, no `21011` row is already pending or sent, and the last status
 is not a charging one. Closing or hiding the tab stops the heartbeat and, within one
 interval, the path polling — no watcher, no extra traffic.
 
+**Resilience (2026-10-12):** a `21011` sent right before a server restart stayed `sent`
+in the queue forever (the TTL expired only `pending` rows) and blocked every later
+fetch, so the UI silently stopped drawing paths. The poller now retires a `21011` that
+has gone unacked for 15 s, restarts at `startPos:0` when the newest 20002 map carries
+a new `pathId`, and the queue TTL expires stale `sent` rows as well.
+
 **Command catalog** — argument-less actions only, raw names:
 
 | Name | Frame |
