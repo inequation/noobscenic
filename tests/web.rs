@@ -930,6 +930,26 @@ async fn placed_spot_clean_queues_the_point_pair() {
     );
     assert!(selection.0 < start.0, "insertion order is preserved");
 
+    // The Deep toggle switches the region's cover mode to `depth` (FUNC_MAP §4).
+    let (status, _) = call_json(
+        &app,
+        post_json(
+            "/api/robot/Foo/spot",
+            &json!({"x": -4000, "y": 1000, "deep": true}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let deep: String = sqlx::query_scalar(
+        "SELECT payload FROM commands WHERE info_type = 21023 ORDER BY id DESC LIMIT 1",
+    )
+    .fetch_one(&state.db)
+    .await
+    .expect("deep selection");
+    let deep: Value = serde_json::from_str(&deep).expect("payload JSON");
+    assert_eq!(deep["extraAreas"][0]["active"], "depth");
+    assert_eq!(deep["extraAreas"][0]["mode"], "point");
+
     // A clean in progress refuses a second job.
     store_status(&state, "sweep").await;
     let (status, _) = call_json(

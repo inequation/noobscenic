@@ -156,7 +156,9 @@ server sends the square's centre as an inline `mode:"point"` region in `21023` (
 stored no-go zones folded in as `-3`), followed by `21005 {"mode":"appointClean"}`;
 the robot's own clean task plans the route, drives there and spot-cleans. The square
 is never saved to the robot's zone list — it exists only for that one job, which is
-why the UI calls it temporary.
+why the UI calls it temporary. The placement bar's **Deep** toggle switches the
+region's `active` from `normal` to `depth` (cover_mode 1) for the robot's grid-style
+deep pass; the default is the plain single-pass clean.
 
 ## Router build
 

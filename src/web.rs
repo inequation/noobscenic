@@ -954,6 +954,14 @@ pub async fn spot_clean(
         return bad_request("missing x/y: the spot centre in millimetres");
     };
 
+    // `active` is the firmware's cover mode: `normal` is the single-direction pass,
+    // `depth` is the deep clean (FUNC_MAP.md §4). The UI's Deep checkbox picks it;
+    // the default stays the plain spot clean.
+    let cover = if body.get("deep").and_then(Value::as_bool).unwrap_or(false) {
+        "depth"
+    } else {
+        "normal"
+    };
     let half = SPOT_SIDE_MM / 2;
     let region = json!({
         "vertexs": [
@@ -962,7 +970,7 @@ pub async fn spot_clean(
             [x + half, y + half],
             [x - half, y + half],
         ],
-        "active": "normal",
+        "active": cover,
         "mode": "point",
     });
     let selection = json!({"cleanId": [-3], "extraAreas": [region]}).to_string();

@@ -99,6 +99,9 @@ document.documentElement.dataset.theme =
                             background: var(--panel); border-bottom: 1px solid var(--border); }
   #zone-hint, #spot-hint span { min-width: 0; font-size: 12px; color: var(--muted); overflow: hidden;
                                 white-space: nowrap; text-overflow: ellipsis; }
+  #spot-hint label { display: flex; align-items: center; gap: 4px; font-size: 12px;
+                     color: var(--muted); white-space: nowrap; }
+  #spot-hint input { accent-color: var(--accent); }
   #settings { position: fixed; inset: 0; z-index: 6; display: flex;
               flex-direction: column; padding: 14px; background: var(--bg); }
   #settings h2 { margin: 0 0 14px; font-size: 18px; }
@@ -211,6 +214,9 @@ document.documentElement.dataset.theme =
 </div>
 <div id="spot-hint" hidden>
   <span>Drag the square to place it · ▶️ starts the point spot clean</span>
+  <label title="Deep clean: a second, perpendicular pass (grid pattern)">
+    <input type="checkbox" id="spot-deep"> Deep
+  </label>
 </div>
 <main><canvas id="map" width="1" height="1"></canvas></main>
 <footer>
@@ -897,13 +903,15 @@ function spotVertices() {
 /// the `21023` + `appointClean` pair; the robot plans the route itself.
 async function startSpotClean() {
   if (!spotCenter) return;
+  const deep = document.getElementById("spot-deep").checked;
   try {
     const reply = await api("/spot", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ x: spotCenter[0], y: spotCenter[1] }),
+      body: JSON.stringify({ x: spotCenter[0], y: spotCenter[1], deep }),
     });
-    statusLine.textContent = "spot clean started at " + spotCenter.join(", ") + " mm";
+    statusLine.textContent = (deep ? "deep " : "") + "spot clean started at "
+      + spotCenter.join(", ") + " mm";
     sentLine.textContent = "queued #" + reply.queued + " and #" + reply.start;
     closeSpot();
   } catch (error) {

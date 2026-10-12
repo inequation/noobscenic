@@ -866,9 +866,10 @@ menu is the one remaining item. The instant spot clean stays the bar's 🎯 (rc 
 around the robot, §20.2),
 and the zone-cleaning view gained a placed spot cleaning 🎯 (§20.8) — a draggable
 1.5 m temporary square whose centre goes out as an inline `mode:"point"` region
-followed by `appointClean`. It reuses the live-verified same-room point path (§20.3)
-but this UI flow has not been run live yet; it makes noise, so the operator gates it.
-Map backup export/restore is in too (§20.6): one staged slot is
+followed by `appointClean`, with a **Deep** checkbox that switches the region to
+cover_mode `depth`. It reuses the live-verified same-room point path (§20.3) but this
+UI flow has not been run live yet; it makes noise, so the operator gates it. Map
+backup export/restore is in too (§20.6): one staged slot is
 exported as an `NBMP` container and imported back for a `21025` restore, verified live
 end to end — the robot fetched the blob from us, md5-ok, installed it and pushed the
 follow-up `20002` 0.7 s later; a wrong md5 fails with `code:-3` and leaves the map
@@ -1406,9 +1407,12 @@ The square is 1.5 m — the size the firmware itself builds for its point region
 (FUNC_MAP.md §4/§6.3) — and its centre is the coordinate the robot is sent to. The
 zone-cleaning view's 🎯 opens the mode: it shows a temporary square in the deep-clean
 colour, initially at the robot's pose (or the dock, or the map centre), the operator
-drags it anywhere on the map, and ▶️ queues the pair. The main bar's 🎯 stays the
-instant spot clean from §20.2. The square never enters the robot's stored zone list;
-it exists only for the one job. A short cross-label hop and the long cross-room run
+drags it anywhere on the map, and ▶️ queues the pair. The bar's **Deep** checkbox
+switches the region's `active` from `normal` to `depth` (cover_mode 1, FUNC_MAP §4);
+the default is the plain single-pass spot clean, and the grid pattern of the deep
+variant is expected but not yet live-verified. The main bar's 🎯 stays the instant
+spot clean from §20.2. The square never enters the robot's stored zone list; it
+exists only for the one job. A short cross-label hop and the long cross-room run
 have been verified live (a `/spot` target ~10 m away deep in Sypialnia was reached
 and cleaned, §20.5, FIELD_NOTES.md).
 
