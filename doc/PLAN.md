@@ -858,9 +858,12 @@ ran `subMode:"area"` instead of smart (the destination was not reached, so the o
 target is unknown), so the smart path is not confirmed on this unit. The 2026-10-12
 run settled the same-room half — an inline `extraAreas` area region cleaned in place
 and a `mode:"point"` region drove to its target and spot-cleaned briefly — and a
-short cross-label hop also reached its target within ~6 cm with no `-2605`; a longer
-cross-room point target is still untested (§20.3, FIELD_NOTES.md). The "more" menu is the one remaining
-item. The instant spot clean stays the bar's 🎯 (rc 3001 around the robot, §20.2),
+short cross-label hop reached its target within ~6 cm with no `-2605`, and the longer
+cross-room runs completed: a `/spot` target ~10 m away deep in Sypialnia was reached
+and cleaned (`cleanArea` 2, 145 s) and the stored `Sypialnia` area zone also crossed
+the doorway and cleaned, both with no `-2605` (§20.3, FIELD_NOTES.md). The "more"
+menu is the one remaining item. The instant spot clean stays the bar's 🎯 (rc 3001
+around the robot, §20.2),
 and the zone-cleaning view gained a placed spot cleaning 🎯 (§20.8) — a draggable
 1.5 m temporary square whose centre goes out as an inline `mode:"point"` region
 followed by `appointClean`. It reuses the live-verified same-room point path (§20.3)
@@ -1176,8 +1179,10 @@ this table stays as the wire reference for the rest of the menu.
 and cleaned it instead of falling back to whole-home; a small `mode:"point"` region
 produced `subMode:"point"`, drove to (−4090,956) for the (−4000,1000) target, and
 spot-cleaned briefly. A short cross-label hop (0.265 m across the boundary) reached
-the other label within ~6 cm with no `-2605`; a longer cross-room point target is
-still untested (FIELD_NOTES.md).
+the other label within ~6 cm with no `-2605`, and the long cross-room runs passed: a
+`/spot` target ~10 m away deep in Sypialnia was reached and cleaned (`cleanArea` 2,
+145 s), and the stored `Sypialnia` area zone (`cleanId:[6]`) also crossed the doorway
+and cleaned, both with no `-2605` (FIELD_NOTES.md).
 
 ### 20.4 Manual steering (remote control)
 
@@ -1397,12 +1402,12 @@ zone-cleaning view's 🎯 opens the mode: it shows a temporary square in the dee
 colour, initially at the robot's pose (or the dock, or the map centre), the operator
 drags it anywhere on the map, and ▶️ queues the pair. The main bar's 🎯 stays the
 instant spot clean from §20.2. The square never enters the robot's stored zone list;
-it exists only for the one job. A short cross-label hop has been verified live
-(0.265 m across the boundary, reached within ~6 cm, §20.5); longer cross-room point
-targets are still untested.
+it exists only for the one job. A short cross-label hop and the long cross-room run
+have been verified live (a `/spot` target ~10 m away deep in Sypialnia was reached
+and cleaned, §20.5, FIELD_NOTES.md).
 
-**Implemented 2026-10-12:** `POST /api/robot/{id}/spot` and the UI above. The live
-run is pending with the operator.
+**Implemented 2026-10-12:** `POST /api/robot/{id}/spot` and the UI above. The endpoint
+path is live-verified; the UI flow itself still needs an operator-gated live run.
 
 ---
 

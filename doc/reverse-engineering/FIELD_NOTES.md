@@ -369,14 +369,29 @@ result is unambiguous.
   `cleanArea` stayed 0, so the counter is not a useful measure for the short point job;
   the trajectory and `cleanTime` are the evidence.
 
-Both of those runs were inside the dock's label (`0x01`). The decisive cross-room
-point test was run later the same day: the robot was parked at (2512,−51) in the east
-room's label (`0x02`), and a point target at (2280,−180) — 0.265 m west/south across
-the label boundary, in `0x01` — produced `subMode:"point"`. The robot travelled to
-(2337,−162), about 6 cm from the target, with **no `-2605`**, then `backcharge` and
-docked at (−5395,272). Point mode therefore crosses the label boundary on this short
-hop; a longer cross-room point target is still untested. Traces:
-`wire-2026-10-12.jsonl`.
+Both of those runs were inside the dock's label (`0x01`). Three cross-room results
+followed the same day:
+
+* **Short hop.** Parked at (2512,−51) in the east room's label (`0x02`), a point
+  target at (2280,−180) — 0.265 m west/south across the label boundary, in `0x01` —
+  produced `subMode:"point"`. The robot travelled to (2337,−162), about 6 cm from the
+  target, with **no `-2605`**, then `backcharge` and docked at (−5395,272).
+* **Long cross-room transit and clean.** From the dock, `POST /spot` with centre
+  (4800,−1300) deep in Sypialnia (label `0x02`) — a ~10 m route through the corridor
+  and doorway — produced `subMode:"point"`. The robot drove through the doorway into
+  the room, cleaned around the target (`cleanArea` 2, `cleanTime` 145 s) with **no
+  `-2605`**, then returned and docked. This is the go-anywhere point primitive: the
+  robot plans its own route to the requested point and spot-cleans there. (The run
+  overlapped a ~15 s server restart for an unrelated UI fix; the robot was unaffected,
+  only that window of server-side capture is missing.)
+* **Stored-area cross-room clean.** `POST /zones/clean {"ids":[6]}` (the stored
+  `Sypialnia` zone, 2421…7157 × −3159…493) produced `subMode:"area"`; the robot
+  again drove through the doorway into Sypialnia and began cleaning (`cleanTime` 20 s+)
+  before we stopped it to keep the run short, with **no `-2605`**. The earlier
+  cross-room area aborts were therefore a map/doorway-coverage problem, not a hard
+  label rule; the richer post-driving map fixed it for this large stored zone.
+
+Traces: `wire-2026-10-12.jsonl`.
 
 ## Manual driving from the dock: the first command is a back-out (2026-10-10, [field])
 
