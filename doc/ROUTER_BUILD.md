@@ -216,13 +216,19 @@ Options, roughly in order of payoff per unit of risk:
   global flags and `serve`/`migrate` (plus the console verbs, or moving them to
   their own feature so a router build can leave clap out entirely); that costs
   help/error-message quality and interface churn.
-* **sqlx → rusqlite** (~540 KB of `sqlx_sqlite`/`sqlx_core`, plus `url`/`idna`/ICU
-  data): pros — smaller, no async pool machinery around a synchronous C library,
-  fewer crates. Cons — rusqlite is blocking, so the pool becomes
-  `spawn_blocking`/a connection thread; `sqlx::migrate!`'s embedded, tracked
-  migrations have to be redone (`rusqlite_migration` or a tiny table); error and
-  row mapping code grows. The queries live in `src/db/queries.rs`, so the blast
-  radius is bounded, but it is real work.
+* **sqlx → rusqlite** (measured 2026-10-12: net ~185–210 KB, ~6%): a probe pair
+  running the same workload through both stacks (`router` profile, ARM) puts
+  sqlx's wrapper at 367 KB over the bundled SQLite C and rusqlite's at 156 KB,
+  so the saving is far smaller than the crate-level bloat numbers suggest —
+  rusqlite brings back its own wrapper, and libsqlite3-sys 0.38's amalgamation is
+  26 KB larger than 0.37's. Pros — no async pool machinery around a synchronous C
+  library, and the `url`/`idna`/ICU chain goes away. Cons — rusqlite is blocking,
+  so the pool becomes `spawn_blocking`/a connection thread (a few KB more);
+  `sqlx::migrate!`'s embedded, tracked migrations have to be redone
+  (`rusqlite_migration` or a `PRAGMA user_version` check); error and row-mapping
+  code grows. The queries live in `src/db/queries.rs`, so the blast radius is
+  bounded, but a lot of churn for ~6% unless the smaller dependency surface
+  matters on its own.
 * **Build `std` from source** with `-Z build-std=std,panic_abort
   -Z build-std-features=panic_immediate_abort`: drops the gimli/addr2line/object
   backtrace machinery that prebuilt `std` carries even with `panic = "abort"`,
