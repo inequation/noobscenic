@@ -30,14 +30,18 @@ thiserror = "2.0.20"
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time", "fs", "io-util", "io-std"] }
 tracing = "0.1.44"
 tracing-appender = "0.2.5"
-tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+tracing-subscriber = "0.3.23"
 
 [dev-dependencies]
 tower = { version = "0.5.3", default-features = false, features = ["util"] }
 
 # The router build (doc/ROUTER_BUILD.md): a FreshTomato K26ARM kernel has no
 # VFP, and libunwind's ARM register save/restore stubs use it, so a panic must
-# not unwind. panic=abort also drops ~1.2 MB from the binary.
+# not unwind. Size-first codegen: the workload is I/O-bound, and fat LTO with
+# one codegen unit and -Oz take the ARM binary from ~6 MB to ~3.5 MB.
 [profile.router]
 inherits = "release"
 panic = "abort"
+lto = "fat"
+codegen-units = 1
+opt-level = "z"

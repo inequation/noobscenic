@@ -105,7 +105,7 @@ console, not a third socket.
 | HTTP | `axum` + `tower`/`tower-http` | routing, middleware; body captured by our own layer |
 | serialisation | `serde`, `serde_json` | `serde_json::value::RawValue` for verbatim passthrough |
 | database | **`sqlx`** | `runtime-tokio`, `sqlite`, `migrate`; runtime-checked queries |
-| logging | `tracing`, `tracing-subscriber`, `tracing-appender` | `EnvFilter` + rolling file |
+| logging | `tracing`, `tracing-subscriber`, `tracing-appender` | level/target `Targets` filter + rolling file |
 | CLI | `clap` (derive) | `serve`, `migrate`, `devices`, `send`, `trace` |
 | crypto (optional) | `aes` + `cipher` | AES-128-ECB, **padding disabled**, manual 16-byte block loop |
 | base64 | `base64` | `Engine` API |
@@ -183,7 +183,8 @@ tests/
 
 Single JSON file, path from `--config` (default `./config.json`); missing file =
 all defaults. A handful of CLI flags (`--data-dir`, `--http-bind`, `--log-level`,
-`--no-wire-trace`) override it; `RUST_LOG` overrides the log filter. No env-var
+`--no-wire-trace`) override it; `RUST_LOG` overrides the log filter (levels and
+target directives; no regexes). No env-var
 soup beyond that.
 
 ```json
@@ -299,7 +300,7 @@ correction to the cell semantics costs nothing but a re-decode.
 
 Two independent things:
 
-**Application logs** — `tracing` with an `EnvFilter`, to stderr and (if configured) a
+**Application logs** — `tracing` with a level/target filter, to stderr and (if configured) a
 daily-rolled file. Spans carry `sn`, `conn_id`, `channel` so a device's activity can be
 grepped out of a busy log.
 
@@ -711,7 +712,7 @@ took both writes, joined the LAN and dialed the gateway.
 ### Phase 1 — Skeleton
 - [x] Cargo project, module layout, `error.rs`, graceful shutdown on Ctrl-C
 - [x] JSON config load + defaults + CLI overrides
-- [x] `tracing` set-up: stderr + rolling file, `EnvFilter`
+- [x] `tracing` set-up: stderr + rolling file, level/target filter
 - [x] Wire tap: JSONL sink, raw sink, rotation/retention, `seq` counter
 - [x] SQLite pool + pragmas + `0001_init.sql` migration, run at start-up
 - [x] HTTP listener with the catch-all handler and full request/response tapping
@@ -1008,10 +1009,13 @@ bytes — the toggles remove ~588 KiB (6.7%) before any work on the embedded pag
 gzip question above stays open; re-measure with `cargo bloat` before trimming deps.
 
 **ARM/RT-AC68U (2026-10-12):** the Phase 10 cross-builds (`doc/ROUTER_BUILD.md`) are
-6,027,360 bytes for the `router` profile with `--no-default-features --features
-console`, 7,259,848 bytes for the same features on the plain release profile,
-6,986,976 bytes for `--no-default-features`, and 7,323,216 bytes for the full
-default build.
+3,239,024 bytes for the `router` profile with `--no-default-features --features
+console`, 6,751,152 bytes for the same features on the plain release profile,
+6,493,864 bytes for `--no-default-features`, and 6,829,104 bytes for the full
+default build. That is the second pass: fat LTO, one codegen unit, `-Oz` and
+dropping `tracing-subscriber`'s `env-filter` feature (regex-automata/regex-syntax)
+removed 42–46%; `cargo bloat` attribution and the remaining options are in
+`doc/ROUTER_BUILD.md`.
 
 ---
 

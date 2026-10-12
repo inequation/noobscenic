@@ -5,9 +5,10 @@ and the robot talks to it on the LAN, with the binary and all state on a USB sti
 Nothing here needs a toolchain *on* the router.
 
 Status (2026-10-12): the cross-build is verified from a Windows host — all four
-feature combinations build, the artifact is a statically linked soft-float ARMv7
-ELF, and its syscalls have been audited against the router's 2.6.36 kernel. The
-on-router smoke test is still **pending** (see the checklist at the end).
+feature combinations build, the deployment binary is 3.2 MB after the size pass
+below, the artifact is a statically linked soft-float ARMv7 ELF, and its syscalls
+have been audited against the router's 2.6.36 kernel. The on-router smoke test is
+still **pending** (see the checklist at the end).
 
 ## The device
 
@@ -108,12 +109,21 @@ The build prints two harmless linker warnings from rustc's link line
 [profile.router]
 inherits = "release"
 panic = "abort"
+lto = "fat"
+codegen-units = 1
+opt-level = "z"
 ```
 
 `panic = "abort"` is not a size optimization first (though it saves ~1.2 MB):
 libunwind's ARM register-save stubs use VFP, so a panic that unwinds would fault
 on this kernel. With abort a panic never enters the unwinder. Do **not** set
 `RUST_BACKTRACE=1` on the router: a captured backtrace calls those stubs.
+
+`lto = "fat"`, `codegen-units = 1` and `opt-level = "z"` are the 2026-10-12 size
+pass: 6.03 MB → 3.24 MB on the deployment build, with the artifact checks below
+re-run afterwards. `-Oz` also reaches the bundled SQLite C code, because cc-rs
+follows the profile's optimization level. The workload is I/O-bound, so the
+codegen quality given up here does not matter.
 
 `--no-default-features --features console` is the deployment shape: no JSONL/raw
 wire tracing (which would write continuously to the USB stick), but `serve`/
@@ -125,10 +135,17 @@ All four configurations cross-build (`cargo zigbuild`, zig 0.17.0):
 
 | build | bytes |
 |---|---|
-| `--profile router --no-default-features --features console` | 6,027,360 |
-| `--release --no-default-features --features console` | 7,259,848 |
-| `--release --no-default-features` | 6,986,976 |
-| `--release` (full server) | 7,323,216 |
+| `--profile router --no-default-features --features console` | 3,239,024 |
+| `--release --no-default-features --features console` | 6,751,152 |
+| `--release --no-default-features` | 6,493,864 |
+| `--release` (full server) | 6,829,104 |
+
+After the size pass: the router profile adds fat LTO, one codegen unit and `-Oz`,
+and every build dropped `tracing-subscriber`'s `env-filter` feature. That alone
+removed ~0.5 MB from the plain `--release` builds (it was pulling in
+`regex-syntax`, `regex-automata` and `matchers`). The filter is now
+`tracing_subscriber::filter::Targets` with a small parser in `src/main.rs`:
+levels, `target=level` and bare targets still work; regex targets no longer do.
 
 The artifact (checked with the `llvm-tools` component):
 
@@ -168,11 +185,48 @@ $bin = "$(rustc --print sysroot)\lib\rustlib\x86_64-pc-windows-msvc\bin"
     Select-String -Pattern '\bvldr|\bvstr|\bvmov|\bvpush|\bvpop|\bvldmia|\bvstmia|\bvadd|\bvsub'
 ```
 
-The opcode scan is expected to print **six** matches, all in libunwind's ARM
-context save/restore stubs (`vldmia`/`vstmia` of `d0–d15`, `d16–d31`). They come
-straight from Rust's prebuilt `libunwind.a` and no linker flag removes them
-(`panic = "abort"` keeps them only for explicit backtraces). They are not reached
-in normal operation.
+The opcode scan prints the six libunwind stubs (`vldmia`/`vstmia` of `d0–d15`,
+`d16–d31`) **plus** literal-pool bytes that happen to decode as VFP instructions:
+13 matches in the `-Oz` build, of which only six are real code. They come straight
+from Rust's prebuilt `libunwind.a` and no linker flag removes them
+(`panic = "abort"` keeps them only for explicit backtraces); they are not reached
+in normal operation. To tell code from data, check whether anything branches to
+each hit: the six stubs are call targets, the literal pools are not, and their
+surroundings decode as `<unknown>`/`mcr p14` noise.
+
+## Where the remaining bytes are
+
+`cargo bloat` (0.12.1, on a build with `strip = "none"`, since the shipped binary
+has no symbol table) attributed the pre-size-pass `.text` as: C code 27.9%
+(essentially all of `sqlite3.c` — `sqlite3VdbeExec` alone is 47 KB, plus
+FTS3/FTS5/RTREE), `noobscenic` 19.9%, `std` 12.7%, `sqlx_sqlite` 8.3%,
+`clap_builder` 4.4%, `tokio` 3.8%, `regex_*` ~5.5% (now removed), then `hyper`,
+`sqlx_core`, `libsqlite3_sys`, `time`, `axum` and `serde_json` at 1–2% each.
+Options, roughly in order of payoff per unit of risk:
+
+* **Done:** fat LTO + one codegen unit + `-Oz` (−42% measured) and dropping
+  `env-filter` (−0.27 MB on the router build, −0.5 MB on plain `--release`).
+* **clap** (`clap_builder` alone 232 KB, plus `anstream`/`anstyle`/
+  `terminal_size`): it parses the five global flags and the `serve`/`migrate`
+  subcommands as well as the console verbs, so it cannot simply be gated away
+  when `console` is on. Cheapest first step is `default-features = false` with
+  only `derive`/`std`/`help`/`usage` (drops colour, suggestions and terminal
+  detection); hand-rolling the whole parser saves the full ~250–300 KB but costs
+  error-message quality and needs its own tests.
+* **sqlx → rusqlite** (~540 KB of `sqlx_sqlite`/`sqlx_core`, plus `url`/`idna`/ICU
+  data): pros — smaller, no async pool machinery around a synchronous C library,
+  fewer crates. Cons — rusqlite is blocking, so the pool becomes
+  `spawn_blocking`/a connection thread; `sqlx::migrate!`'s embedded, tracked
+  migrations have to be redone (`rusqlite_migration` or a tiny table); error and
+  row mapping code grows. The queries live in `src/db/queries.rs`, so the blast
+  radius is bounded, but it is real work.
+* **Build `std` from source** with `-Z build-std=std,panic_abort
+  -Z build-std-features=panic_immediate_abort`: drops the gimli/addr2line/object
+  backtrace machinery that prebuilt `std` carries even with `panic = "abort"`,
+  ~0.3–0.6 MB. Nightly-only, because rebuilding `std` is an unstable
+  cargo/rustc feature, and it makes panics print nothing at all — no message, no
+  location, no backtrace.
+* **Linker:** `-Wl,--icf=all` is worth trying for a percent or two.
 
 ## Deploying from the USB stick
 

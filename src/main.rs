@@ -5,9 +5,10 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
+use tracing_subscriber::filter::{LevelFilter, Targets};
+use tracing_subscriber::fmt;
 use tracing_subscriber::layer::SubscriberExt as _;
 use tracing_subscriber::util::SubscriberInitExt as _;
-use tracing_subscriber::{EnvFilter, fmt};
 
 use noobscenic::config::{Config, Overrides};
 
@@ -30,7 +31,8 @@ struct Cli {
     #[arg(long, value_name = "ADDR", global = true)]
     http_bind: Option<SocketAddr>,
 
-    /// Log filter, e.g. "debug" or "noobscenic=trace,sqlx=warn". RUST_LOG wins.
+    /// Log filter: a level, `target=level` pairs, or a bare target (trace).
+    /// `RUST_LOG` overrides it; targets match by prefix, not regex.
     #[arg(long, value_name = "LEVEL", global = true)]
     log_level: Option<String>,
 
@@ -188,12 +190,56 @@ async fn run_verb(config: Config, verb: Command) -> noobscenic::error::Result<()
     Ok(())
 }
 
+/// The log filter: `RUST_LOG` if it has a usable directive, else
+/// `logging.level`, else `info`.
+fn log_filter(config: &Config) -> Targets {
+    std::env::var("RUST_LOG")
+        .ok()
+        .and_then(|spec| parse_filter(&spec))
+        .or_else(|| parse_filter(&config.logging.level))
+        .unwrap_or_else(|| Targets::new().with_default(LevelFilter::INFO))
+}
+
+/// Parse an `EnvFilter`-style directive list without the regex machinery:
+/// `debug` (default level), `sqlx=warn` (target), or a bare `sqlx` (trace).
+/// Unlike `EnvFilter`, a target-only list keeps `info` as the default level.
+fn parse_filter(spec: &str) -> Option<Targets> {
+    let mut filter = Targets::new();
+    let mut default = None;
+    let mut parsed = false;
+    for directive in spec.split(',') {
+        let directive = directive.trim();
+        if directive.is_empty() {
+            continue;
+        }
+        match directive.split_once('=') {
+            Some((target, level)) => match level.trim().parse::<LevelFilter>() {
+                Ok(level) if !target.trim().is_empty() => {
+                    filter = filter.with_target(target.trim(), level);
+                    parsed = true;
+                }
+                _ => eprintln!("noobscenic: ignoring log directive {directive:?}"),
+            },
+            None => match directive.parse::<LevelFilter>() {
+                Ok(level) => {
+                    default = Some(level);
+                    parsed = true;
+                }
+                Err(_) => {
+                    filter = filter.with_target(directive, LevelFilter::TRACE);
+                    parsed = true;
+                }
+            },
+        }
+    }
+    parsed.then(|| filter.with_default(default.unwrap_or(LevelFilter::INFO)))
+}
+
 /// stderr always; a daily-rolled file too, unless it is switched off.
 fn init_tracing(
     config: &Config,
 ) -> std::io::Result<Option<tracing_appender::non_blocking::WorkerGuard>> {
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(config.logging.level.clone()));
+    let filter = log_filter(config);
     let stderr = fmt::layer().with_writer(std::io::stderr).with_target(false);
 
     let Some(path) = config.log_file() else {
@@ -222,4 +268,44 @@ fn init_tracing(
         .with(fmt::layer().with_writer(writer).with_ansi(false))
         .init();
     Ok(Some(guard))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tracing::Level;
+
+    #[test]
+    fn level_directive_sets_the_default() {
+        let filter = parse_filter("debug").expect("a level parses");
+        assert!(filter.would_enable("noobscenic::web", &Level::DEBUG));
+        assert!(!filter.would_enable("noobscenic::web", &Level::TRACE));
+    }
+
+    #[test]
+    fn target_directives_match_by_prefix() {
+        let filter = parse_filter("noobscenic=trace,sqlx=warn").expect("targets parse");
+        assert!(filter.would_enable("noobscenic::web", &Level::TRACE));
+        assert!(filter.would_enable("sqlx::query", &Level::WARN));
+        assert!(!filter.would_enable("sqlx::query", &Level::INFO));
+        // No bare level: everything else keeps the info default.
+        assert!(filter.would_enable("tokio", &Level::INFO));
+        assert!(!filter.would_enable("tokio", &Level::DEBUG));
+    }
+
+    #[test]
+    fn bare_target_means_trace() {
+        let filter = parse_filter("sqlx").expect("a bare target parses");
+        assert!(filter.would_enable("sqlx::query", &Level::TRACE));
+        assert!(filter.would_enable("tokio", &Level::INFO));
+    }
+
+    #[test]
+    fn junk_is_ignored_or_rejected() {
+        assert!(parse_filter("").is_none());
+        assert!(parse_filter("  ,  ").is_none());
+        assert!(parse_filter("nonsense=level").is_none());
+        let filter = parse_filter("nonsense=level,info").expect("the valid directive survives");
+        assert!(filter.would_enable("noobscenic", &Level::INFO));
+    }
 }

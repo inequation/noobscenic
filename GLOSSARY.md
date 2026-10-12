@@ -166,4 +166,5 @@ The statically linked ARMv7 soft-float binary for the ASUS RT-AC68U on FreshToma
 (target `armv7-unknown-linux-musleabi`), built from the `router` Cargo profile and
 documented in `doc/ROUTER_BUILD.md`. It carries its own libc (musl) and embeds the
 web page and the migrations, so the USB stick only needs the one executable plus a
-writable data directory.
+writable data directory. The profile is release plus `panic=abort`, fat LTO, one
+codegen unit and `-Oz`, which brings the deployment binary to ~3.2 MB.
