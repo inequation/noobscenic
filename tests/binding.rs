@@ -111,9 +111,9 @@ async fn a_prebind_is_recorded_answered_and_idempotent() {
             .fetch_all(&state.db)
             .await
             .expect("events");
-    #[cfg(feature = "event-history")]
+    #[cfg(feature = "history")]
     assert_eq!(events.len(), 2, "both preBinds must be recorded");
-    #[cfg(not(feature = "event-history"))]
+    #[cfg(not(feature = "history"))]
     assert_eq!(
         events.len(),
         1,

@@ -131,19 +131,38 @@ pub async fn insert_session(
     cookie: &str,
     sig_raw: Option<&str>,
 ) -> Result<bool> {
-    let result = sqlx::query(
+    let mut tx = pool.begin().await?;
+    let id: Option<i64> = sqlx::query_scalar(
         "INSERT INTO sessions (sn, session_key, cookie, sig_raw, created_ms)
          VALUES (?, ?, ?, ?, ?)
-         ON CONFLICT(cookie) DO NOTHING",
+         ON CONFLICT(cookie) DO NOTHING
+         RETURNING id",
     )
     .bind(sn)
     .bind(session_key)
     .bind(cookie)
     .bind(sig_raw)
     .bind(now_ms())
-    .execute(pool)
+    .fetch_optional(&mut *tx)
     .await?;
-    Ok(result.rows_affected() == 1)
+    let Some(id) = id else {
+        tx.rollback().await?;
+        return Ok(false);
+    };
+    // Without `history` only the newest session per device survives: the robot
+    // re-registers on a stale cookie, and older sessions are dead anyway.
+    #[cfg(not(feature = "history"))]
+    {
+        sqlx::query("DELETE FROM sessions WHERE sn = ? AND id <> ?")
+            .bind(sn)
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+    }
+    #[cfg(feature = "history")]
+    let _ = id;
+    tx.commit().await?;
+    Ok(true)
 }
 
 /// The live session a cookie names, as `(sn, created_ms)`.
@@ -186,6 +205,24 @@ pub async fn revoke_session(pool: &SqlitePool, cookie: &str) -> Result<()> {
     Ok(())
 }
 
+/// Without `history`, reduce `sessions` to the newest row per device. Older sessions
+/// are dead once the robot re-registers, and only the latest can be live.
+#[cfg(not(feature = "history"))]
+pub async fn prune_sessions_latest_only(pool: &SqlitePool) -> Result<u64> {
+    let result = sqlx::query(
+        "DELETE FROM sessions
+         WHERE EXISTS (
+             SELECT 1 FROM sessions newer
+             WHERE newer.sn = sessions.sn
+               AND (newer.created_ms > sessions.created_ms
+                    OR (newer.created_ms = sessions.created_ms AND newer.id > sessions.id))
+         )",
+    )
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected())
+}
+
 /// The four endpoint spellings the robot uses for its bind request (with and without
 /// the extra leading slash). Shared by `bind_events` and the history pruning.
 const BIND_ENDPOINTS: [&str; 4] = [
@@ -195,7 +232,7 @@ const BIND_ENDPOINTS: [&str; 4] = [
     "//cleanPack/unbinding",
 ];
 
-#[cfg(not(feature = "event-history"))]
+#[cfg(not(feature = "history"))]
 fn is_bind_endpoint(endpoint: &str) -> bool {
     BIND_ENDPOINTS.contains(&endpoint)
 }
@@ -211,7 +248,7 @@ fn bind_endpoint_list() -> String {
 
 /// Every semantic message that has no dedicated table lands here verbatim.
 ///
-/// With `event-history` off, only the two rows day-to-day operation reads survive:
+/// With `history` off, only the two rows day-to-day operation reads survive:
 /// the newest status (`20001` — the UI and the path poller) and the newest bind/unbind
 /// record (the id recovery) per device. Everything else is dropped before it reaches
 /// the table, and a database written with the feature on is pruned at startup
@@ -230,7 +267,7 @@ pub async fn insert_event(
     payload: &str,
     trace_ref: Option<&str>,
 ) -> Result<()> {
-    #[cfg(not(feature = "event-history"))]
+    #[cfg(not(feature = "history"))]
     {
         let status = info_type == Some(crate::proto::info_type::STATUS);
         if !status && !endpoint.is_some_and(is_bind_endpoint) {
@@ -261,7 +298,7 @@ pub async fn insert_event(
     .fetch_one(&mut *tx)
     .await?;
 
-    #[cfg(not(feature = "event-history"))]
+    #[cfg(not(feature = "history"))]
     {
         if info_type == Some(crate::proto::info_type::STATUS) {
             sqlx::query("DELETE FROM events WHERE sn = ? AND info_type = ? AND id <> ?")
@@ -343,9 +380,9 @@ pub async fn insert_map_upload(
     Ok(())
 }
 
-/// With `event-history` off: reduce `clean_paths` to the newest row per device.
+/// With `history` off: reduce `clean_paths` to the newest row per device.
 /// Idempotent; `db::connect` runs it once per start.
-#[cfg(not(feature = "event-history"))]
+#[cfg(not(feature = "history"))]
 pub async fn prune_clean_paths_latest_only(pool: &SqlitePool) -> Result<u64> {
     let result = sqlx::query(
         "DELETE FROM clean_paths
@@ -413,9 +450,9 @@ pub async fn upsert_clean_path(
     .bind(trace_ref)
     .fetch_one(&mut *tx)
     .await?;
-    // With `event-history` off only the newest path per device survives: every reader
+    // With `history` off only the newest path per device survives: every reader
     // takes the newest row, and the robot keeps the current path itself.
-    #[cfg(not(feature = "event-history"))]
+    #[cfg(not(feature = "history"))]
     {
         sqlx::query("DELETE FROM clean_paths WHERE sn = ? AND id <> ?")
             .bind(sn)
@@ -494,6 +531,7 @@ pub async fn insert_command(
 /// `sent` rows whose ACK never came back. Without the latter, a server restart or a
 /// lost reply leaves a row in `sent` forever — and a stale `21011` row blocks the
 /// path poller (2026-10-12).
+#[cfg(feature = "history")]
 pub async fn expire_commands(pool: &SqlitePool, cutoff_ms: i64) -> Result<u64> {
     let result = sqlx::query(
         "UPDATE commands SET state = 'expired', error = 'ttl'
@@ -505,6 +543,43 @@ pub async fn expire_commands(pool: &SqlitePool, cutoff_ms: i64) -> Result<u64> {
     .execute(pool)
     .await?;
     Ok(result.rows_affected())
+}
+
+/// Without `history` the expired rows are dropped, with one warning each: an expired
+/// command means either that the robot was unreachable or that it never answered.
+#[cfg(not(feature = "history"))]
+pub async fn expire_commands(pool: &SqlitePool, cutoff_ms: i64) -> Result<u64> {
+    let rows: Vec<(i64, String, i64, String, i64, Option<i64>)> = sqlx::query_as(
+        "DELETE FROM commands
+         WHERE (state = 'pending' AND created_ms < ?)
+            OR (state = 'sent' AND COALESCE(sent_ms, created_ms) < ?)
+         RETURNING id, sn, info_type, state, created_ms, sent_ms",
+    )
+    .bind(cutoff_ms)
+    .bind(cutoff_ms)
+    .fetch_all(pool)
+    .await?;
+    let now = now_ms();
+    for (id, sn, info_type, state, created_ms, sent_ms) in &rows {
+        if state == "pending" {
+            tracing::warn!(
+                command_id = id,
+                sn = %sn,
+                info_type,
+                age_ms = now - *created_ms,
+                "command expired before the robot was reachable"
+            );
+        } else {
+            tracing::warn!(
+                command_id = id,
+                sn = %sn,
+                info_type,
+                age_ms = now - sent_ms.unwrap_or(*created_ms),
+                "command expired without an ACK"
+            );
+        }
+    }
+    Ok(rows.len() as u64)
 }
 
 /// Serial numbers with pending work — what the poller checks against the registry.
@@ -550,6 +625,7 @@ pub async fn set_command_trace(pool: &SqlitePool, id: i64, trace_ref: &str) -> R
 }
 
 /// A command that will never be sent (no session key, writer closed, bad payload).
+#[cfg(feature = "history")]
 pub async fn fail_command(pool: &SqlitePool, id: i64, error: &str) -> Result<()> {
     // Clear `sent_ms`: the row was claimed, but the frame never crossed the socket,
     // and a `sent` timestamp on a `failed` row is exactly the kind of lie the
@@ -565,9 +641,22 @@ pub async fn fail_command(pool: &SqlitePool, id: i64, error: &str) -> Result<()>
     Ok(())
 }
 
+/// Without `history` the row is dropped; both call sites log the reason — a warning
+/// from the push path, and one from the path poller's stale-fetch retirement.
+#[cfg(not(feature = "history"))]
+pub async fn fail_command(pool: &SqlitePool, id: i64, error: &str) -> Result<()> {
+    let _ = error;
+    sqlx::query("DELETE FROM commands WHERE id = ? AND state != 'acked'")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 /// Best-effort ACK correlation (doc/PLAN.md §10.4): the newest `sent` command for
 /// `(sn, info_type)` that was sent within the window becomes `acked` and keeps the
 /// response body. No match is a no-op — the response is still persisted as an event.
+#[cfg(feature = "history")]
 pub async fn ack_command(
     pool: &SqlitePool,
     sn: &str,
@@ -585,6 +674,32 @@ pub async fn ack_command(
     )
     .bind(now_ms())
     .bind(ack_payload)
+    .bind(sn)
+    .bind(info_type)
+    .bind(now_ms() - window_ms)
+    .fetch_optional(pool)
+    .await?)
+}
+
+/// Without `history` the matched row is dropped: the response itself is dispatched
+/// into its own tables, and the `commands` view only needs pending/sent rows.
+#[cfg(not(feature = "history"))]
+pub async fn ack_command(
+    pool: &SqlitePool,
+    sn: &str,
+    info_type: i64,
+    ack_payload: &str,
+    window_ms: i64,
+) -> Result<Option<i64>> {
+    let _ = ack_payload;
+    Ok(sqlx::query_scalar(
+        "DELETE FROM commands
+         WHERE id = (SELECT id FROM commands
+                     WHERE sn = ? AND info_type = ? AND state = 'sent'
+                       AND sent_ms IS NOT NULL AND sent_ms >= ?
+                     ORDER BY sent_ms DESC, id DESC LIMIT 1)
+         RETURNING id",
+    )
     .bind(sn)
     .bind(info_type)
     .bind(now_ms() - window_ms)
@@ -756,10 +871,10 @@ pub async fn bind_events(
         .await?)
 }
 
-/// With `event-history` off: reduce a database written with it on to what day-to-day
+/// With `history` off: reduce a database written with it on to what day-to-day
 /// operation reads — the newest status and the newest bind/unbind row per device.
 /// Idempotent; `db::connect` runs it once per start.
-#[cfg(not(feature = "event-history"))]
+#[cfg(not(feature = "history"))]
 pub async fn prune_events_latest_only(pool: &SqlitePool) -> Result<u64> {
     let bind_list = bind_endpoint_list();
     let mut tx = pool.begin().await?;

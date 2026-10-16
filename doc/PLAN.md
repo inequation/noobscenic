@@ -301,7 +301,7 @@ slot (§20.6) and the robot's own backup are the archival mechanisms, and migrat
 `0009` prunes the history older databases accumulated.
 
 **Event retention.** `events` normally keeps every semantic message (the console's
-`events` verb and post-mortem debugging). With the `event-history` feature off (§21)
+`events` verb and post-mortem debugging). With the `history` feature off (§21)
 only the newest `20001` status and the newest bind/unbind row per device are kept:
 everything else is dropped before insert, and `prune_events_latest_only` reduces an
 existing table at startup.
@@ -312,10 +312,18 @@ the wire traces carry the bytes in every build. Dropping it does not affect the 
 backup, which is staged separately in `map_backups`.
 
 **Path retention.** `clean_paths` normally keeps every assembled path, keyed by
-`path_id` (the console's `path <sn> <id>` can look one up). With `event-history` off
+`path_id` (the console's `path <sn> <id>` can look one up). With `history` off
 only the newest row per device is kept: `upsert_clean_path` prunes older ids in the
 same transaction, `prune_clean_paths_latest_only` reduces an existing table at
 startup, and `path <id>` only finds the current path.
+
+**Command and session retention.** With `history` off the `commands` table holds only
+live rows: `ack_command` deletes the matched `sent` row instead of marking it
+`acked`, `expire_commands` deletes stale pending/sent rows with a warning per row (so
+a command sent while the robot was away is visible in the log), and `fail_command`
+deletes the row (both callers already log the reason). `insert_session` keeps only the
+newest session per device and `prune_sessions_latest_only` reduces an existing table
+at startup. With `history` on, all of it is kept as before.
 
 ---
 
@@ -539,6 +547,10 @@ Command results come back as `POST cleanPack/response` (channel A) with an
 best-effort: match on `(sn, info_type)` against the most recent `sent` command within a
 time window, mark it `acked`, store `ack_payload`. Unmatched responses are still
 persisted as `events` — under-reporting an ACK is harmless, inventing one is not.
+With `history` off the terminal transition is a deletion instead: a matched `sent`
+row is removed rather than marked `acked` (the response itself is still dispatched
+into its own tables), and the reaper/push path removes expired/failed rows with a
+warning; the `commands` view then shows only live `pending`/`sent` rows.
 
 **Verified live (2026-10-07):** a `21011` queued from the console was pushed by the
 poller within a second and the robot's reply landed as `acked` on that command; the
@@ -905,14 +917,14 @@ suction are written straight to the device and confirmed by the status echo, eac
 consumable reset re-reads the counters, and locate moved to the side drawer.
 
 ### Phase 9 — Build-time feature toggles (design: §21)
-- [x] `debug-trace`, `debug-raw`, `console` and `event-history` Cargo features declared, all in `default`
+- [x] `debug-trace`, `debug-raw`, `console` and `history` Cargo features declared, all in `default`
 - [x] JSONL sink gated by `debug-trace`; with both trace features off no record is
   built and no request body is buffered for tracing
 - [x] raw sink gated by `debug-raw`
 - [x] console and the one-shot CLI verbs gated by `console`; `serve`/`migrate` remain
-- [x] `event-history` gates the full `events` and `clean_paths` history and the
-  `events` verb; off, only the newest status/bind row and newest path per device
-  are kept
+- [x] `history` gates the full `events`/`clean_paths`/terminal-`commands` history
+  and the `events` verb; off, events, paths and sessions are latest-only and
+  terminal command rows are dropped on transition
 - [x] `cargo test` green for default, `--no-default-features`, each feature alone and
   `debug-trace,debug-raw`
 - [x] README build-variants note and GLOSSARY entry; lean-build size recorded in §18
@@ -920,9 +932,9 @@ consumable reset re-reads the counters, and locate moved to the side drawer.
 **Done when:** the default build behaves exactly as before, and any subset of the
 features can be built without touching protocol behavior or the web UI.
 **Status (2026-10-12):** implemented and covered by the feature matrix; the lean
-release binary is 588 KiB (6.7%) smaller (§18), and `event-history` additionally
-shrinks the database to the rows day-to-day operation reads (newest status, newest
-bind row and newest path per device).
+release binary is 588 KiB (6.7%) smaller (§18), and `history` additionally
+shrinks the database to the rows day-to-day operation reads: the newest status, bind
+row, clean path and session per device, plus only the live commands.
 
 ### Phase 10 — Router deployment (ASUS RT-AC68U, FreshTomato)
 - [x] target picked from the K26ARM facts (kernel 2.6.36, uClibc, no VFP):
@@ -1467,8 +1479,8 @@ leave a surface out of the binary entirely.
 |---|---|---|
 | `debug-trace` | debug | the wire tap's JSONL sink (`wire-*.jsonl`), the `trace_ref` file references it produces, and the record-building sites that feed it |
 | `debug-raw` | debug | the verbatim raw sink (`traces/raw/…`) and the `uploads_raw` archive of `uploadLogs`/`uploadStats`/`uploadSingle` bodies |
-| `console` | advanced control | the stdin/stdout operator console (§12), the one-shot CLI verbs (`devices`, `device`, `map`, `path`, `send`, `commands`, plus `events` with `event-history`) and the experiment verbs (`send-full`, `style`, `pongs`) |
-| `event-history` | behaviour | the full `events` table and `clean_paths` history, plus the `events` console/CLI verb. Off, only the newest status (`20001`) and bind/unbind row and the newest clean path per device are kept — everything else is dropped on insert and pruned at startup |
+| `console` | advanced control | the stdin/stdout operator console (§12), the one-shot CLI verbs (`devices`, `device`, `map`, `path`, `send`, `commands`, plus `events` with `history`) and the experiment verbs (`send-full`, `style`, `pongs`) |
+| `history` | behaviour | the full `events` table, `clean_paths` and terminal `commands` history, plus the `events` console/CLI verb. Off, only the newest status (`20001`) and bind/unbind row, the newest clean path and one session per device are kept, and terminal command rows are dropped on transition |
 | `cli-ux` | comfort | clap's colour and typo suggestions; help, usage and error context stay in either way. The router build's flags (§15 Phase 10) leave it out — measured 13 KB on that binary |
 
 The console is a control surface, not a debug feature: it is grouped separately here
@@ -1484,8 +1496,8 @@ and in the README, and it can be built with or without the trace sinks.
 
 `cli-ux` is orthogonal to the table: it is in `default` and out of every
 `--no-default-features` build.
-`event-history` is orthogonal too: `default` has it, every `--no-default-features`
-build does not (the router build included), and `--features event-history` adds it to
+`history` is orthogonal too: `default` has it, every `--no-default-features`
+build does not (the router build included), and `--features history` adds it to
 a stripped build.
 
 Semantics when a feature is compiled out:
@@ -1500,11 +1512,12 @@ Semantics when a feature is compiled out:
   handlers, `proto::dispatch` and the tests compile unchanged; the record-building
   call sites in `channel_a` and `channel_b` are `cfg`-gated, so a stripped build does
   no per-request body copy for tracing and no per-frame trace `Vec`.
-* Without `event-history` the `events` table is a two-row-per-device cache and
-  `clean_paths` holds one path per device: `insert_event` drops everything that is not
-  the newest status or bind/unbind row, `upsert_clean_path` prunes older path ids,
-  `db::connect` prunes both tables at startup, and the `events` console/CLI verb is
-  not compiled in. The protocol and the web UI are unaffected.
+* Without `history` the database keeps only the live/steady rows: `events` is a
+  two-row-per-device cache, `clean_paths` holds one path per device, `commands` holds
+  only pending/sent rows (acked rows are deleted, expired/failed ones are deleted
+  with a warning), and `sessions` keeps one row per device. `db::connect` prunes all
+  of them at startup and the `events` console/CLI verb is not compiled in. The
+  protocol and the web UI are unaffected.
 * Without `console` the process has no stdin loop and no state/queue/send
   subcommands; Ctrl-C is the shutdown path. The web UI and the HTTP API are not
   affected by any of these features.

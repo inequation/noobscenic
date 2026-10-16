@@ -253,9 +253,21 @@ async fn a_stale_pending_command_expires_instead_of_firing() {
 
     noobscenic::commands::drain_once(&state).await;
 
-    let (row_state, sent_ms, _, _) = command_row(&state, id).await;
-    assert_eq!(row_state, "expired");
-    assert!(sent_ms.is_none());
+    #[cfg(feature = "history")]
+    {
+        let (row_state, sent_ms, _, _) = command_row(&state, id).await;
+        assert_eq!(row_state, "expired");
+        assert!(sent_ms.is_none());
+    }
+    #[cfg(not(feature = "history"))]
+    {
+        let count: i64 = sqlx::query_scalar("SELECT count(1) FROM commands WHERE id = ?")
+            .bind(id)
+            .fetch_one(&state.db)
+            .await
+            .expect("count");
+        assert_eq!(count, 0, "the expired row is dropped without history");
+    }
 
     // And nothing crossed the socket: the robot must not start cleaning hours late.
     let mut buffer = [0u8; 64];
@@ -293,8 +305,20 @@ async fn a_sent_command_whose_ack_never_came_expires() {
 
     noobscenic::commands::drain_once(&state).await;
 
-    let (row_state, _, _, _) = command_row(&state, id).await;
-    assert_eq!(row_state, "expired");
+    #[cfg(feature = "history")]
+    {
+        let (row_state, _, _, _) = command_row(&state, id).await;
+        assert_eq!(row_state, "expired");
+    }
+    #[cfg(not(feature = "history"))]
+    {
+        let count: i64 = sqlx::query_scalar("SELECT count(1) FROM commands WHERE id = ?")
+            .bind(id)
+            .fetch_one(&state.db)
+            .await
+            .expect("count");
+        assert_eq!(count, 0, "the expired row is dropped without history");
+    }
 
     drop(decoder);
     server.abort();
@@ -317,25 +341,48 @@ async fn a_response_acks_the_newest_sent_command_and_a_mismatch_acks_nothing() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(response["code"], 0);
 
-    let (row_state, _, _, ack_payload) = command_row(&state, id).await;
-    assert_eq!(row_state, "acked");
-    assert!(
-        ack_payload
-            .expect("ack payload")
-            .contains("\"message\":\"ok\""),
-        "the response body must be kept on the row"
-    );
+    #[cfg(feature = "history")]
+    {
+        let (row_state, _, _, ack_payload) = command_row(&state, id).await;
+        assert_eq!(row_state, "acked");
+        assert!(
+            ack_payload
+                .expect("ack payload")
+                .contains("\"message\":\"ok\""),
+            "the response body must be kept on the row"
+        );
+    }
+    #[cfg(not(feature = "history"))]
+    {
+        let count: i64 = sqlx::query_scalar("SELECT count(1) FROM commands WHERE id = ?")
+            .bind(id)
+            .fetch_one(&state.db)
+            .await
+            .expect("count");
+        assert_eq!(count, 0, "the acked row is dropped without history");
+    }
 
     // A response that matches no sent command must not invent one.
     let spurious =
         format!("sn={SN}&infoType=21020&ts=1&userId=u&data={{\"infoType\":21020,\"data\":{{}}}}");
     let (status, _) = call(&app, post("/cleanPack/response", &spurious)).await;
     assert_eq!(status, StatusCode::OK);
-    let acks: i64 = sqlx::query_scalar("SELECT count(1) FROM commands WHERE state = 'acked'")
-        .fetch_one(&state.db)
-        .await
-        .expect("count");
-    assert_eq!(acks, 1, "an unmatched response invented an ACK");
+    #[cfg(feature = "history")]
+    {
+        let acks: i64 = sqlx::query_scalar("SELECT count(1) FROM commands WHERE state = 'acked'")
+            .fetch_one(&state.db)
+            .await
+            .expect("count");
+        assert_eq!(acks, 1, "an unmatched response invented an ACK");
+    }
+    #[cfg(not(feature = "history"))]
+    {
+        let count: i64 = sqlx::query_scalar("SELECT count(1) FROM commands")
+            .fetch_one(&state.db)
+            .await
+            .expect("count");
+        assert_eq!(count, 0, "an unmatched response invented a row");
+    }
 
     server.abort();
     cleanup(state).await;
@@ -422,18 +469,30 @@ async fn an_encrypt_1_row_fails_while_the_flag_is_off() {
     let id = enqueue_with(&state, 21018, "{}", 1).await;
     noobscenic::commands::drain_once(&state).await;
 
-    let (row_state, sent_ms, _, _) = command_row(&state, id).await;
-    assert_eq!(row_state, "failed");
-    assert!(sent_ms.is_none(), "a failed row must not look sent");
-    let error: Option<String> = sqlx::query_scalar("SELECT error FROM commands WHERE id = ?")
-        .bind(id)
-        .fetch_one(&state.db)
-        .await
-        .expect("error column");
-    assert!(
-        error.unwrap_or_default().contains("encrypt_commands"),
-        "the failure must name the config flag"
-    );
+    #[cfg(feature = "history")]
+    {
+        let (row_state, sent_ms, _, _) = command_row(&state, id).await;
+        assert_eq!(row_state, "failed");
+        assert!(sent_ms.is_none(), "a failed row must not look sent");
+        let error: Option<String> = sqlx::query_scalar("SELECT error FROM commands WHERE id = ?")
+            .bind(id)
+            .fetch_one(&state.db)
+            .await
+            .expect("error column");
+        assert!(
+            error.unwrap_or_default().contains("encrypt_commands"),
+            "the failure must name the config flag"
+        );
+    }
+    #[cfg(not(feature = "history"))]
+    {
+        let count: i64 = sqlx::query_scalar("SELECT count(1) FROM commands WHERE id = ?")
+            .bind(id)
+            .fetch_one(&state.db)
+            .await
+            .expect("count");
+        assert_eq!(count, 0, "the failed row is dropped without history");
+    }
 
     let mut buffer = [0u8; 64];
     assert!(

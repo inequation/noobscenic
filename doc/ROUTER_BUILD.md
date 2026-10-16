@@ -148,7 +148,7 @@ and `matchers`); and the `--no-default-features` builds leave out the new
 13 KB on the router binary). The filter is now
 `tracing_subscriber::filter::Targets` with a small parser in `src/main.rs`:
 levels, `target=level` and bare targets still work; regex targets no longer do.
-These move with new query shapes: the same day's event-history work added
+These move with new query shapes: the same day's history work added
 180–260 KB to the plain `--release` builds (sqlx's generic query code duplicates
 across codegen units without LTO) but only ~6 KB to the LTO router build.
 

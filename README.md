@@ -76,9 +76,10 @@ by default, so a plain `cargo build` / `cargo run` is the full server described 
   `uploads_raw` archive of `uploadLogs`/`uploadStats`/`uploadSingle` bodies,
 - `console` — the operator console and the one-shot CLI verbs (`noobscenic devices`,
   `noobscenic send …`),
-- `event-history` — the full `events` table and `clean_paths` history plus the
-  `events` console verb; without it `events` keeps only the newest status and
-  bind/unbind row per device and `clean_paths` only the newest path.
+- `history` — the full `events` table, `clean_paths` and terminal-`commands` history
+  plus the `events` console verb; without it events, paths and sessions keep only
+  the newest row per device, and terminal command rows are dropped (expired and
+  failed ones with a warning).
 
 A lean build drops them all:
 
@@ -175,7 +176,7 @@ See [`doc/PLAN.md`](doc/PLAN.md) §14 for what these would look like.
 Status: re-homing, control, telemetry, maps, zones, backups and the web UI — with spot
 cleaning both around the robot and placed anywhere on the map, plus a settings form
 for volume, mute, LED, suction and consumable ages — all work, and the debug traces,
-the operator console and the full event history are build-time features that are on
+the operator console and the full history are build-time features that are on
 by default and strippable with `--no-default-features`, and a static soft-float ARMv7 build for the
 ASUS RT-AC68U on FreshTomato cross-compiles and passes its ELF and syscall checks
 (`doc/ROUTER_BUILD.md`), with the on-router smoke test still pending.

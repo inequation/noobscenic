@@ -57,7 +57,7 @@ enum Command {
     #[cfg(feature = "console")]
     Device { sn: String },
     /// The newest semantic messages.
-    #[cfg(all(feature = "console", feature = "event-history"))]
+    #[cfg(all(feature = "console", feature = "history"))]
     Events {
         /// Device serial number (all devices unless given).
         sn: Option<String>,
@@ -164,7 +164,7 @@ async fn run_verb(config: Config, verb: Command) -> noobscenic::error::Result<()
             console::show_device(&state, &sn).await;
             println!("({ONE_SHOT_NOTE})");
         }
-        #[cfg(feature = "event-history")]
+        #[cfg(feature = "history")]
         Command::Events { sn, n } => {
             console::show_events(&state, sn.as_deref(), n.unwrap_or(20)).await
         }

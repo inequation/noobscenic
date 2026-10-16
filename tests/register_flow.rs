@@ -322,6 +322,55 @@ async fn an_expired_session_gets_code_102_and_registration_recovers() {
     cleanup(state).await;
 }
 
+/// Without `history` only the newest session per device is kept; the older cookie
+/// gets the usual `102`, which is exactly how the robot recovers.
+#[cfg(not(feature = "history"))]
+#[tokio::test]
+async fn only_the_newest_session_is_kept_without_history() {
+    let (state, app) = setup("sessions-lean").await;
+    let (_, first) = call(&app, request("POST", "/cleanPack/register", "sn=SN8", None)).await;
+    let first_cookie = first["data"]["cookies"]
+        .as_str()
+        .expect("cookies")
+        .to_string();
+    let (_, second) = call(&app, request("POST", "/cleanPack/register", "sn=SN8", None)).await;
+    let second_cookie = second["data"]["cookies"]
+        .as_str()
+        .expect("cookies")
+        .to_string();
+
+    let rows: Vec<String> = sqlx::query_scalar("SELECT cookie FROM sessions WHERE sn = 'SN8'")
+        .fetch_all(&state.db)
+        .await
+        .expect("sessions");
+    assert_eq!(rows, vec![second_cookie.clone()], "one session per device");
+
+    let (_, body) = call(
+        &app,
+        request(
+            "POST",
+            "/cleanPack/sync",
+            "sn=SN8",
+            Some(&format!("cookies={first_cookie}")),
+        ),
+    )
+    .await;
+    assert_eq!(body["code"], 102, "the superseded cookie is stale");
+    let (_, body) = call(
+        &app,
+        request(
+            "POST",
+            "/cleanPack/sync",
+            "sn=SN8",
+            Some(&format!("cookies={second_cookie}")),
+        ),
+    )
+    .await;
+    assert_eq!(body["code"], 0, "the newest cookie works");
+
+    cleanup(state).await;
+}
+
 #[tokio::test]
 async fn sync_records_attributes_and_answers_no_update() {
     let (state, app) = setup("sync").await;

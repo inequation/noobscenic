@@ -142,9 +142,9 @@ async fn a_status_push_becomes_an_event_row() {
     cleanup(state).await;
 }
 
-/// With `event-history` off the table is a two-row cache per device: the newest
+/// With `history` off the table is a two-row cache per device: the newest
 /// status and the newest bind/unbind row, and nothing else.
-#[cfg(not(feature = "event-history"))]
+#[cfg(not(feature = "history"))]
 #[tokio::test]
 async fn events_keep_only_the_newest_status_and_bind_rows() {
     let (state, app) = setup("status-lean").await;
@@ -334,9 +334,9 @@ async fn clean_path_chunks_assemble_across_responses() {
     cleanup(state).await;
 }
 
-/// With `event-history` off only the newest path per device survives; every reader
+/// With `history` off only the newest path per device survives; every reader
 /// and the poller only ever look at that row.
-#[cfg(not(feature = "event-history"))]
+#[cfg(not(feature = "history"))]
 #[tokio::test]
 async fn clean_paths_keep_only_the_newest_per_device() {
     let (state, _app) = setup("paths-lean").await;

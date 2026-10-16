@@ -100,6 +100,13 @@ connection's writer, which stores the wire-tap reference of the exact bytes back
 on the row; `acked` is best-effort correlation from `cleanPack/response`, since
 the protocol has no correlation id.
 
+With the `history` feature off the terminal states are not persisted: `ack_command`
+deletes the row, `expire_commands` deletes a stale pending/sent row with a warning
+(so a command sent while the robot was away is still visible in the log), and
+`fail_command` deletes the row, leaving the caller's warning as the record. The table
+then holds only live `pending`/`sent` rows. With `history` on, all terminal rows are
+kept for the operator.
+
 ## Session gate
 
 The check every channel-A request passes through except `register`
@@ -111,22 +118,26 @@ expired session, gets `code:102` — "your sid expired" — which makes the robo
 re-run `register` and pick up a fresh session. The empty case is what lets a robot
 that paired against the phase-1 catch-all (and therefore never got a session)
 upgrade itself to a real one on its next request, with no re-home and no reboot.
+Without `history` only the newest session per device is kept; superseded cookies get
+the same `102` and the robot re-registers.
 
 ## Build-time feature toggles
 
 The Cargo features that can leave the server's non-essential surfaces out of the
 binary: `debug-trace` (the JSONL [wire](#wire) timeline), `debug-raw` (the verbatim
 raw byte sink and the `uploads_raw` upload archive), `console` (the stdin/stdout
-operator console and the one-shot CLI verbs) and `event-history` (the full `events`
-table and `clean_paths` history and the `events` verb; with it off `events` keeps only
-the newest status and bind/unbind row per device and `clean_paths` only the newest
-path, which is all day-to-day operation reads). All are in `default`, so a plain
-build has every surface; `cargo build --no-default-features` produces the lean server
-— no trace files (the database's `trace_ref` columns stay empty), no console, no
-`noobscenic events` subcommand, a two-row `events` table and one path per device —
-while the protocols, the web UI and the command queue are unchanged. Asking for a
-compiled-out sink in `logging.wire` warns and records nothing rather than failing, so
-one config file works across builds.
+operator console and the one-shot CLI verbs) and `history` (the full `events`
+table, `clean_paths` and terminal `commands` history and the `events` verb; with it
+off `events` keeps only the newest status and bind/unbind row, `clean_paths` only the
+newest path and `sessions` only the newest session per device, and terminal command
+rows are dropped, which is all day-to-day operation reads). All are in `default`, so
+a plain build has every surface; `cargo build --no-default-features` produces the
+lean server — no trace files (the database's `trace_ref` columns stay empty), no
+console, no `noobscenic events` subcommand, a two-row `events` table, one path and
+one session per device, and only live commands — while the protocols, the web UI and
+the command queue are unchanged. Asking for a compiled-out sink in `logging.wire`
+warns and records nothing rather than failing, so one config file works across
+builds.
 
 ## Robot settings
 

@@ -1448,22 +1448,44 @@ async fn the_path_poller_retires_an_unacked_fetch_instead_of_wedging() {
         .expect("backdate");
     noobscenic::web::poll_paths_once(&state).await;
 
-    let (old_state, old_error): (String, Option<String>) =
-        sqlx::query_as("SELECT state, error FROM commands WHERE id = ?")
-            .bind(stale)
-            .fetch_one(&state.db)
-            .await
-            .expect("old row");
-    assert_eq!(old_state, "failed");
-    assert!(
-        old_error.unwrap_or_default().contains("no ACK"),
-        "the retired row says why"
-    );
-    let count: i64 = sqlx::query_scalar("SELECT count(1) FROM commands WHERE info_type = 21011")
+    #[cfg(feature = "history")]
+    {
+        let (old_state, old_error): (String, Option<String>) =
+            sqlx::query_as("SELECT state, error FROM commands WHERE id = ?")
+                .bind(stale)
+                .fetch_one(&state.db)
+                .await
+                .expect("old row");
+        assert_eq!(old_state, "failed");
+        assert!(
+            old_error.unwrap_or_default().contains("no ACK"),
+            "the retired row says why"
+        );
+        let count: i64 =
+            sqlx::query_scalar("SELECT count(1) FROM commands WHERE info_type = 21011")
+                .fetch_one(&state.db)
+                .await
+                .expect("count");
+        assert_eq!(count, 2, "a replacement request was queued");
+    }
+    #[cfg(not(feature = "history"))]
+    {
+        // SQLite may reuse the deleted row's id for the replacement, so assert on
+        // the state rather than the id.
+        let sent: i64 = sqlx::query_scalar(
+            "SELECT count(1) FROM commands WHERE info_type = 21011 AND state = 'sent'",
+        )
         .fetch_one(&state.db)
         .await
-        .expect("count");
-    assert_eq!(count, 2, "a replacement request was queued");
+        .expect("sent count");
+        assert_eq!(sent, 0, "the retired request is dropped without history");
+        let count: i64 =
+            sqlx::query_scalar("SELECT count(1) FROM commands WHERE info_type = 21011")
+                .fetch_one(&state.db)
+                .await
+                .expect("count");
+        assert_eq!(count, 1, "only the replacement request remains");
+    }
 
     cleanup(state).await;
 }
