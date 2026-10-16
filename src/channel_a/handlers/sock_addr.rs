@@ -26,7 +26,7 @@ pub async fn sock_addr(
             "getSockAddr: no gateway address could be determined; answering with an empty list"
         );
     } else {
-        tracing::info!(
+        tracing::debug!(
             peer = %peer,
             addresses = %serde_json::Value::Array(addresses.clone()),
             "getSockAddr"

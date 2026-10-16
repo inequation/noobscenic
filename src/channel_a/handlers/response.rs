@@ -48,7 +48,7 @@ pub async fn response(State(state): State<AppState>, request: Request) -> Respon
             .await
         {
             Ok(Some(id)) => {
-                tracing::info!(sn = %sn, info_type, command_id = id, trace, "command acknowledged")
+                tracing::debug!(sn = %sn, info_type, command_id = id, trace, "command acknowledged")
             }
             Ok(None) => {
                 tracing::debug!(sn = %sn, info_type, trace, "response matched no sent command")

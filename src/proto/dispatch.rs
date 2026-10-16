@@ -84,7 +84,7 @@ pub async fn dispatch(state: &AppState, incoming: Incoming<'_>) {
             store_event(state, &incoming).await;
         }
         Some(info_type::EVENT) | Some(info_type::RECORD) => {
-            tracing::info!(
+            tracing::debug!(
                 sn = %incoming.sn,
                 info_type = incoming.info_type,
                 trace,
@@ -184,7 +184,7 @@ async fn store_map(state: &AppState, incoming: &Incoming<'_>) {
     )
     .await;
     match result {
-        Ok(()) => tracing::info!(
+        Ok(()) => tracing::debug!(
             sn = %incoming.sn,
             map_id = ?upload.map_id,
             path_id = ?upload.path_id,
@@ -234,7 +234,7 @@ async fn store_path(state: &AppState, incoming: &Incoming<'_>) {
     )
     .await;
     match result {
-        Ok(()) => tracing::info!(
+        Ok(()) => tracing::debug!(
             sn = %incoming.sn,
             path_id = chunk.path_id,
             filled,

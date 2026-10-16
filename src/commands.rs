@@ -113,7 +113,7 @@ async fn push(state: &AppState, sn: &str, handle: &ConnHandle, command: QueuedCo
         }
     };
 
-    tracing::info!(
+    tracing::debug!(
         command_id = command.id,
         info_type = command.info_type,
         encrypt = command.encrypt,
