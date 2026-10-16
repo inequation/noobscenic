@@ -334,6 +334,51 @@ async fn clean_path_chunks_assemble_across_responses() {
     cleanup(state).await;
 }
 
+/// With `event-history` off only the newest path per device survives; every reader
+/// and the poller only ever look at that row.
+#[cfg(not(feature = "event-history"))]
+#[tokio::test]
+async fn clean_paths_keep_only_the_newest_per_device() {
+    let (state, _app) = setup("paths-lean").await;
+    for (sn, path_id, points) in [
+        ("TELE", 9, "[[100.0,100.0]]"),
+        ("TELE", 10, "[[200.0,200.0]]"),
+        ("OTHER", 11, "[[300.0,300.0]]"),
+    ] {
+        noobscenic::db::queries::upsert_clean_path(
+            &state.db, sn, path_id, None, 1, points, true, None,
+        )
+        .await
+        .expect("path row");
+    }
+    let rows: Vec<(String, i64)> =
+        sqlx::query_as("SELECT sn, path_id FROM clean_paths ORDER BY sn")
+            .fetch_all(&state.db)
+            .await
+            .expect("paths");
+    assert_eq!(
+        rows,
+        vec![("OTHER".to_string(), 11), ("TELE".to_string(), 10)],
+        "one path per device, and it is the newest"
+    );
+
+    // A database written with the feature on is pruned at startup.
+    sqlx::query(
+        "INSERT INTO clean_paths (sn, path_id, total_points, points_json, complete, updated_ms)
+         VALUES ('TELE', 8, 1, '[]', 1, ?)",
+    )
+    .bind(noobscenic::db::now_ms() - 60_000)
+    .execute(&state.db)
+    .await
+    .expect("old path");
+    let pruned = noobscenic::db::queries::prune_clean_paths_latest_only(&state.db)
+        .await
+        .expect("prune");
+    assert_eq!(pruned, 1, "the older path is pruned");
+
+    cleanup(state).await;
+}
+
 #[tokio::test]
 async fn raw_uploads_are_stored_verbatim() {
     let (state, app) = setup("raw").await;

@@ -76,8 +76,9 @@ by default, so a plain `cargo build` / `cargo run` is the full server described 
   `uploads_raw` archive of `uploadLogs`/`uploadStats`/`uploadSingle` bodies,
 - `console` — the operator console and the one-shot CLI verbs (`noobscenic devices`,
   `noobscenic send …`),
-- `event-history` — the full `events` table history and the `events` console verb;
-  without it the table keeps only the newest status and bind/unbind row per device.
+- `event-history` — the full `events` table and `clean_paths` history plus the
+  `events` console verb; without it `events` keeps only the newest status and
+  bind/unbind row per device and `clean_paths` only the newest path.
 
 A lean build drops them all:
 

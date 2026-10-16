@@ -311,6 +311,12 @@ debug archive with no reader in the server: it is written only with `debug-raw`,
 the wire traces carry the bytes in every build. Dropping it does not affect the map
 backup, which is staged separately in `map_backups`.
 
+**Path retention.** `clean_paths` normally keeps every assembled path, keyed by
+`path_id` (the console's `path <sn> <id>` can look one up). With `event-history` off
+only the newest row per device is kept: `upsert_clean_path` prunes older ids in the
+same transaction, `prune_clean_paths_latest_only` reduces an existing table at
+startup, and `path <id>` only finds the current path.
+
 ---
 
 ## 8. Logging & wire tracing
@@ -904,8 +910,9 @@ consumable reset re-reads the counters, and locate moved to the side drawer.
   built and no request body is buffered for tracing
 - [x] raw sink gated by `debug-raw`
 - [x] console and the one-shot CLI verbs gated by `console`; `serve`/`migrate` remain
-- [x] `event-history` gates the full `events` log and verb; off, only the newest
-  status and bind/unbind row per device are kept
+- [x] `event-history` gates the full `events` and `clean_paths` history and the
+  `events` verb; off, only the newest status/bind row and newest path per device
+  are kept
 - [x] `cargo test` green for default, `--no-default-features`, each feature alone and
   `debug-trace,debug-raw`
 - [x] README build-variants note and GLOSSARY entry; lean-build size recorded in §18
@@ -914,7 +921,8 @@ consumable reset re-reads the counters, and locate moved to the side drawer.
 features can be built without touching protocol behavior or the web UI.
 **Status (2026-10-12):** implemented and covered by the feature matrix; the lean
 release binary is 588 KiB (6.7%) smaller (§18), and `event-history` additionally
-shrinks the database to the two rows per device day-to-day operation reads.
+shrinks the database to the rows day-to-day operation reads (newest status, newest
+bind row and newest path per device).
 
 ### Phase 10 — Router deployment (ASUS RT-AC68U, FreshTomato)
 - [x] target picked from the K26ARM facts (kernel 2.6.36, uClibc, no VFP):
@@ -1460,7 +1468,7 @@ leave a surface out of the binary entirely.
 | `debug-trace` | debug | the wire tap's JSONL sink (`wire-*.jsonl`), the `trace_ref` file references it produces, and the record-building sites that feed it |
 | `debug-raw` | debug | the verbatim raw sink (`traces/raw/…`) and the `uploads_raw` archive of `uploadLogs`/`uploadStats`/`uploadSingle` bodies |
 | `console` | advanced control | the stdin/stdout operator console (§12), the one-shot CLI verbs (`devices`, `device`, `map`, `path`, `send`, `commands`, plus `events` with `event-history`) and the experiment verbs (`send-full`, `style`, `pongs`) |
-| `event-history` | behaviour | the full `events` table history and the `events` console/CLI verb. Off, only the newest status (`20001`) and bind/unbind row per device are kept — everything else is dropped on insert and pruned at startup |
+| `event-history` | behaviour | the full `events` table and `clean_paths` history, plus the `events` console/CLI verb. Off, only the newest status (`20001`) and bind/unbind row and the newest clean path per device are kept — everything else is dropped on insert and pruned at startup |
 | `cli-ux` | comfort | clap's colour and typo suggestions; help, usage and error context stay in either way. The router build's flags (§15 Phase 10) leave it out — measured 13 KB on that binary |
 
 The console is a control surface, not a debug feature: it is grouped separately here
@@ -1492,10 +1500,11 @@ Semantics when a feature is compiled out:
   handlers, `proto::dispatch` and the tests compile unchanged; the record-building
   call sites in `channel_a` and `channel_b` are `cfg`-gated, so a stripped build does
   no per-request body copy for tracing and no per-frame trace `Vec`.
-* Without `event-history` the `events` table is a two-row-per-device cache:
-  `insert_event` drops everything that is not the newest status or bind/unbind row,
-  `db::connect` prunes an existing table at startup, and the `events` console/CLI
-  verb is not compiled in. The protocol and the web UI are unaffected.
+* Without `event-history` the `events` table is a two-row-per-device cache and
+  `clean_paths` holds one path per device: `insert_event` drops everything that is not
+  the newest status or bind/unbind row, `upsert_clean_path` prunes older path ids,
+  `db::connect` prunes both tables at startup, and the `events` console/CLI verb is
+  not compiled in. The protocol and the web UI are unaffected.
 * Without `console` the process has no stdin loop and no state/queue/send
   subcommands; Ctrl-C is the shutdown path. The web UI and the HTTP API are not
   affected by any of these features.

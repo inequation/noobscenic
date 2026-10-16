@@ -118,15 +118,15 @@ The Cargo features that can leave the server's non-essential surfaces out of the
 binary: `debug-trace` (the JSONL [wire](#wire) timeline), `debug-raw` (the verbatim
 raw byte sink and the `uploads_raw` upload archive), `console` (the stdin/stdout
 operator console and the one-shot CLI verbs) and `event-history` (the full `events`
-table history and the `events` verb;
-with it off the table keeps only the newest status and bind/unbind row per device,
-which is all day-to-day operation reads). All are in `default`, so a plain build has
-every surface; `cargo build --no-default-features` produces the lean server — no
-trace files (the database's `trace_ref` columns stay empty), no console, no
-`noobscenic events` subcommand and a two-row `events` table — while the protocols,
-the web UI and the command queue are unchanged. Asking for a compiled-out sink in
-`logging.wire` warns and records nothing rather than failing, so one config file
-works across builds.
+table and `clean_paths` history and the `events` verb; with it off `events` keeps only
+the newest status and bind/unbind row per device and `clean_paths` only the newest
+path, which is all day-to-day operation reads). All are in `default`, so a plain
+build has every surface; `cargo build --no-default-features` produces the lean server
+— no trace files (the database's `trace_ref` columns stay empty), no console, no
+`noobscenic events` subcommand, a two-row `events` table and one path per device —
+while the protocols, the web UI and the command queue are unchanged. Asking for a
+compiled-out sink in `logging.wire` warns and records nothing rather than failing, so
+one config file works across builds.
 
 ## Robot settings
 

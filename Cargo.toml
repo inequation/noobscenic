@@ -10,9 +10,10 @@ default = ["debug-trace", "debug-raw", "console", "cli-ux", "event-history"]
 # Debug surfaces: the JSONL timeline and the verbatim raw byte sink.
 debug-trace = []
 debug-raw = []
-# The full `events` table history and the `events` console/CLI verb. Off, the table
-# keeps only the newest status and bind/unbind row per device — everything
-# day-to-day operation reads.
+# The full `events` and `clean_paths` history, plus the `events` console/CLI verb.
+# Off, `events` keeps only the newest status and bind/unbind row per device, and
+# `clean_paths` only the newest path per device — everything day-to-day operation
+# reads.
 event-history = []
 # An advanced control surface, not a debug feature: the stdin console and the
 # one-shot CLI verbs.

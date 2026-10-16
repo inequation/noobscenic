@@ -343,6 +343,24 @@ pub async fn insert_map_upload(
     Ok(())
 }
 
+/// With `event-history` off: reduce `clean_paths` to the newest row per device.
+/// Idempotent; `db::connect` runs it once per start.
+#[cfg(not(feature = "event-history"))]
+pub async fn prune_clean_paths_latest_only(pool: &SqlitePool) -> Result<u64> {
+    let result = sqlx::query(
+        "DELETE FROM clean_paths
+         WHERE EXISTS (
+             SELECT 1 FROM clean_paths newer
+             WHERE newer.sn = clean_paths.sn
+               AND (newer.updated_ms > clean_paths.updated_ms
+                    OR (newer.updated_ms = clean_paths.updated_ms AND newer.id > clean_paths.id))
+         )",
+    )
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected())
+}
+
 /// The stored assembly for `(sn, path_id)`: `(points_json, total_points, complete)`.
 pub async fn load_clean_path(
     pool: &SqlitePool,
@@ -369,7 +387,10 @@ pub async fn upsert_clean_path(
     complete: bool,
     trace_ref: Option<&str>,
 ) -> Result<()> {
-    sqlx::query(
+    let mut tx = pool.begin().await?;
+    // `id` is only read by the pruning below; a history build has no prune.
+    #[allow(unused_variables)]
+    let id: i64 = sqlx::query_scalar(
         "INSERT INTO clean_paths (sn, path_id, user_id, total_points, points_json, complete,
                                   updated_ms, trace_ref)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -379,7 +400,8 @@ pub async fn upsert_clean_path(
              points_json  = excluded.points_json,
              complete     = excluded.complete,
              updated_ms   = excluded.updated_ms,
-             trace_ref    = excluded.trace_ref",
+             trace_ref    = excluded.trace_ref
+         RETURNING id",
     )
     .bind(sn)
     .bind(path_id)
@@ -389,8 +411,19 @@ pub async fn upsert_clean_path(
     .bind(i64::from(complete))
     .bind(now_ms())
     .bind(trace_ref)
-    .execute(pool)
+    .fetch_one(&mut *tx)
     .await?;
+    // With `event-history` off only the newest path per device survives: every reader
+    // takes the newest row, and the robot keeps the current path itself.
+    #[cfg(not(feature = "event-history"))]
+    {
+        sqlx::query("DELETE FROM clean_paths WHERE sn = ? AND id <> ?")
+            .bind(sn)
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+    }
+    tx.commit().await?;
     Ok(())
 }
 

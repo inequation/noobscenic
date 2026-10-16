@@ -51,6 +51,13 @@ pub async fn connect(url: &str, max_connections: u32) -> Result<SqlitePool> {
         }
         Err(error) => tracing::error!(%error, "could not prune the events table"),
     }
+
+    #[cfg(not(feature = "event-history"))]
+    match queries::prune_clean_paths_latest_only(&pool).await {
+        Ok(0) => {}
+        Ok(pruned) => tracing::info!(pruned, "pruned clean paths to the newest per device"),
+        Err(error) => tracing::error!(%error, "could not prune the clean paths"),
+    }
     Ok(pool)
 }
 
