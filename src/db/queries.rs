@@ -582,6 +582,16 @@ pub async fn expire_commands(pool: &SqlitePool, cutoff_ms: i64) -> Result<u64> {
     Ok(rows.len() as u64)
 }
 
+/// Without `history` terminal command rows are never written; this clears any that a
+/// database written with the feature on accumulated. `db::connect` runs it at startup.
+#[cfg(not(feature = "history"))]
+pub async fn prune_terminal_commands(pool: &SqlitePool) -> Result<u64> {
+    let result = sqlx::query("DELETE FROM commands WHERE state IN ('acked', 'expired', 'failed')")
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected())
+}
+
 /// Serial numbers with pending work — what the poller checks against the registry.
 pub async fn pending_command_sns(pool: &SqlitePool) -> Result<Vec<String>> {
     Ok(

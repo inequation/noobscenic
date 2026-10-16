@@ -65,6 +65,13 @@ pub async fn connect(url: &str, max_connections: u32) -> Result<SqlitePool> {
         Ok(pruned) => tracing::info!(pruned, "pruned sessions to the newest per device"),
         Err(error) => tracing::error!(%error, "could not prune the sessions"),
     }
+
+    #[cfg(not(feature = "history"))]
+    match queries::prune_terminal_commands(&pool).await {
+        Ok(0) => {}
+        Ok(pruned) => tracing::info!(pruned, "pruned terminal command rows"),
+        Err(error) => tracing::error!(%error, "could not prune terminal command rows"),
+    }
     Ok(pool)
 }
 

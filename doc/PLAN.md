@@ -323,7 +323,8 @@ live rows: `ack_command` deletes the matched `sent` row instead of marking it
 a command sent while the robot was away is visible in the log), and `fail_command`
 deletes the row (both callers already log the reason). `insert_session` keeps only the
 newest session per device and `prune_sessions_latest_only` reduces an existing table
-at startup. With `history` on, all of it is kept as before.
+at startup; `prune_terminal_commands` clears any terminal rows an existing database
+accumulated. With `history` on, all of it is kept as before.
 
 ---
 

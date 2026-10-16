@@ -325,6 +325,44 @@ async fn a_sent_command_whose_ack_never_came_expires() {
     cleanup(state).await;
 }
 
+/// Without `history`, a database written with the feature on has its terminal rows
+/// cleared at startup; only live pending/sent rows remain.
+#[cfg(not(feature = "history"))]
+#[tokio::test]
+async fn terminal_command_rows_are_pruned_without_history() {
+    let (addr, state, server) = gateway("prune-terminal").await;
+    let (mut sock, decoder) = connect(addr).await;
+
+    let live = enqueue(&state, 21012, "{\"cmd\":\"start\"}").await;
+    for state_name in ["acked", "expired", "failed"] {
+        sqlx::query(
+            "INSERT INTO commands (sn, info_type, payload, encrypt, state, created_ms)
+             VALUES (?, 21011, '{\"startPos\":0,\"mask\":0}', 0, ?, ?)",
+        )
+        .bind(SN)
+        .bind(state_name)
+        .bind(noobscenic::db::now_ms())
+        .execute(&state.db)
+        .await
+        .expect("terminal row");
+    }
+
+    let pruned = noobscenic::db::queries::prune_terminal_commands(&state.db)
+        .await
+        .expect("prune");
+    assert_eq!(pruned, 3);
+
+    let left: Vec<i64> = sqlx::query_scalar("SELECT id FROM commands ORDER BY id")
+        .fetch_all(&state.db)
+        .await
+        .expect("left rows");
+    assert_eq!(left, vec![live], "only the live row survives");
+
+    drop(decoder);
+    server.abort();
+    cleanup(state).await;
+}
+
 #[tokio::test]
 async fn a_response_acks_the_newest_sent_command_and_a_mismatch_acks_nothing() {
     let (addr, state, server) = gateway("ack").await;
