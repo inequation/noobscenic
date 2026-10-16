@@ -116,8 +116,9 @@ upgrade itself to a real one on its next request, with no re-home and no reboot.
 
 The Cargo features that can leave the server's non-essential surfaces out of the
 binary: `debug-trace` (the JSONL [wire](#wire) timeline), `debug-raw` (the verbatim
-raw byte sink), `console` (the stdin/stdout operator console and the one-shot CLI
-verbs) and `event-history` (the full `events` table history and the `events` verb;
+raw byte sink and the `uploads_raw` upload archive), `console` (the stdin/stdout
+operator console and the one-shot CLI verbs) and `event-history` (the full `events`
+table history and the `events` verb;
 with it off the table keeps only the newest status and bind/unbind row per device,
 which is all day-to-day operation reads). All are in `default`, so a plain build has
 every surface; `cargo build --no-default-features` produces the lean server — no

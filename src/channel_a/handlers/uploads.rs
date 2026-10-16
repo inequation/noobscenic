@@ -67,7 +67,8 @@ pub async fn upload_raw(State(state): State<AppState>, request: Request) -> Resp
             sn = sn.unwrap_or("-"),
             bytes = body.len(),
             trace,
-            "raw upload stored"
+            stored = cfg!(feature = "debug-raw"),
+            "raw upload"
         ),
         Err(error) => tracing::error!(%error, %endpoint, "could not store the raw upload"),
     }

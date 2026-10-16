@@ -394,7 +394,10 @@ pub async fn upsert_clean_path(
     Ok(())
 }
 
-/// `uploadLogs` / `uploadStats` / `uploadSingle`: kept exactly as received.
+/// `uploadLogs` / `uploadStats` / `uploadSingle`: kept exactly as received. This is a
+/// debug archive with no reader in the server — the wire traces carry the bytes — so
+/// only the `debug-raw` build writes it.
+#[cfg(feature = "debug-raw")]
 pub async fn insert_upload_raw(
     pool: &SqlitePool,
     sn: Option<&str>,
@@ -413,6 +416,19 @@ pub async fn insert_upload_raw(
     .bind(now_ms())
     .execute(pool)
     .await?;
+    Ok(())
+}
+
+/// Without `debug-raw` the upload archive is skipped; the robot still gets its
+/// `code:0` and the map-backup staging is independent (`map_backups`).
+#[cfg(not(feature = "debug-raw"))]
+pub async fn insert_upload_raw(
+    _pool: &SqlitePool,
+    _sn: Option<&str>,
+    _endpoint: &str,
+    _fields_json: &str,
+    _trace_ref: Option<&str>,
+) -> Result<()> {
     Ok(())
 }
 

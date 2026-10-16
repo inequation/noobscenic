@@ -72,7 +72,8 @@ by default, so a plain `cargo build` / `cargo run` is the full server described 
 
 - `debug-trace` — the JSONL wire timeline (`var/traces/wire-*.jsonl`) and the
   database `trace_ref`s that point into it,
-- `debug-raw` — the verbatim byte captures (`var/traces/raw/…`),
+- `debug-raw` — the verbatim byte captures (`var/traces/raw/…`) and the
+  `uploads_raw` archive of `uploadLogs`/`uploadStats`/`uploadSingle` bodies,
 - `console` — the operator console and the one-shot CLI verbs (`noobscenic devices`,
   `noobscenic send …`),
 - `event-history` — the full `events` table history and the `events` console verb;

@@ -306,6 +306,11 @@ only the newest `20001` status and the newest bind/unbind row per device are kep
 everything else is dropped before insert, and `prune_events_latest_only` reduces an
 existing table at startup.
 
+**Raw upload archive.** `uploads_raw` (`uploadLogs`/`uploadStats`/`uploadSingle`) is a
+debug archive with no reader in the server: it is written only with `debug-raw`, and
+the wire traces carry the bytes in every build. Dropping it does not affect the map
+backup, which is staged separately in `map_backups`.
+
 ---
 
 ## 8. Logging & wire tracing
@@ -362,7 +367,7 @@ and rebuilds the request; the response body is tapped on the way out.
 | `POST /cleanPack/sync` | device attrs + OTA check | `{"code":0,…,"hasUpdateFile":0}` |
 | `POST /cleanPack/response` | command ACK | `{"code":0}` |
 | `POST /cleanPack/uploadEvents` | telemetry → `proto::dispatch` | `{"code":0}` |
-| `POST /cleanPack/uploadLogs\|uploadStats\|uploadSingle` | store raw | `{"code":0}` |
+| `POST /cleanPack/uploadLogs\|uploadStats\|uploadSingle` | archive (`debug-raw`; never read by the server) | `{"code":0}` |
 | `POST /cleanPack/binding\|unbinding` | record bind | `{"code":0}` |
 | `GET /` with `?version=1&sn=…` | version check | see below |
 | **any other path/method** | tap + persist + warn | `{"code":0,"message":"ok","data":{}}` |
@@ -1453,7 +1458,7 @@ leave a surface out of the binary entirely.
 | Feature | Kind | What it gates |
 |---|---|---|
 | `debug-trace` | debug | the wire tap's JSONL sink (`wire-*.jsonl`), the `trace_ref` file references it produces, and the record-building sites that feed it |
-| `debug-raw` | debug | the verbatim raw sink (`traces/raw/…`) |
+| `debug-raw` | debug | the verbatim raw sink (`traces/raw/…`) and the `uploads_raw` archive of `uploadLogs`/`uploadStats`/`uploadSingle` bodies |
 | `console` | advanced control | the stdin/stdout operator console (§12), the one-shot CLI verbs (`devices`, `device`, `map`, `path`, `send`, `commands`, plus `events` with `event-history`) and the experiment verbs (`send-full`, `style`, `pongs`) |
 | `event-history` | behaviour | the full `events` table history and the `events` console/CLI verb. Off, only the newest status (`20001`) and bind/unbind row per device are kept — everything else is dropped on insert and pruned at startup |
 | `cli-ux` | comfort | clap's colour and typo suggestions; help, usage and error context stay in either way. The router build's flags (§15 Phase 10) leave it out — measured 13 KB on that binary |

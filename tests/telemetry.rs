@@ -354,11 +354,18 @@ async fn raw_uploads_are_stored_verbatim() {
     .fetch_all(&state.db)
     .await
     .expect("upload rows");
-    assert_eq!(rows.len(), 3);
-    for (endpoint, fields, trace) in &rows {
-        assert!(fields.contains("\"taskid\":\"7\""), "{fields}");
-        assert!(fields.contains("\"anything\":true"), "{fields}");
-        assert_trace_ref(&state, trace.as_deref(), endpoint);
+    if cfg!(feature = "debug-raw") {
+        assert_eq!(rows.len(), 3);
+        for (endpoint, fields, trace) in &rows {
+            assert!(fields.contains("\"taskid\":\"7\""), "{fields}");
+            assert!(fields.contains("\"anything\":true"), "{fields}");
+            assert_trace_ref(&state, trace.as_deref(), endpoint);
+        }
+    } else {
+        assert!(
+            rows.is_empty(),
+            "the upload archive needs debug-raw: {rows:?}"
+        );
     }
 
     cleanup(state).await;
