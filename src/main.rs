@@ -109,6 +109,18 @@ async fn main() -> ExitCode {
         }
     };
 
+    // Before the log file and the data directory are created: the switch needs
+    // root, and everything the server writes afterwards should belong to the
+    // unprivileged account (doc/PLAN.md §6, feature `posix-runas`).
+    #[cfg(feature = "posix-runas")]
+    let dropped = match noobscenic::runas::apply(config.runas.as_ref()) {
+        Ok(dropped) => dropped,
+        Err(error) => {
+            eprintln!("noobscenic: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+
     // Held for as long as the process runs: dropping it stops the file writer.
     let _log_guard = match init_tracing(&config) {
         Ok(guard) => guard,
@@ -117,6 +129,36 @@ async fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+
+    #[cfg(feature = "posix-runas")]
+    if let Some(runas) = &config.runas {
+        let group = runas.group.as_deref().unwrap_or("<primary group>");
+        match &dropped {
+            Some(ids) => tracing::info!(
+                user = %runas.user,
+                group = %group,
+                uid = ids.uid,
+                gid = ids.gid,
+                "dropped root privileges"
+            ),
+            None => tracing::debug!(
+                user = %runas.user,
+                "runas is set but the process is not root; nothing to drop"
+            ),
+        }
+    }
+
+    // A build without the feature keeps the config valid: the example file names
+    // `nobody`, and ignoring it silently would claim a drop that never happened.
+    #[cfg(not(feature = "posix-runas"))]
+    if let Some(runas) = &config.runas {
+        let group = runas.group.as_deref().unwrap_or("<primary group>");
+        tracing::warn!(
+            user = %runas.user,
+            group = %group,
+            "runas is configured but this build has no posix-runas feature; running as the current user"
+        );
+    }
 
     let result = match cli.command.unwrap_or(Command::Serve) {
         Command::Serve => noobscenic::run(config).await,

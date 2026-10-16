@@ -4,11 +4,12 @@ This is the always-on deployment target from PLAN §18: the router runs the serv
 and the robot talks to it on the LAN, with the binary and all state on a USB stick.
 Nothing here needs a toolchain *on* the router.
 
-Status (2026-10-12): the cross-build is verified from a Windows host — all four
+Status (2026-10-17): the cross-build is verified from a Windows host — all four
 feature combinations build, the deployment binary is 3.2 MB after the size pass
 below, the artifact is a statically linked soft-float ARMv7 ELF, and its syscalls
-have been audited against the router's 2.6.36 kernel. The on-router smoke test is
-still **pending** (see the checklist at the end).
+have been audited against the router's 2.6.36 kernel. A build with the opt-in
+`posix-runas` feature (`--features console,posix-runas`) also cross-links. The
+on-router smoke test is still **pending** (see the checklist at the end).
 
 ## The device
 
@@ -290,6 +291,41 @@ A) and `0.0.0.0:8081` (channel B); Tomato's own UI is on 80/443, so neither
 conflicts, but check with `netstat -lnt`. The operator console and the one-shot
 CLI verbs work over telnet too.
 
+## Running as an unprivileged user
+
+FreshTomato's `usbmount` hook runs as root, so the server does too unless it is
+told otherwise. That is what the `posix-runas` feature is for:
+
+```powershell
+cargo zigbuild --profile router --target armv7-unknown-linux-musleabi `
+    --no-default-features --features console,posix-runas
+```
+
+Put the account in `config.json` — `nobody` exists on most systems, but
+FreshTomato is BusyBox-based, so check `/etc/passwd` and `/etc/group` first:
+
+```json
+"runas": { "user": "nobody", "group": "nobody" }
+```
+
+At startup the server resolves `user` with `getpwnam` and `group` with `getgrnam`
+(leaving `group` out means the user's primary group), then switches with
+`setgid` → `initgroups` → `setuid` — before it opens the log file or creates the
+data directory. Everything under `var/` is therefore created as that account,
+and the directory the server starts in must be traversable and writable by it;
+on a fresh stick that means:
+
+```sh
+chown -R nobody:nobody /tmp/mnt/DATA/noobscenic
+```
+
+An unknown user or group, or a `var/` the account cannot write, stops the server
+at startup with the reason on stderr (the rc script's `run.log`). The drop
+happens before the listeners bind, so both ports must be ≥1024 — the 8080/8081
+defaults are. Without `posix-runas` the config is not an error: the server logs
+one warning and keeps the user it was started as, which is what a stock or
+Windows build does.
+
 ## Still to do on the device
 
 - [ ] `uname -a` shows the expected 2.6.36.x `brcmarm` kernel, and
@@ -300,6 +336,8 @@ CLI verbs work over telnet too.
       `devices` lists the robot
 - [ ] the web UI loads at `http://<router>:8080/` and the map updates
 - [ ] memory headroom (`free`) and USB write behaviour over a full clean cycle
+- [ ] with the `posix-runas` build, `ps w | grep noobscenic` shows the configured
+      user and `var/` is owned by it
 - [ ] optionally `opkg install strace` from Entware's `armv7sf-k2.6` feed if
       something needs tracing
 

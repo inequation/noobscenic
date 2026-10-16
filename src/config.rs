@@ -23,6 +23,9 @@ pub struct Config {
     pub http: Http,
     pub gateway: Gateway,
     pub console: Console,
+    /// The account to drop root to on POSIX; `None` stays as started. Only acted on
+    /// with the `posix-runas` feature — see doc/PLAN.md §6.
+    pub runas: Option<RunAs>,
     pub registration: Registration,
     pub ota: Ota,
     pub logging: Logging,
@@ -36,6 +39,7 @@ impl Default for Config {
             http: Http::default(),
             gateway: Gateway::default(),
             console: Console::default(),
+            runas: None,
             registration: Registration::default(),
             ota: Ota::default(),
             logging: Logging::default(),
@@ -130,6 +134,17 @@ impl Default for Console {
     fn default() -> Self {
         Console { enabled: true }
     }
+}
+
+/// `getpwnam`-style account to run as (feature `posix-runas`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RunAs {
+    /// The account to become. Must exist in the system's passwd database.
+    pub user: String,
+    /// The group to become; `null` means the user's primary group, like the
+    /// reference snippet. Must exist in the system's group database.
+    pub group: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -395,6 +410,7 @@ mod tests {
                        "ack_handshake": true, "announce_app_online": true,
                        "encrypt_commands": false, "command_ttl_secs": 300 },
           "console": { "enabled": true },
+          "runas":   { "user": "nobody", "group": "nobody" },
           "registration": { "accept_all": true, "session_ttl_secs": null },
           "ota":     { "enabled": false },
           "logging": { "level": "info",
@@ -407,6 +423,33 @@ mod tests {
         assert_eq!(config.database.max_connections, 2);
         assert_eq!(config.gateway.ping_timeout_secs, 120);
         assert!(config.logging.wire.format.jsonl() && config.logging.wire.format.raw());
+        let runas = config.runas.expect("runas parsed");
+        assert_eq!(runas.user, "nobody");
+        assert_eq!(runas.group.as_deref(), Some("nobody"));
+    }
+
+    #[test]
+    fn runas_is_optional_and_group_may_be_left_out() {
+        let config: Config = serde_json::from_str(r#"{"runas": {"user": "nobody"}}"#)
+            .expect("runas without a group parses");
+        let runas = config.runas.expect("runas parsed");
+        assert_eq!(runas.user, "nobody");
+        assert_eq!(runas.group, None);
+        assert!(Config::default().runas.is_none());
+    }
+
+    #[test]
+    fn runas_without_a_user_is_rejected() {
+        let err = serde_json::from_str::<Config>(r#"{"runas": {"group": "nobody"}}"#)
+            .expect_err("a group without a user is a typo");
+        assert!(err.to_string().contains("user"), "{err}");
+    }
+
+    #[test]
+    fn a_typo_inside_runas_is_reported() {
+        let err = serde_json::from_str::<Config>(r#"{"runas": {"username": "nobody"}}"#)
+            .expect_err("an unknown runas key is a typo");
+        assert!(err.to_string().contains("username"), "{err}");
     }
 
     /// `sqlite://<path>` as a `PathBuf`, so the tests do not care about the

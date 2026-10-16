@@ -15,9 +15,17 @@ pub mod error;
 pub mod map;
 pub mod path;
 pub mod proto;
+#[cfg(all(feature = "posix-runas", unix))]
+pub mod runas;
 pub mod session;
 pub mod web;
 pub mod wire;
+
+// The feature is POSIX-only by design: it is not in `default`, so a Windows build
+// never needs it, and asking for it there is a build-time error rather than a
+// silently ignored config key (doc/PLAN.md §21).
+#[cfg(all(feature = "posix-runas", not(unix)))]
+compile_error!("the `posix-runas` feature is POSIX-only and cannot be built for this target");
 
 use std::sync::Arc;
 

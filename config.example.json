@@ -12,6 +12,7 @@
                "encrypt_commands": false,
                "command_ttl_secs": 300 },
   "console": { "enabled": true },
+  "runas":   { "user": "nobody", "group": "nobody" },
 
   "registration": { "accept_all": true, "session_ttl_secs": null },
   "ota":     { "enabled": false },

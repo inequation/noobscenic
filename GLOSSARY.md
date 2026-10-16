@@ -131,13 +131,14 @@ table, `clean_paths` and terminal `commands` history and the `events` verb; with
 off `events` keeps only the newest status and bind/unbind row, `clean_paths` only the
 newest path and `sessions` only the newest session per device, and terminal command
 rows are dropped, which is all day-to-day operation reads). All are in `default`, so
-a plain build has every surface; `cargo build --no-default-features` produces the
-lean server — no trace files (the database's `trace_ref` columns stay empty), no
-console, no `noobscenic events` subcommand, a two-row `events` table, one path and
-one session per device, and only live commands — while the protocols, the web UI and
-the command queue are unchanged. Asking for a compiled-out sink in `logging.wire`
-warns and records nothing rather than failing, so one config file works across
-builds.
+a plain build has every surface — the one opt-in exception is `posix-runas`, the
+POSIX-only [run-as](#run-as-privilege-drop) feature; `cargo build
+--no-default-features` produces the lean server — no trace files (the database's
+`trace_ref` columns stay empty), no console, no `noobscenic events` subcommand, a
+two-row `events` table, one path and one session per device, and only live commands —
+while the protocols, the web UI and the command queue are unchanged. Asking for a
+compiled-out sink in `logging.wire` warns and records nothing rather than failing, so
+one config file works across builds.
 
 ## Robot settings
 
@@ -183,3 +184,16 @@ documented in `doc/ROUTER_BUILD.md`. It carries its own libc (musl) and embeds t
 web page and the migrations, so the USB stick only needs the one executable plus a
 writable data directory. The profile is release plus `panic=abort`, fat LTO, one
 codegen unit and `-Oz`, which brings the deployment binary to ~3.2 MB.
+
+## Run-as (privilege drop)
+
+The job of the `posix-runas` feature: a router or NAS rc script starts the server
+as root, and `runas` in `config.json` names the unprivileged account it should
+become instead. At startup the server resolves `runas.user` with `getpwnam` and
+`runas.group` with `getgrnam` (no group = the user's primary group from
+`/etc/passwd`), then switches with `setgid` → `initgroups` → `setuid` — before it
+opens the log file or creates the data directory, so the whole deployment runs and
+is owned as that account. The feature is POSIX-only and deliberately not in
+`default`; a build without it warns when `runas` is set and keeps the user it was
+started as, and enabling it on a non-unix target is a compile error. See
+`src/runas.rs` and doc/PLAN.md §6.

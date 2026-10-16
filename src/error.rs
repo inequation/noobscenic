@@ -45,6 +45,9 @@ pub enum Error {
 
     #[error("invalid configuration: {0}")]
     Config(String),
+
+    #[error("runas: {0}")]
+    RunAs(String),
 }
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;

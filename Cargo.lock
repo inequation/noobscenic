@@ -1044,6 +1044,7 @@ dependencies = [
  "base64 0.23.1",
  "chrono",
  "clap",
+ "libc",
  "lz4_flex",
  "md-5",
  "rand",

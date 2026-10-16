@@ -63,7 +63,9 @@ There is **no authentication**: anyone who can reach port 8080 can drive the rob
 To change settings, copy `config.example.json` to `config.json` (it is read from the
 working directory; unknown keys are rejected). The interesting ones:
 `gateway.encrypt_commands` (allows `encrypt:1` command encryption),
-`logging.wire` (what gets captured), `http.bind` / `gateway.bind`, `console.enabled`.
+`logging.wire` (what gets captured), `http.bind` / `gateway.bind`, `console.enabled`,
+and `runas.user` / `runas.group` (POSIX builds with the `posix-runas` feature drop
+root to that account before they create any file).
 
 ### Build variants
 
@@ -80,6 +82,13 @@ by default, so a plain `cargo build` / `cargo run` is the full server described 
   plus the `events` console verb; without it events, paths and sessions keep only
   the newest row per device, and terminal command rows are dropped (expired and
   failed ones with a warning).
+
+Those five are all in `default`. `posix-runas` is the one feature outside it (and the
+only POSIX-only one): it makes the server act on `runas.user` / `runas.group` from
+`config.json` — resolving the account with `getpwnam`/`getgrnam` and, when started as
+root, dropping to it before the log file and the data directory are created. A build
+without the feature warns that `runas` is configured and keeps the user it was
+started as, so the example config stays valid everywhere.
 
 A lean build drops them all:
 
@@ -176,7 +185,9 @@ See [`doc/PLAN.md`](doc/PLAN.md) §14 for what these would look like.
 Status: re-homing, control, telemetry, maps, zones, backups and the web UI — with spot
 cleaning both around the robot and placed anywhere on the map, plus a settings form
 for volume, mute, LED, suction and consumable ages — all work, and the debug traces,
-the operator console and the full history are build-time features that are on
-by default and strippable with `--no-default-features`, and a static soft-float ARMv7 build for the
-ASUS RT-AC68U on FreshTomato cross-compiles and passes its ELF and syscall checks
+the operator console and the full history are build-time features that are on by
+default and strippable with `--no-default-features`, with an opt-in POSIX-only
+`posix-runas` feature letting a root-started server drop to the configured `runas`
+user and group before it creates any file, and a static soft-float ARMv7 build for
+the ASUS RT-AC68U on FreshTomato cross-compiles and passes its ELF and syscall checks
 (`doc/ROUTER_BUILD.md`), with the on-router smoke test still pending.

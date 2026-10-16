@@ -24,6 +24,10 @@ console = []
 # `--no-default-features --features console`; help, usage and error context stay
 # in either way.
 cli-ux = ["clap/color", "clap/suggestions"]
+# Drop root at startup to the account named by `runas` in config.json. POSIX-only
+# and deliberately not in `default`: a Windows build must keep working, and a
+# build without it only warns when `runas` is set (doc/PLAN.md §21).
+posix-runas = ["dep:libc"]
 
 [dependencies]
 aes = "0.9.3"
@@ -32,6 +36,8 @@ base64 = "0.23.1"
 chrono = "0.4.45"
 clap = { version = "4.6.6", default-features = false, features = ["std", "help", "usage", "error-context", "derive"] }
 lz4_flex = "0.14.0"
+# Only linked with `posix-runas`: getpwnam_r/getgrnam_r, initgroups, setuid.
+libc = { version = "0.2.177", optional = true }
 md-5 = "0.11.0"
 rand = "0.10.2"
 serde = { version = "1.0.229", features = ["derive"] }

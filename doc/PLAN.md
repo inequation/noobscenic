@@ -202,6 +202,7 @@ soup beyond that.
                "encrypt_commands": false,
                "command_ttl_secs": 300 },
   "console": { "enabled": true },
+  "runas":   { "user": "nobody", "group": "nobody" },
 
   "registration": { "accept_all": true, "session_ttl_secs": null },
   "ota":     { "enabled": false },
@@ -235,6 +236,16 @@ soup beyond that.
   [REPORT §3], so a self-signed cert is enough whenever we do want `https://` — the
   only reason to bother is a DNS-override deployment that impersonates
   `mobile.proscenic.cn` instead of using `setUrl`.
+* `runas` names the account the server becomes when it is started as root — the
+  router/NAS deployment. `user` is resolved with `getpwnam` and `group` with
+  `getgrnam`; `group: null` uses the user's primary group from `/etc/passwd`, and an
+  unknown user or group is a startup error. The object parses in every build, but
+  only a build with the `posix-runas` feature (POSIX-only, deliberately not in
+  `default`) acts on it; without the feature the server warns and keeps the current
+  user, so one config file stays valid across builds. The switch happens before the
+  log file and the data directory are created, so everything the server writes
+  belongs to that account — which also means both listeners must be on
+  unprivileged ports (the defaults are).
 
 ---
 
@@ -952,13 +963,20 @@ row, clean path and session per device, plus only the live commands.
   binary
 - [x] `[profile.router]` (release + `panic=abort`) added so a panic cannot reach
   libunwind's VFP save/restore stubs
+- [x] `posix-runas`: `runas.user`/`runas.group` in config.json resolved with
+  `getpwnam`/`getgrnam` (`group: null` = the primary group) and root dropped with
+  `setgid` → `initgroups` → `setuid` before the log file or data directory exist;
+  the feature is POSIX-only and opt-in, and a build without it warns
 - [ ] on-device smoke test: run from the USB stick on the RT-AC68U, robot
-  handshake, web UI, memory and USB writes
+  handshake, web UI, memory, USB writes and (with `posix-runas`) `ps` showing the
+  configured user
 
 **Done when:** the binary built this way runs on the RT-AC68U from the USB stick and
 the robot shows `online`.
-**Status (2026-10-12):** build, artifact and syscall checks all pass; the on-router
-smoke test is the only item left (checklist in `doc/ROUTER_BUILD.md`).
+**Status (2026-10-17):** build, artifact and syscall checks all pass, and the
+opt-in `posix-runas` feature is implemented and cross-links into the router
+binary; the on-router smoke test is the only item left (checklist in
+`doc/ROUTER_BUILD.md`).
 
 ---
 
@@ -1474,7 +1492,8 @@ path is live-verified; the UI flow itself still needs an operator-gated live run
 The debugging surfaces, the operator console and the CLI's comfort features are Cargo
 features. All five are in `default`, so `cargo build` / `cargo run` / `cargo install`
 produce exactly the server described above; the flags exist so a lean box (§18) can
-leave a surface out of the binary entirely.
+leave a surface out of the binary entirely. `posix-runas` is the one exception: a
+deployment feature, opt-in and POSIX-only (§15 Phase 10).
 
 | Feature | Kind | What it gates |
 |---|---|---|
@@ -1483,6 +1502,7 @@ leave a surface out of the binary entirely.
 | `console` | advanced control | the stdin/stdout operator console (§12), the one-shot CLI verbs (`devices`, `device`, `map`, `path`, `send`, `commands`, plus `events` with `history`) and the experiment verbs (`send-full`, `style`, `pongs`) |
 | `history` | behaviour | the full `events` table, `clean_paths` and terminal `commands` history, plus the `events` console/CLI verb. Off, only the newest status (`20001`) and bind/unbind row, the newest clean path and one session per device are kept, and terminal command rows are dropped on transition |
 | `cli-ux` | comfort | clap's colour and typo suggestions; help, usage and error context stay in either way. The router build's flags (§15 Phase 10) leave it out — measured 13 KB on that binary |
+| `posix-runas` | deployment (POSIX) | dropping root to the account named by `runas` in `config.json`: `getpwnam_r`/`getgrnam_r` resolution, then `setgid` → `initgroups` → `setuid`. Not in `default` — a Windows build must not need it — and asking for it on a non-unix target is a compile error |
 
 The console is a control surface, not a debug feature: it is grouped separately here
 and in the README, and it can be built with or without the trace sinks.
@@ -1522,7 +1542,13 @@ Semantics when a feature is compiled out:
 * Without `console` the process has no stdin loop and no state/queue/send
   subcommands; Ctrl-C is the shutdown path. The web UI and the HTTP API are not
   affected by any of these features.
+* `runas` parses in every build. With `posix-runas` it is applied in `main` before
+  logging is up and before the data directory exists; without the feature a config
+  that sets it logs one warning and the process keeps the user it was started as,
+  so the example config stays valid on Windows and in lean builds.
 
 Verification is the feature-combination test matrix: default, `--no-default-features`,
 each feature alone, and `debug-trace,debug-raw`. Default runs keep the existing
 trace-file assertions; stripped runs assert the trace-free behavior instead.
+`posix-runas` is outside that matrix — it cannot build on Windows — so it is
+verified by the ARM cross-build and its unit tests on a POSIX host.
