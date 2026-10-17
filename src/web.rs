@@ -72,14 +72,23 @@ const CATALOG: &[(&str, i64, &str)] = &[
     ("findCharge", 21012, "{\"cmd\":\"start\"}"),
     // Pausing the *return* is 21012, not the cleaning pause above (FUNC_COMMANDS §1.3).
     ("pauseReturn", 21012, "{\"cmd\":\"pause\"}"),
+    ("deepClean", 21005, "{\"mode\":\"depthTotalClean\"}"),
+    (
+        "yMop",
+        21005,
+        "{\"mode\":\"smartClean\",\"pathType\":\"y_word\"}",
+    ),
 ];
 
 // The one-shot actions that ride the realtime `21020` path, all refused otherwise:
 // steering 3005-3008, 4001 zero speed and 4000 leave manual mode (FUNC_COMMANDS
 // §2.1); the locate sound's 3010/3011 (§6.3); the mute toggle 3022 (§6.2 — a
 // toggle, so the client only sends it to reach the state the echo says it is not
-// in); and spot clean 3001 (FUNC_MAP §6.3).
-const CONTROL_CODES: [i64; 10] = [3001, 3005, 3006, 3007, 3008, 3010, 3011, 3022, 4000, 4001];
+// in); spot clean 3001 (FUNC_MAP §6.3); and the brushes/fan switch's 3025 on /
+// 3026 off (FUNC_COMMANDS §4.5).
+const CONTROL_CODES: [i64; 12] = [
+    3001, 3005, 3006, 3007, 3008, 3010, 3011, 3022, 3025, 3026, 4000, 4001,
+];
 
 /// The codes that mean "the client is driving": only these arm the
 /// leave-manual-mode watchdog. Mute, locate and spot clean are one-shot frames —
@@ -191,18 +200,22 @@ pub async fn robots(State(state): State<AppState>) -> Response {
     };
     let robots: Vec<Value> = rows
         .into_iter()
-        .map(|(sn, label, _bind_user, bind_state, last_seen_ms)| {
-            let online = state.registry.is_online(&sn);
-            let label = label.unwrap_or_else(|| sn.clone());
-            json!({
-                "id": sn,
-                "label": label,
-                "sn": sn,
-                "online": online,
-                "bind_state": bind_state,
-                "last_seen_ms": last_seen_ms,
-            })
-        })
+        .map(
+            |(sn, label, _bind_user, bind_state, last_seen_ms, firmware, mcu)| {
+                let online = state.registry.is_online(&sn);
+                let label = label.unwrap_or_else(|| sn.clone());
+                json!({
+                    "id": sn,
+                    "label": label,
+                    "sn": sn,
+                    "online": online,
+                    "bind_state": bind_state,
+                    "last_seen_ms": last_seen_ms,
+                    "firmware": firmware,
+                    "mcu": mcu,
+                })
+            },
+        )
         .collect();
     Json(json!({"robots": robots})).into_response()
 }
@@ -310,13 +323,18 @@ pub async fn config(
         (info_type::CONFIG, "setledswitch", Some(value)) if value == 0 || value == 1 => {
             json!({"cmd": "setledswitch", "value": value})
         }
+        // Which end of 1..4 is "most water" is still unverified (FUNC_COMMANDS §4.3);
+        // the page labels 1 low and 4 high as a working assumption.
+        (info_type::CONFIG, "setWaterPump", Some(value)) if (1..=4).contains(&value) => {
+            json!({"cmd": "setWaterPump", "value": value})
+        }
         (info_type::SUCTION, "quiet" | "auto" | "strong" | "max", None) => {
             json!({"cmd": form.cmd.clone()})
         }
         _ => {
             return bad_request(
-                "unsupported setting: expected 21024 setVolume 0-10 / setledswitch 0-1, \
-                 or 21022 quiet|auto|strong|max",
+                "unsupported setting: expected 21024 setVolume 0-10 / setledswitch 0-1 / \
+                 setWaterPump 1-4, or 21022 quiet|auto|strong|max",
             );
         }
     };
@@ -397,6 +415,93 @@ pub async fn goods_reset(
     let payload = Value::Object(object).to_string();
     match queries::insert_command(&state.db, &sn, info_type::GOODS_WRITE, &payload, 0).await {
         Ok(command_id) => Json(json!({"queued": command_id, "part": part})).into_response(),
+        Err(error) => internal(error),
+    }
+}
+
+/// `GET /api/robot/{id}/device-info` — the newest `21019` reply (Wi-Fi addresses,
+/// signal, `compileVer`/`mcuVer`), cached like zones and consumables.
+pub async fn device_info(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    let Some(sn) = resolve(&state, &id).await else {
+        return unknown(&id);
+    };
+    state.watchers.touch(&sn);
+
+    let stored = match queries::load_device_info(&state.db, &sn).await {
+        Ok(stored) => stored,
+        Err(error) => return internal(error),
+    };
+    let (read_ms, payload) = stored.unwrap_or((None, None));
+    let parts: Value = payload
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or(Value::Null);
+    Json(json!({"read_ms": read_ms, "parts": parts})).into_response()
+}
+
+/// `POST /api/robot/{id}/device-info/refresh` — ask for a fresh `21019`.
+pub async fn device_info_refresh(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Response {
+    let Some(sn) = resolve(&state, &id).await else {
+        return unknown(&id);
+    };
+    state.watchers.touch(&sn);
+    if !state.registry.is_online(&sn) {
+        return conflict("device is offline");
+    }
+    match queries::insert_command(&state.db, &sn, info_type::NETWORK_INFO, "{}", 0).await {
+        Ok(command_id) => Json(json!({"queued": command_id})).into_response(),
+        Err(error) => internal(error),
+    }
+}
+
+/// `POST /api/robot/{id}/reboot` — the maintenance `21024 reboot` (COMMANDS.md).
+///
+/// Deliberately online-only: a reboot queued while the robot is away would fire
+/// minutes later when it reconnects, which is exactly the kind of surprise the
+/// generic queue exists to avoid for unattended actions.
+pub async fn reboot(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    let Some(sn) = resolve(&state, &id).await else {
+        return unknown(&id);
+    };
+    state.watchers.touch(&sn);
+    if !state.registry.is_online(&sn) {
+        return conflict("device is offline");
+    }
+    match queries::insert_command(&state.db, &sn, info_type::CONFIG, "{\"cmd\":\"reboot\"}", 0)
+        .await
+    {
+        Ok(command_id) => Json(json!({"queued": command_id})).into_response(),
+        Err(error) => internal(error),
+    }
+}
+
+/// `POST /api/robot/{id}/map/delete` — `21024 delCurMap` (FUNC_MAP §8.1).
+///
+/// Destructive: blocked while a clean is running, like zone edits, so a map delete
+/// cannot race the robot's own map writes mid-job.
+pub async fn map_delete(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    let Some(sn) = resolve(&state, &id).await else {
+        return unknown(&id);
+    };
+    state.watchers.touch(&sn);
+    if !state.registry.is_online(&sn) {
+        return conflict("device is offline");
+    }
+    if cleaning_in_progress(&state, &sn).await {
+        return conflict("a clean is running; the map cannot be deleted");
+    }
+    match queries::insert_command(
+        &state.db,
+        &sn,
+        info_type::CONFIG,
+        "{\"cmd\":\"delCurMap\"}",
+        0,
+    )
+    .await
+    {
+        Ok(command_id) => Json(json!({"queued": command_id})).into_response(),
         Err(error) => internal(error),
     }
 }

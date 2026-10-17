@@ -724,9 +724,19 @@ pub async fn ack_command(
 /// `(sn, label, bind_user, bind_state, last_seen_ms)` for the robot dropdown.
 pub async fn list_robots(
     pool: &SqlitePool,
-) -> Result<Vec<(String, Option<String>, Option<String>, String, i64)>> {
+) -> Result<
+    Vec<(
+        String,
+        Option<String>,
+        Option<String>,
+        String,
+        i64,
+        Option<String>,
+        Option<String>,
+    )>,
+> {
     Ok(sqlx::query_as(
-        "SELECT sn, label, bind_user, bind_state, last_seen_ms
+        "SELECT sn, label, bind_user, bind_state, last_seen_ms, app_version, mcu_ver
          FROM devices ORDER BY last_seen_ms DESC",
     )
     .fetch_all(pool)
@@ -1134,6 +1144,43 @@ pub async fn store_goods(
 ) -> Result<()> {
     sqlx::query(
         "INSERT INTO goods (sn, read_ms, payload, trace_ref)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(sn) DO UPDATE SET
+             read_ms   = excluded.read_ms,
+             payload   = excluded.payload,
+             trace_ref = excluded.trace_ref",
+    )
+    .bind(sn)
+    .bind(now_ms())
+    .bind(payload)
+    .bind(trace_ref)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// The newest `21019` network/version reply — Wi-Fi addresses, signal and
+/// `compileVer`/`mcuVer` (FUNC_STATUS §6). One row per device.
+pub async fn load_device_info(
+    pool: &SqlitePool,
+    sn: &str,
+) -> Result<Option<(Option<i64>, Option<String>)>> {
+    Ok(
+        sqlx::query_as("SELECT read_ms, payload FROM device_info WHERE sn = ?")
+            .bind(sn)
+            .fetch_optional(pool)
+            .await?,
+    )
+}
+
+pub async fn store_device_info(
+    pool: &SqlitePool,
+    sn: &str,
+    payload: &str,
+    trace_ref: Option<&str>,
+) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO device_info (sn, read_ms, payload, trace_ref)
          VALUES (?, ?, ?, ?)
          ON CONFLICT(sn) DO UPDATE SET
              read_ms   = excluded.read_ms,

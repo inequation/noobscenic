@@ -129,8 +129,6 @@ document.documentElement.dataset.theme =
   #goods { list-style: none; margin: 0; padding: 0; display: flex;
            flex-direction: column; gap: 6px; font-size: 14px; }
   #goods button { min-width: 0; padding: 4px 8px; }
-  #sent { min-width: 0; font-size: 13px; color: var(--muted);
-          white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 </style>
 </head>
 <body>
@@ -150,11 +148,11 @@ document.documentElement.dataset.theme =
     <div class="tools">
       <button id="remote-open" title="Remote control">🕹️</button>
       <button id="locate" title="Locate robot">📢</button>
+      <button id="deep-clean" title="Deep whole-home clean">➕</button>
+      <button id="y-mop" title="Y-shaped mopping">🇾</button>
+      <button id="reboot" title="Reboot robot">🔄</button>
       <button id="settings-open" title="Settings">⚙️</button>
     </div>
-    <select id="command"></select>
-    <button id="send">Send</button>
-    <span id="sent"></span>
   </div>
 </aside>
 <section id="remote">
@@ -187,6 +185,17 @@ document.documentElement.dataset.theme =
       <button data-suction="auto" title="Auto">auto</button>
       <button data-suction="strong" title="Strong">strong</button>
       <button data-suction="max" title="Max (strongest)">max</button>
+    </div>
+    <div class="caption">Water level (1 = low, 4 = high)</div>
+    <div class="row" id="set-water">
+      <button data-water="1" title="Low">1</button>
+      <button data-water="2" title="Medium">2</button>
+      <button data-water="3" title="High">3</button>
+      <button data-water="4" title="Highest">4</button>
+    </div>
+    <div class="caption">Brushes &amp; fan</div>
+    <div class="row">
+      <button id="set-components" title="Turn off">on</button>
     </div>
 
     <h3>Identity</h3>
@@ -243,6 +252,7 @@ document.documentElement.dataset.theme =
     <button id="edit-resize" class="big" title="Resize" disabled>↔️</button>
     <button id="edit-delete" class="big" title="Delete the selected zone">🗑️</button>
     <button id="edit-save" class="big" title="Save zones">💾</button>
+    <button id="map-delete" class="big" title="Delete current map">🔥🗺️</button>
     <button id="edit-cancel" class="close" title="Cancel editing">❌</button>
   </div>
 </footer>
@@ -253,9 +263,7 @@ const canvas = document.getElementById("map");
 const ctx = canvas.getContext("2d");
 const header = document.querySelector("header");
 const robotSelect = document.getElementById("robot");
-const commandSelect = document.getElementById("command");
 const statusLine = document.getElementById("status");
-const sentLine = document.getElementById("sent");
 const menu = document.getElementById("menu");
 const menuToggle = document.getElementById("menu-toggle");
 const chargeButton = document.getElementById("charge");
@@ -270,11 +278,13 @@ const volumeValue = document.getElementById("set-volume-value");
 const ledButton = document.getElementById("set-led");
 const identityBox = document.getElementById("identity");
 const goodsList = document.getElementById("goods");
+const componentsButton = document.getElementById("set-components");
 
 let robot = null;   // the {id} the API is addressed by
 let robotEntries = []; // the dropdown's data, latest from /api/robots
 let robotStatus = null; // newest 20001 payload, for the robot marker's pose
 let goodsState = { read_ms: null, parts: null }; // newest 21015 consumables reply
+let deviceState = { read_ms: null, parts: null }; // newest 21019 network/version reply
 let poseRev = null;     // "x,y,phi" of the last drawn pose
 let mapRev = null;  // "id:received_ms" of the drawn map
 let pathRev = null; // "id:span" of the drawn path
@@ -404,14 +414,6 @@ async function init() {
     location.search = "?id=" + encodeURIComponent(robotSelect.value);
   };
 
-  const catalog = await json("/api/commands");
-  commandSelect.innerHTML = "";
-  for (const name of catalog.commands) {
-    const option = document.createElement("option");
-    option.value = option.textContent = name;
-    commandSelect.append(option);
-  }
-  document.getElementById("send").onclick = send;
   document.getElementById("remote-open").onclick = openRemote;
   document.getElementById("remote-close").onclick = closeRemote;
   for (const button of document.querySelectorAll("#remote .pad button")) {
@@ -426,6 +428,9 @@ async function init() {
     button.addEventListener("contextmenu", (event) => event.preventDefault());
   }
   chargeButton.onclick = () => sendCommand("findCharge");
+  document.getElementById("deep-clean").onclick = () => sendCommand("deepClean");
+  document.getElementById("y-mop").onclick = () => sendCommand("yMop");
+  document.getElementById("reboot").onclick = rebootRobot;
   // Spot cleaning: rc 3001 makes it clean a 1.5 m square around wherever it stands
   // right now (FUNC_MAP §6.3) — no travel first, so no position argument.
   document.getElementById("spot").onclick = () => sendControl(3001);
@@ -467,6 +472,13 @@ async function init() {
   for (const button of document.querySelectorAll("#set-suction button")) {
     button.onclick = () => queueConfig(21022, button.dataset.suction);
   }
+  for (const button of document.querySelectorAll("#set-water button")) {
+    button.onclick = () => queueConfig(21024, "setWaterPump", Number(button.dataset.water));
+  }
+  componentsButton.onclick = () => {
+    const on = robotStatus && robotStatus.cleanComponents === true;
+    sendControl(on ? 3026 : 3025);
+  };
   goodsList.onclick = (event) => {
     const part = event.target.dataset && event.target.dataset.part;
     if (part) resetGoods(part);
@@ -486,6 +498,7 @@ async function init() {
   document.getElementById("edit-undo").onclick = undoZones;
   document.getElementById("edit-delete").onclick = deleteSelectedZone;
   document.getElementById("edit-save").onclick = saveZones;
+  document.getElementById("map-delete").onclick = deleteMap;
   document.getElementById("edit-resize").onclick = toggleResize;
   document.getElementById("zone-play").onclick = cleanSelectedZones;
   document.getElementById("zone-type").onchange = retypeSelectedZone;
@@ -599,19 +612,33 @@ function describe(summary) {
   return bits.join("  ·  ");
 }
 
-async function send() {
-  await sendCommand(commandSelect.value);
-}
-
 async function sendCommand(name) {
   try {
     const body = new URLSearchParams({ name });
     const reply = await api("/command", { method: "POST", body });
-    const note = "queued #" + reply.queued + " " + reply.name;
-    sentLine.textContent = note;
-    statusLine.textContent = note; // the next poll overwrites it
+    statusLine.textContent = "queued #" + reply.queued + " " + reply.name; // the next poll overwrites it
   } catch (error) {
-    sentLine.textContent = "send failed: " + error.message;
+    statusLine.textContent = "send failed: " + error.message;
+  }
+}
+
+async function rebootRobot() {
+  if (!confirm("Reboot the robot?")) return;
+  try {
+    await api("/reboot", { method: "POST" });
+    statusLine.textContent = "reboot queued";
+  } catch (error) {
+    statusLine.textContent = "reboot refused: " + error.message;
+  }
+}
+
+async function deleteMap() {
+  if (!confirm("Delete the robot's current map? This cannot be undone.")) return;
+  try {
+    await api("/map/delete", { method: "POST" });
+    statusLine.textContent = "map delete queued";
+  } catch (error) {
+    statusLine.textContent = "map delete refused: " + error.message;
   }
 }
 
@@ -633,6 +660,7 @@ function openSettings() {
   settingsPane.hidden = false;
   renderSettings();
   refreshGoods();
+  refreshDeviceInfo();
   settingsLabel.focus();
   settingsLabel.select();
 }
@@ -671,14 +699,25 @@ function renderSettings() {
   for (const button of document.querySelectorAll("#set-suction button")) {
     button.classList.toggle("active", button.dataset.suction === status.workNoisy);
   }
+  for (const button of document.querySelectorAll("#set-water button")) {
+    button.classList.toggle("active", Number(button.dataset.water) === status.water);
+  }
+  const components = status.cleanComponents === true;
+  componentsButton.textContent = components ? "on" : "off";
+  componentsButton.title = components ? "Turn off" : "Turn on";
   renderIdentity();
 }
 
 function renderIdentity() {
   const entry = robotEntries.find((candidate) => candidate.id === robot) || {};
+  const info = deviceState.parts || {};
   identityBox.innerHTML = "";
   for (const [name, value] of [
     ["Serial number", entry.sn || robot || "—"],
+    ["Firmware", entry.firmware || "—"],
+    ["MCU", entry.mcu || "—"],
+    ["Wi-Fi signal", info.staSignal != null ? String(info.staSignal) : "—"],
+    ["IP address", info.staIp || "—"],
     ["Last seen", fmtAgo(entry.last_seen_ms)],
   ]) {
     const row = document.createElement("div");
@@ -739,6 +778,29 @@ async function refreshGoods() {
     }
   } catch (error) {
     statusLine.textContent = "consumables: " + error.message;
+  }
+}
+
+/// Cached `21019` read, then a refresh whose reply we wait for (like consumables):
+/// the identity block shows firmware/MCU from `/api/robots`, and the Wi-Fi signal
+/// and IP from this live query.
+async function refreshDeviceInfo() {
+  try {
+    deviceState = await api("/device-info");
+    renderIdentity();
+    const seen = deviceState.read_ms || 0;
+    await api("/device-info/refresh", { method: "POST" });
+    for (let attempt = 0; attempt < 8; attempt++) {
+      await sleep(750);
+      const data = await api("/device-info");
+      if ((data.read_ms || 0) > seen || attempt === 7) {
+        deviceState = data;
+        renderIdentity();
+        return;
+      }
+    }
+  } catch (error) {
+    statusLine.textContent = "device info: " + error.message;
   }
 }
 
@@ -905,14 +967,13 @@ async function startSpotClean() {
   if (!spotCenter) return;
   const deep = document.getElementById("spot-deep").checked;
   try {
-    const reply = await api("/spot", {
+    await api("/spot", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ x: spotCenter[0], y: spotCenter[1], deep }),
     });
     statusLine.textContent = (deep ? "deep " : "") + "spot clean started at "
       + spotCenter.join(", ") + " mm";
-    sentLine.textContent = "queued #" + reply.queued + " and #" + reply.start;
     closeSpot();
   } catch (error) {
     statusLine.textContent = "spot clean refused: " + error.message;

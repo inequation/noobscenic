@@ -173,6 +173,22 @@ async fn the_root_serves_the_page_and_still_answers_the_version_check() {
         "the page must carry the map canvas"
     );
     assert!(body.contains("/api/robots"), "the page must call the API");
+    for marker in [
+        "id=\"deep-clean\"",
+        "id=\"y-mop\"",
+        "id=\"reboot\"",
+        "id=\"map-delete\"",
+        "id=\"set-water\"",
+        "id=\"set-components\"",
+        "/device-info",
+    ] {
+        assert!(body.contains(marker), "the page must carry {marker}");
+    }
+    assert!(
+        !body.contains("id=\"command\""),
+        "the command dropdown is gone"
+    );
+    assert!(!body.contains("id=\"send\""), "the Send button is gone");
 
     let (status, value) = call_json(&app, get("/?version=1&sn=LSLDSM7PROTEST04")).await;
     assert_eq!(status, StatusCode::OK);
@@ -336,13 +352,14 @@ async fn config_writes_only_the_allowlisted_settings() {
     for body in [
         json!({"info": 21024, "cmd": "setVolume", "value": 7}),
         json!({"info": 21024, "cmd": "setledswitch", "value": 0}),
+        json!({"info": 21024, "cmd": "setWaterPump", "value": 3}),
         json!({"info": 21022, "cmd": "strong"}),
     ] {
         let (status, value) = call_json(&app, post_json(&path, &body)).await;
         assert_eq!(status, StatusCode::OK, "{body}");
         assert!(value["queued"].is_i64(), "{body}");
     }
-    // The three rows carry exactly the wire payloads the robot expects.
+    // The four rows carry exactly the wire payloads the robot expects.
     let queued: Vec<(i64, String)> =
         sqlx::query_as("SELECT info_type, payload FROM commands ORDER BY id")
             .fetch_all(&state.db)
@@ -353,17 +370,18 @@ async fn config_writes_only_the_allowlisted_settings() {
         vec![
             (21024, "{\"cmd\":\"setVolume\",\"value\":7}".to_string()),
             (21024, "{\"cmd\":\"setledswitch\",\"value\":0}".to_string()),
+            (21024, "{\"cmd\":\"setWaterPump\",\"value\":3}".to_string()),
             (21022, "{\"cmd\":\"strong\"}".to_string()),
         ]
     );
 
-    // Anything outside the allowlist never reaches the queue: an out-of-range
-    // volume, a bad LED value, the still-unverified water pump, noise as a suction
-    // name, and a value on a command that takes none.
+    // Anything outside the allowlist never reaches the queue: out-of-range volume
+    // and water values, a bad LED value, noise as a suction name, and a value on a
+    // command that takes none.
     for body in [
         json!({"info": 21024, "cmd": "setVolume", "value": 11}),
         json!({"info": 21024, "cmd": "setledswitch", "value": 2}),
-        json!({"info": 21024, "cmd": "setWaterPump", "value": 3}),
+        json!({"info": 21024, "cmd": "setWaterPump", "value": 5}),
         json!({"info": 21022, "cmd": "loud"}),
         json!({"info": 21022, "cmd": "strong", "value": 1}),
     ] {
@@ -374,7 +392,7 @@ async fn config_writes_only_the_allowlisted_settings() {
         .fetch_one(&state.db)
         .await
         .expect("count");
-    assert_eq!(count, 3, "refused settings must not queue");
+    assert_eq!(count, 4, "refused settings must not queue");
 
     let (status, _) = call_json(
         &app,
@@ -477,6 +495,96 @@ async fn goods_reads_caches_resets_and_needs_the_device_to_refresh() {
 }
 
 #[tokio::test]
+async fn device_info_refresh_caches_the_21019_reply() {
+    let (state, app) = setup("device-info").await;
+    adopt(&state).await;
+
+    let (status, value) = call_json(&app, get(&format!("/api/robot/{ID}/device-info"))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(value["read_ms"].is_null());
+    assert!(value["parts"].is_null());
+
+    let (status, _) = call_json(
+        &app,
+        post_form(&format!("/api/robot/{ID}/device-info/refresh"), ""),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "the robot must be online");
+
+    let (tx, _rx) = tokio::sync::mpsc::channel(4);
+    state.registry.register(
+        SN,
+        noobscenic::channel_b::registry::handle("b-test", "127.0.0.1:1", tx),
+    );
+    let (status, _) = call_json(
+        &app,
+        post_form(&format!("/api/robot/{ID}/device-info/refresh"), ""),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(last_command(&state).await.0, 21019);
+
+    let reply = format!(
+        "sn={SN}&infoType=21019&ts=1&userId=u&data={}",
+        "{\"infoType\":21019,\"data\":{\"staIp\":\"192.168.1.243\",\
+          \"staSignal\":\"-52\",\"mcuVer\":\"S6\",\"compileVer\":1241}}"
+    );
+    let (status, _) = call_json(&app, post_form("/cleanPack/response", &reply)).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, value) = call_json(&app, get(&format!("/api/robot/{ID}/device-info"))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(value["read_ms"].is_i64());
+    assert_eq!(value["parts"]["staIp"], "192.168.1.243");
+    assert_eq!(value["parts"]["staSignal"], "-52");
+    cleanup(state).await;
+}
+
+#[tokio::test]
+async fn reboot_and_map_delete_need_an_online_idle_robot() {
+    let (state, app) = setup("maintenance").await;
+    adopt(&state).await;
+
+    let reboot = format!("/api/robot/{ID}/reboot");
+    let delete = format!("/api/robot/{ID}/map/delete");
+    let (status, _) = call_json(&app, post_form(&reboot, "")).await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "reboot needs the robot online"
+    );
+    let (status, _) = call_json(&app, post_form(&delete, "")).await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "delete needs the robot online"
+    );
+
+    let (tx, _rx) = tokio::sync::mpsc::channel(8);
+    state.registry.register(
+        SN,
+        noobscenic::channel_b::registry::handle("b-test", "127.0.0.1:1", tx),
+    );
+
+    let (status, _) = call_json(&app, post_form(&reboot, "")).await;
+    assert_eq!(status, StatusCode::OK);
+    let (info_type, payload) = last_command(&state).await;
+    assert_eq!(info_type, 21024);
+    assert_eq!(payload, "{\"cmd\":\"reboot\"}");
+
+    let (status, _) = call_json(&app, post_form(&delete, "")).await;
+    assert_eq!(status, StatusCode::OK);
+    let (info_type, payload) = last_command(&state).await;
+    assert_eq!(info_type, 21024);
+    assert_eq!(payload, "{\"cmd\":\"delCurMap\"}");
+
+    // A running clean blocks the destructive map delete.
+    store_status(&state, "sweep").await;
+    let (status, _) = call_json(&app, post_form(&delete, "")).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    cleanup(state).await;
+}
+
+#[tokio::test]
 async fn the_map_endpoint_returns_the_stored_grid_and_frame() {
     let (state, app) = setup("map").await;
     adopt(&state).await;
@@ -568,7 +676,9 @@ async fn catalog_commands_are_enqueued_and_unknown_names_rejected() {
             "continue",
             "stop",
             "findCharge",
-            "pauseReturn"
+            "pauseReturn",
+            "deepClean",
+            "yMop"
         ])
     );
 
@@ -645,10 +755,10 @@ async fn the_control_endpoint_also_carries_locate_and_mute() {
         noobscenic::channel_b::registry::handle("b-test", "127.0.0.1:1", tx),
     );
 
-    // The locate sound is a frame pair, mute is a toggle and spot clean is a
-    // one-shot: all four ride the same realtime path as steering
-    // (FUNC_COMMANDS §6.2/§6.3, FUNC_MAP §6.3).
-    for code in [3010, 3011, 3022, 3001] {
+    // The locate sound is a frame pair, mute is a toggle, spot clean is a one-shot
+    // and the brushes/fan switch is a pair: all of them ride the same realtime path
+    // as steering (FUNC_COMMANDS §4.5/§6.2/§6.3, FUNC_MAP §6.3).
+    for code in [3010, 3011, 3022, 3001, 3025, 3026] {
         let (status, value) = call_json(
             &app,
             post_form("/api/robot/Foo/control", &format!("code={code}")),

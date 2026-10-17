@@ -83,6 +83,13 @@ pub fn router(state: AppState) -> Router {
             post(crate::web::goods_refresh),
         )
         .route("/api/robot/{id}/goods/reset", post(crate::web::goods_reset))
+        .route("/api/robot/{id}/device-info", get(crate::web::device_info))
+        .route(
+            "/api/robot/{id}/device-info/refresh",
+            post(crate::web::device_info_refresh),
+        )
+        .route("/api/robot/{id}/reboot", post(crate::web::reboot))
+        .route("/api/robot/{id}/map/delete", post(crate::web::map_delete))
         .route(
             "/api/robot/{id}/backup",
             get(crate::web::backup_export).post(crate::web::backup_import),

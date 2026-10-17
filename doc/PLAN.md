@@ -872,7 +872,7 @@ gating and the charging skip are covered by `tests/web.rs`.
 ### Phase 8 — Web UI, control depth (design: §20)
 - [x] pan and zoom for the map canvas, paths and zones included (§20.1)
 - [x] spot clean button (§20.2)
-- [ ] "more" menu: specialised cleaning modes (§20.3)
+- [x] "more" menu: specialised cleaning modes (§20.3)
 - [x] manual steering pad with the ≤300 ms repeat, the 4001 release and the 4000 watchdog (§20.4)
 - [x] zone editor: 21004 → edit → 21003 round-trip for no-go, no-mop and clean zones (§20.5)
 - [x] one-slot map backup: export the newest received `.bkmap`, import one back and restore it (§20.6)
@@ -917,7 +917,9 @@ short cross-label hop reached its target within ~6 cm with no `-2605`, and the l
 cross-room runs completed: a `/spot` target ~10 m away deep in Sypialnia was reached
 and cleaned (`cleanArea` 2, 145 s) and the stored `Sypialnia` area zone also crossed
 the doorway and cleaned, both with no `-2605` (§20.3, FIELD_NOTES.md). The "more"
-menu is the one remaining item. The instant spot clean stays the bar's 🎯 (rc 3001
+menu's specialised modes now ship as drawer buttons — deep whole-home clean and
+Y-shaped mopping — while smart-room clean and schedules/DND were dropped as unwanted
+(§20.3). The instant spot clean stays the bar's 🎯 (rc 3001
 around the robot, §20.2),
 and the zone-cleaning view gained a placed spot cleaning 🎯 (§20.8) — a draggable
 1.5 m temporary square whose centre goes out as an inline `mode:"point"` region
@@ -1101,18 +1103,30 @@ Surface (all on 8080). `{id}` is the editable **label** first, the serial number
 second, and — only so old bookmarks still land — the cloud account id the robot bound
 with (`bind_user`) last: that id names the *account*, not the robot, so it is recorded
 but never displayed (operator decision, 2026-10-09). The label starts as the serial
-number and is the only user-editable setting for now.
+number; the rest of the Settings form drives the robot itself (§20.7).
 
 | Route | Purpose |
 |---|---|
 | `GET /` | the page; if the query carries `version`/`sn` (the device's OTA check) the request goes to the existing `version_check` instead |
-| `GET /api/robots` | `{robots:[{id,sn,online,bind_state,last_seen_ms}]}` for the dropdown |
+| `GET /api/robots` | `{robots:[{id,sn,label,online,bind_state,last_seen_ms,firmware,mcu}]}` for the dropdown |
 | `GET /api/robot/{id}/summary` | latest 20001 status plus path and map metadata; polled every ~1.5 s |
 | `GET /api/robot/{id}/map` | base64 of the *decompressed* grid + frame (w, h, resolution, x_min, y_min, dock) |
 | `GET /api/robot/{id}/path` | stored points with the 2-bit type tags stripped |
 | `POST /api/robot/{id}/command` | form `name=<raw name>` from the catalog below → `insert_command` |
 | `POST /api/robot/{id}/control` | form `code=<ctrlCode>` → a realtime `21020` frame straight to the device writer, bypassing the queue (§20.4) |
 | `PUT /api/robot/{id}/settings` | JSON `label` → the robot's user-visible name (empty or >64 bytes refused) |
+| `POST /api/robot/{id}/config` | JSON `{info,cmd,value?}` → an allowlisted `21022`/`21024` robot setting (§20.7) |
+| `GET /api/robot/{id}/goods` | the cached `21015` consumable counters (§20.7) |
+| `POST /api/robot/{id}/goods/refresh` | queue a `21015` consumables read |
+| `POST /api/robot/{id}/goods/reset` | JSON `{part}` → `21016 {part:0}`, then a `21015` re-read |
+| `GET /api/robot/{id}/device-info` | the cached `21019` network/version snapshot (§20.7) |
+| `POST /api/robot/{id}/device-info/refresh` | queue a `21019` read |
+| `POST /api/robot/{id}/reboot` | queue `21024 reboot`; online only |
+| `POST /api/robot/{id}/map/delete` | queue `21024 delCurMap`; online and idle only (§20.5) |
+| `GET`/`PUT /api/robot/{id}/zones` | the stored `AreaSetting` list and its etag-guarded write (§20.5) |
+| `POST /api/robot/{id}/zones/refresh` | queue a `21004` zone-list read |
+| `POST /api/robot/{id}/zones/clean` | JSON `{ids}` → `21023` + `appointClean` (§20.5) |
+| `POST /api/robot/{id}/spot` | JSON `{x,y,deep}` → an inline `mode:"point"` region + `appointClean` (§20.8) |
 | `GET /api/robot/{id}/backup` | the staged map backup as an `NBMP` export download (§20.6) |
 | `POST /api/robot/{id}/backup` | an `NBMP` export body → stage it and queue a `21025` restore |
 | `GET /backup/{sn}/{token}` | the raw `.bkmap` the robot itself fetches for that restore |
@@ -1120,15 +1134,18 @@ number and is the only user-editable setting for now.
 `web/index.html` is embedded at compile time (`include_str!`), so there is no static
 file serving and no runtime path lookup. Layout: top bar with a `☰` drawer toggle,
 the robot `<select>` (showing each robot's label) and the status line; a `<canvas>`
-filling the viewport; a left drawer with a tools grid (`🕹️` Remote control,
-`⚙️` Settings) above the raw command `<select>` and Send; a full-screen Settings form
-whose Save/Cancel sit bottom-right (the label is its only field for now); a bottom
-sheet with the steering pad (`↪️`/`⬆️`/`⬇️`/`↩️`, hold to move, `❌` to close); and a
-centred bottom bar with
-three buttons — `⚡` Charge, a stateful `▶️`/`⏸️`/`⏯️` button that follows the robot's
-`mode` (`charge`/`fullcharge`/`idle` → smart clean, `sweep` → pause the clean,
-`backcharge` → pause the return, paused/dormant/fault → continue, anything else
-disabled), and a disabled `🗺️` zone-cleaning placeholder.
+filling the viewport; a left drawer with a tools grid — `🕹️` Remote control,
+`📢` Locate robot, `➕` Deep whole-home clean, `🇾` Y-shaped mopping, `🔄` Reboot
+robot and `⚙️` Settings. The old raw-command `<select>` and Send button are gone:
+every useful one-shot has a button and the operator console covers the rest. A
+full-screen Settings form holds the label plus the live robot controls, identity and
+consumables (§20.7); a bottom sheet holds the steering pad
+(`↪️`/`⬆️`/`⬇️`/`↩️`, hold to move, `❌` to close); the centred main bar has
+`⚡` Charge, `🎯` instant spot clean, a stateful `▶️`/`⏸️`/`⏯️` button that follows
+the robot's `mode` (`charge`/`fullcharge`/`idle` → smart clean, `sweep` → pause the
+clean, `backcharge` → pause the return, paused/dormant/fault → continue, anything
+else disabled), and `🗺️` zone cleaning. The zones view adds backup export/import,
+placed spot cleaning and the picker/editor (§20.5/§20.6/§20.8).
 Changing the robot sets `location.search`, so `?id=` stays bookmarkable and the back
 button works.
 
@@ -1250,9 +1267,12 @@ parameter form. Before any free-text field ships, mind the firmware string hazar
 `name`/`tag` ≤ 31 UTF-8 bytes and `mode` ≤ 30, or the robot's parser is overrun
 (FUNC_MAP §4).
 
-Shipped subset (2026-10-11): suction, mute and locate live in the settings form and
-the drawer (§20.7) rather than in a menu sheet, and the consumables view is there too;
-this table stays as the wire reference for the rest of the menu.
+Shipped (2026-10-18): suction, water level, mute, brushes/fan and locate live in the
+settings form and the drawer, deep whole-home clean and Y-shaped mopping are drawer
+buttons, and the consumables view is there too. Smart-room clean, schedules and
+DND/quiet hours were dropped as unwanted for this household (operator decision), and
+the lidar-collision toggle stays deliberately unexposed. This table stays as the wire
+reference for the rest.
 
 **Live-verified 2026-10-12:** same-room inline `extraAreas` regions are real. A
 0.4×0.4 m `mode:"area"` region produced a normal `subMode:"area"` job that drove to it
@@ -1379,6 +1399,11 @@ enforced on **both** sides: the UI caps its input (UTF-8 aware, never splitting 
 character) and the API caps the payload again before it reaches the firmware, so the
 robot's 32-byte `strcpy` buffers cannot be overrun even by a hand-crafted request.
 
+The edit bar also carries `🔥🗺️` **Delete current map** after Save (`21024
+delCurMap`, FUNC_MAP §8.1). It asks for confirmation first, and the endpoint refuses
+with 409 while a clean is running, so the delete cannot race the robot's own map
+writes.
+
 ### 20.6 Map backup: export and restore (one slot)
 
 **There is no way to ask the robot for a backup.** The upload is driven by a ~10 s
@@ -1432,20 +1457,24 @@ The label is the one field that is ours, so Save/Cancel keep applying to it alon
 | Mute | button (firmware toggle) | rc `3022` realtime frame | `mute` |
 | LED | button on its own line | `21024 {"cmd":"setledswitch","value":N}` | `led` |
 | Suction | quiet/auto/strong/max under a `Suction` caption | `21022 {"cmd":"<name>"}` | `workNoisy` |
+| Water level | 1–4 buttons under a `Water level (1 = low, 4 = high)` caption | `21024 {"cmd":"setWaterPump","value":N}` | `water` |
+| Brushes & fan | on/off button | rc `3025` on / `3026` off | `cleanComponents` |
 | Consumable reset | ✨ per row | `21016 {"<part>":0}`, then a `21015` re-read | `21015` |
 
 * `POST /api/robot/{id}/config` is an **allowlist** (`21024` setVolume 0–10 and
-  setledswitch 0–1, `21022` quiet/auto/strong/max), not a general send tunnel — the
-  console's `send` verb remains the operator path for experiments. All live-probed on
-  2026-10-11: `setVolume 5` → `vol` 5, `setledswitch 0/1` → `led` 0/1, `auto`/
-  `strong` → `workNoisy` echoes, each restored afterwards.
+  setledswitch 0–1 and setWaterPump 1–4, `21022` quiet/auto/strong/max), not a
+  general send tunnel — the console's `send` verb remains the operator path for
+  experiments. All live-probed on 2026-10-11: `setVolume 5` → `vol` 5,
+  `setledswitch 0/1` → `led` 0/1, `auto`/`strong` → `workNoisy` echoes, each restored
+  afterwards.
+* The water pump's direction is still unverified (`FUNC_COMMANDS.md` §4.3: which end
+  of 1–4 is "most water" is unknown); the form labels 1 low and 4 high as a working
+  assumption, and the caption says so.
 * Mute is a toggle in firmware (`FUNC_COMMANDS.md` §6.2), so the button sends one
   frame to reach the state opposite the echo; a missed echo only misleads until the
   next push. The rc frames ride the same realtime path as steering (`/control`, now
-  accepting 3010, 3011 and 3022 alongside the steering codes).
-* **Not in the form, deliberately.** The water pump (`21024 setWaterPump`, 1–4) waits
-  until its direction is verified against a real mop run (`FUNC_COMMANDS.md` §4.3:
-  which end is "most water" is unknown). The lidar-collision toggle
+  accepting 3001, 3010, 3011, 3022, 3025 and 3026 alongside the steering codes).
+* **Not in the form, deliberately.** The lidar-collision toggle
   (`setLidarCollision`) was dropped: the firmware stores a value (`ldAvoidColli`,
   live `-1`), the app never exposed it, no behaviour difference is documented, and
   "the robot ignores obstacles" has no obvious use — revisit only with a real reason.
@@ -1458,9 +1487,11 @@ The label is the one field that is ours, so Save/Cancel keep applying to it alon
   and wait for the reply), `POST …/goods/reset`. `21015` echoes only `battery, filter,
   mainBrush, sideBrush, sensors`; `mop` is reset-only and `motor`/`dustBox` cannot be
   reset, so they have no rows. Live read: `mainBrush` ≈ 6.0 d, `sensors` ≈ 1.4 d.
-* **Identity** is read-only: serial number and last-seen age. The cloud `bind_user` is
-  deliberately not shown — the label exists precisely because that account name is
-  not a robot nickname (§19).
+* **Identity** is read-only: serial number, firmware and MCU (recorded from `sync` and
+  served in `/api/robots`), Wi-Fi signal and IP address (a cached `21019` read via
+  `GET /api/robot/{id}/device-info` and its `…/refresh`), and last-seen age. The cloud
+  `bind_user` is deliberately not shown — the label exists precisely because that
+  account name is not a robot nickname (§19).
 * 📢 **Locate** sits in the side drawer between remote control and settings: hold to
   play (rc `3010` on press, `3011` on release), capped client-side at 15 s so a
   missed release cannot leave the robot beeping.

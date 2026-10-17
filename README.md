@@ -255,9 +255,10 @@ Planned, but not a priority at the moment:
 See [`doc/PLAN.md`](doc/PLAN.md) §14 for what these would look like.
 
 Status: re-homing, control, telemetry, maps, zones, backups and the web UI — with spot
-cleaning both around the robot and placed anywhere on the map, plus a settings form
-for volume, mute, LED, suction and consumable ages — all work, and the debug traces,
-the operator console and the full history are build-time features that are on by
+cleaning both around the robot and placed anywhere on the map, a settings form for
+volume, mute, LED, suction, water, brushes/fan and consumable ages, deep-clean and
+Y-mop drawer buttons, a delete-map action and identity/network info — all work, and
+the debug traces, the operator console and the full history are build-time features that are on by
 default and strippable with `--no-default-features`, with an opt-in POSIX-only
 `posix-runas` feature letting a root-started server drop to the configured `runas`
 user and group before it creates any file, and a static soft-float ARMv7 build for

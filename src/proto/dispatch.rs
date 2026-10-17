@@ -66,6 +66,7 @@ pub async fn dispatch(state: &AppState, incoming: Incoming<'_>) {
         Some(info_type::PATH) => store_path(state, &incoming).await,
         Some(info_type::ZONES_READ) => store_zones(state, &incoming).await,
         Some(info_type::GOODS_READ) => store_goods(state, &incoming).await,
+        Some(info_type::NETWORK_INFO) => store_device_info(state, &incoming).await,
         // One-shot zone replies: the commands row carries the ACK already; keep the
         // body as an event without the "unhandled infoType" warning.
         Some(info_type::ZONES_WRITE) | Some(info_type::ZONE_CLEAN) => {
@@ -89,6 +90,15 @@ pub async fn dispatch(state: &AppState, incoming: Incoming<'_>) {
                 info_type = incoming.info_type,
                 trace,
                 "telemetry event"
+            );
+            store_event(state, &incoming).await;
+        }
+        Some(other) if info_type::is_known_reply(other) => {
+            tracing::debug!(
+                sn = %incoming.sn,
+                info_type = other,
+                trace,
+                "command reply"
             );
             store_event(state, &incoming).await;
         }
@@ -123,6 +133,17 @@ async fn store_goods(state: &AppState, incoming: &Incoming<'_>) {
     match queries::store_goods(&state.db, incoming.sn, &payload, incoming.trace_ref).await {
         Ok(()) => tracing::info!(sn = %incoming.sn, "consumables read back"),
         Err(error) => tracing::error!(%error, sn = %incoming.sn, "could not store the consumables"),
+    }
+}
+
+/// A `21019` reply is the robot's network/version snapshot, verbatim.
+async fn store_device_info(state: &AppState, incoming: &Incoming<'_>) {
+    let payload = serde_json::to_string(incoming.data).unwrap_or_else(|_| "null".to_string());
+    match queries::store_device_info(&state.db, incoming.sn, &payload, incoming.trace_ref).await {
+        Ok(()) => tracing::info!(sn = %incoming.sn, "network info read back"),
+        Err(error) => {
+            tracing::error!(%error, sn = %incoming.sn, "could not store the network info")
+        }
     }
 }
 
