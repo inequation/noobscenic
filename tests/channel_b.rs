@@ -16,7 +16,7 @@ use tokio::time::timeout;
 
 use noobscenic::AppState;
 use noobscenic::channel_b::codec::{self, Decoder};
-use noobscenic::config::{Config, Logging, Wire};
+use noobscenic::config::{Config, LogFile, Logging, Wire};
 
 const SN: &str = "LSLDSM7PROTEST01";
 
@@ -30,7 +30,7 @@ async fn gateway(tag: &str) -> (SocketAddr, AppState, JoinHandle<()>) {
     let config = Config {
         data_dir: scratch(tag),
         logging: Logging {
-            file_enabled: false,
+            file: Some(LogFile::Enabled(false)),
             wire: Wire {
                 enabled: false,
                 ..Wire::default()

@@ -61,11 +61,13 @@ argument-less commands (`smartClean`, `pause`, `continue`, `stop`, `findCharge`)
 There is **no authentication**: anyone who can reach port 8080 can drive the robot.
 
 To change settings, copy `config.example.json` to `config.json` (it is read from the
-working directory; unknown keys are rejected). The interesting ones:
-`gateway.encrypt_commands` (allows `encrypt:1` command encryption),
-`logging.wire` (what gets captured), `http.bind` / `gateway.bind`, `console.enabled`,
-and `runas.user` / `runas.group` (POSIX builds with the `posix-runas` feature drop
-root to that account before they create any file).
+working directory; unknown keys are rejected). Every key is optional and omitted
+keys use their defaults; the example stays small, while `doc/PLAN.md` §6 lists every
+setting. The most likely changes are `http.bind` / `gateway.bind`,
+`gateway.encrypt_commands` (allows `encrypt:1` command encryption), `logging.wire`
+(what gets captured), `console.enabled`, and `runas.user` / `runas.group` (POSIX
+builds with the `posix-runas` feature drop root to that account before they create
+any file). The SQLite database always stays in `data_dir`.
 
 ### Build variants
 
@@ -87,8 +89,8 @@ Those five are all in `default`. `posix-runas` is the one feature outside it (an
 only POSIX-only one): it makes the server act on `runas.user` / `runas.group` from
 `config.json` — resolving the account with `getpwnam`/`getgrnam` and, when started as
 root, dropping to it before the log file and the data directory are created. A build
-without the feature warns that `runas` is configured and keeps the user it was
-started as, so the example config stays valid everywhere.
+without the feature warns when `runas` is configured and keeps the user it was
+started as.
 
 A lean build drops them all:
 
@@ -134,8 +136,78 @@ table — stop it with Ctrl-C. Pick a subset with, for example, `--no-default-fe
 
 ### 4. Normal use
 
-Open the server address on port 8080 in a browser:
+Open the server address on port 8080 in a browser.
 
+### 5. Configuration
+
+Single JSON file, path from `--config` (default `./config.json`); missing file =
+all defaults. CLI flags (`--data-dir`, `--http-bind`, `--log-level`,
+`--no-wire-trace`) override it; `RUST_LOG` overrides the log filter (levels and
+target directives; no regexes). Every key is optional; omitted keys use the
+defaults in the table below. `config.example.json` is deliberately a small
+starter file, not an exhaustive reference.
+
+```json
+{
+  "data_dir": "./var",
+  "http": { "bind": "0.0.0.0:8080" },
+  "gateway": { "bind": "0.0.0.0:8081" },
+  "logging": { "level": "info" }
+}
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `data_dir` | `./var` | Root for the SQLite file, application logs and wire traces. |
+| `database.max_connections` | `2` | SQLite pool size; must be at least 1. |
+| `http.bind` | `0.0.0.0:8080` | Channel-A and web-UI listener. |
+| `gateway.bind` | `0.0.0.0:8081` | Channel-B push-gateway listener. |
+| `gateway.advertise` | `null` | Address list returned by `getSockAddr`; `null` auto-detects from the robot's peer address. |
+| `gateway.ping_timeout_secs` | `120` | Idle timeout for a channel-B connection. |
+| `gateway.max_frame_bytes` | `8388608` | Maximum channel-B frame accepted by the decoder. |
+| `gateway.ack_handshake` | `true` | Acknowledge the robot's channel-B handshake. |
+| `gateway.announce_app_online` | `true` | Mark the app online in `21006` pongs so the robot pushes status and maps. |
+| `gateway.encrypt_commands` | `false` | Allow `encrypt:1` commands. |
+| `gateway.command_ttl_secs` | `300` | Expire queued commands older than this instead of firing them later. |
+| `console.enabled` | `true` | Enable the stdin operator console when it is compiled in. |
+| `runas` | `null` | Drop root to `runas.user` and optional `runas.group` on POSIX. |
+| `registration.accept_all` | `true` | Adopt unknown devices; `false` accepts only serials already in the database. |
+| `registration.session_ttl_secs` | `null` | Session lifetime; `null` means sessions never expire. |
+| `logging.level` | `info` | Default tracing filter, also settable with `--log-level` or `RUST_LOG`. |
+| `logging.file` | derived path | Application-log path; `false` disables the file, and `null` uses `<data_dir>/logs/noobscenic.log`. |
+| `logging.wire.enabled` | `true` | Enable wire tracing when the build has a sink. |
+| `logging.wire.dir` | derived path | Trace directory; `null` uses `<data_dir>/traces`. |
+| `logging.wire.format` | `both` | `jsonl`, `raw` or `both`. |
+| `logging.wire.max_body_bytes` | `262144` | Truncate larger bodies in JSONL traces; `0` keeps them whole. |
+| `logging.wire.rotate_mb` | `64` | Rotate JSONL files at this size; `0` never rotates. |
+| `logging.wire.retain_days` | `14` | Delete trace files older than this; `0` keeps them forever. |
+| `logging.wire.redact_secrets` | `false` | Mask `session`, `cookies` and `sig` in JSONL traces. |
+
+* `gateway.advertise` is what `getSockAddr` hands the robot, as
+  `data.addr_list:[{ip,port}]`. It **must be an address the robot can reach**, not the
+  bind address. `null` = auto-detect: open a UDP socket, `connect()` it to the
+  requesting peer's IP, read back the local address. Explicit form:
+  `[{"ip":"192.168.1.10","port":8081}]`; multiple entries are allowed, the device
+  iterates the list.
+* `registration.session_ttl_secs: null` = sessions never expire. Setting it makes the
+  server answer `code:102` after the TTL, which is the documented way to force a
+  re-register — useful for exercising that path on purpose.
+* `gateway.announce_app_online` (default `true`) makes the `21006` pong carry
+  `"isExistConnect":true`. That is the pong the device both accepts *and* acts on:
+  without the integer `encrypt` the frame is dropped at the inbound gate, and
+  without the flag the robot never pushes status or map uploads.
+* `runas` names the account the server becomes when it is started as root — the
+  router/NAS deployment. `group: null` uses the user's primary group from
+  `/etc/passwd`, and an unknown user or group is a startup error. The object
+  parses in every build, but only a build with the `posix-runas` feature
+  (POSIX-only, deliberately not in `default`) acts on it; without the feature
+  the server warns and keeps the current user, so one config file stays valid
+  across builds. The switch happens before the log file and the data directory
+  are created, so everything the server writes belongs to that account — which
+  also means both listeners must be on unprivileged ports (the defaults are).
+* The SQLite file always follows `data_dir`; there is no separate database address
+  to keep in sync. Listener TLS and firmware OTA have no configuration keys until
+  those features exist.
 
 ### Troubleshooting
 

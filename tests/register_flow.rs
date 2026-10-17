@@ -13,7 +13,7 @@ use serde_json::Value;
 use tower::ServiceExt;
 
 use noobscenic::AppState;
-use noobscenic::config::{AdvertisedAddr, Config, Gateway, Logging, Registration, Wire};
+use noobscenic::config::{AdvertisedAddr, Config, Gateway, LogFile, Logging, Registration, Wire};
 
 const PEER: SocketAddr =
     SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 45678);
@@ -52,7 +52,7 @@ async fn setup_with(
             ..Registration::default()
         },
         logging: Logging {
-            file_enabled: false,
+            file: Some(LogFile::Enabled(false)),
             wire: Wire {
                 enabled: false,
                 ..Wire::default()

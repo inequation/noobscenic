@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 
 use noobscenic::AppState;
-use noobscenic::config::{Config, Logging, Wire};
+use noobscenic::config::{Config, LogFile, Logging, Wire};
 
 fn scratch(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("noobscenic-tel-{}-{tag}", std::process::id()));
@@ -26,7 +26,7 @@ async fn setup(tag: &str) -> (AppState, Router) {
     let config = Config {
         data_dir: scratch(tag),
         logging: Logging {
-            file_enabled: false,
+            file: Some(LogFile::Enabled(false)),
             wire: Wire {
                 enabled: true,
                 dir: Some(scratch(tag).join("traces")),

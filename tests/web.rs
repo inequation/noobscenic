@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 
 use noobscenic::AppState;
-use noobscenic::config::{Config, Logging, Wire};
+use noobscenic::config::{Config, LogFile, Logging, Wire};
 
 const SN: &str = "LSLDSM7PROTEST04";
 const ID: &str = "Foo";
@@ -28,7 +28,7 @@ async fn setup(tag: &str) -> (AppState, Router) {
     let config = Config {
         data_dir: scratch(tag),
         logging: Logging {
-            file_enabled: false,
+            file: Some(LogFile::Enabled(false)),
             wire: Wire {
                 enabled: false,
                 ..Wire::default()

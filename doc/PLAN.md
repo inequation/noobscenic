@@ -187,37 +187,45 @@ all defaults. A handful of CLI flags (`--data-dir`, `--http-bind`, `--log-level`
 target directives; no regexes). No env-var
 soup beyond that.
 
+Every key is optional; omitted keys use the defaults in the table below.
+`config.example.json` is deliberately a small starter file, not an exhaustive
+reference.
+
 ```json
 {
   "data_dir": "./var",
-  "database": { "url": "sqlite://./var/noobscenic.db", "max_connections": 2 },
-
-  "http":    { "bind": "0.0.0.0:8080", "tls": null },
-  "gateway": { "bind": "0.0.0.0:8081",
-               "advertise": null,
-               "ping_timeout_secs": 120,
-               "max_frame_bytes": 8388608,
-               "ack_handshake": true,
-               "announce_app_online": true,
-               "encrypt_commands": false,
-               "command_ttl_secs": 300 },
-  "console": { "enabled": true },
-  "runas":   { "user": "nobody", "group": "nobody" },
-
-  "registration": { "accept_all": true, "session_ttl_secs": null },
-  "ota":     { "enabled": false },
-
-  "logging": { "level": "info",
-               "file": "./var/logs/noobscenic.log",
-               "wire": { "enabled": true,
-                         "dir": "./var/traces",
-                         "format": "both",
-                         "max_body_bytes": 262144,
-                         "rotate_mb": 64,
-                         "retain_days": 14,
-                         "redact_secrets": false } }
+  "http": { "bind": "0.0.0.0:8080" },
+  "gateway": { "bind": "0.0.0.0:8081" },
+  "logging": { "level": "info" }
 }
 ```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `data_dir` | `./var` | Root for the SQLite file, application logs and wire traces. |
+| `database.max_connections` | `2` | SQLite pool size; must be at least 1. |
+| `http.bind` | `0.0.0.0:8080` | Channel-A and web-UI listener. |
+| `gateway.bind` | `0.0.0.0:8081` | Channel-B push-gateway listener. |
+| `gateway.advertise` | `null` | Address list returned by `getSockAddr`; `null` auto-detects from the robot's peer address. |
+| `gateway.ping_timeout_secs` | `120` | Idle timeout for a channel-B connection. |
+| `gateway.max_frame_bytes` | `8388608` | Maximum channel-B frame accepted by the decoder. |
+| `gateway.ack_handshake` | `true` | Acknowledge the robot's channel-B handshake. |
+| `gateway.announce_app_online` | `true` | Mark the app online in `21006` pongs so the robot pushes status and maps. |
+| `gateway.encrypt_commands` | `false` | Allow `encrypt:1` commands. |
+| `gateway.command_ttl_secs` | `300` | Expire queued commands older than this instead of firing them later. |
+| `console.enabled` | `true` | Enable the stdin operator console when it is compiled in. |
+| `runas` | `null` | Drop root to `runas.user` and optional `runas.group` on POSIX. |
+| `registration.accept_all` | `true` | Adopt unknown devices; `false` accepts only serials already in the database. |
+| `registration.session_ttl_secs` | `null` | Session lifetime; `null` means sessions never expire. |
+| `logging.level` | `info` | Default tracing filter, also settable with `--log-level` or `RUST_LOG`. |
+| `logging.file` | derived path | Application-log path; `false` disables the file, and `null` uses `<data_dir>/logs/noobscenic.log`. |
+| `logging.wire.enabled` | `true` | Enable wire tracing when the build has a sink. |
+| `logging.wire.dir` | derived path | Trace directory; `null` uses `<data_dir>/traces`. |
+| `logging.wire.format` | `both` | `jsonl`, `raw` or `both`. |
+| `logging.wire.max_body_bytes` | `262144` | Truncate larger bodies in JSONL traces; `0` keeps them whole. |
+| `logging.wire.rotate_mb` | `64` | Rotate JSONL files at this size; `0` never rotates. |
+| `logging.wire.retain_days` | `14` | Delete trace files older than this; `0` keeps them forever. |
+| `logging.wire.redact_secrets` | `false` | Mask `session`, `cookies` and `sig` in JSONL traces. |
 
 * `gateway.advertise` is what `getSockAddr` hands the robot, as
   `data.addr_list:[{ip,port}]`. It **must be an address the robot can reach**, not the
@@ -232,10 +240,6 @@ soup beyond that.
   `"isExistConnect":true`. That is the pong the device both accepts *and* acts on:
   without the integer `encrypt` the frame is dropped at the inbound gate, and
   without the flag the robot never pushes status or map uploads. [FUNC_STATUS §2.3]
-* `http.tls` stays `null` for v1. The robot does **no** certificate validation
-  [REPORT §3], so a self-signed cert is enough whenever we do want `https://` — the
-  only reason to bother is a DNS-override deployment that impersonates
-  `mobile.proscenic.cn` instead of using `setUrl`.
 * `runas` names the account the server becomes when it is started as root — the
   router/NAS deployment. `user` is resolved with `getpwnam` and `group` with
   `getgrnam`; `group: null` uses the user's primary group from `/etc/passwd`, and an
@@ -246,6 +250,9 @@ soup beyond that.
   log file and the data directory are created, so everything the server writes
   belongs to that account — which also means both listeners must be on
   unprivileged ports (the defaults are).
+* The SQLite file always follows `data_dir`; there is no separate database address
+  to keep in sync. Listener TLS and firmware OTA have no configuration keys until
+  those features exist.
 
 ---
 
@@ -1544,8 +1551,7 @@ Semantics when a feature is compiled out:
   affected by any of these features.
 * `runas` parses in every build. With `posix-runas` it is applied in `main` before
   logging is up and before the data directory exists; without the feature a config
-  that sets it logs one warning and the process keeps the user it was started as,
-  so the example config stays valid on Windows and in lean builds.
+  that sets it logs one warning and the process keeps the user it was started as.
 
 Verification is the feature-combination test matrix: default, `--no-default-features`,
 each feature alone, and `debug-trace,debug-raw`. Default runs keep the existing

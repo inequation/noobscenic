@@ -21,7 +21,7 @@ use tower::ServiceExt;
 
 use noobscenic::AppState;
 use noobscenic::channel_b::codec::{self, Decoder};
-use noobscenic::config::{Config, Gateway, Logging, Wire};
+use noobscenic::config::{Config, Gateway, LogFile, Logging, Wire};
 
 const SN: &str = "LSLDSM7PROTEST02";
 
@@ -45,7 +45,7 @@ async fn gateway_with(tag: &str, encrypt_commands: bool) -> (SocketAddr, AppStat
             ..Gateway::default()
         },
         logging: Logging {
-            file_enabled: false,
+            file: Some(LogFile::Enabled(false)),
             wire: Wire {
                 enabled: true,
                 dir: Some(scratch(tag).join("traces")),

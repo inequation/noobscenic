@@ -27,7 +27,6 @@ pub struct Config {
     /// with the `posix-runas` feature — see doc/PLAN.md §6.
     pub runas: Option<RunAs>,
     pub registration: Registration,
-    pub ota: Ota,
     pub logging: Logging,
 }
 
@@ -41,7 +40,6 @@ impl Default for Config {
             console: Console::default(),
             runas: None,
             registration: Registration::default(),
-            ota: Ota::default(),
             logging: Logging::default(),
         }
     }
@@ -50,8 +48,6 @@ impl Default for Config {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Database {
-    /// Defaults to `sqlite://<data_dir>/noobscenic.db`.
-    pub url: Option<String>,
     /// Each connection allocates its own page cache; two is plenty here and
     /// keeps the pool's RAM bounded (doc/ROUTER_BUILD.md).
     pub max_connections: u32,
@@ -59,10 +55,7 @@ pub struct Database {
 
 impl Default for Database {
     fn default() -> Self {
-        Database {
-            url: None,
-            max_connections: 2,
-        }
+        Database { max_connections: 2 }
     }
 }
 
@@ -70,16 +63,12 @@ impl Default for Database {
 #[serde(default, deny_unknown_fields)]
 pub struct Http {
     pub bind: SocketAddr,
-    /// Reserved for a DNS-override deployment; the robot validates no certificates,
-    /// so plain HTTP with `setUrl` is the v1 path (doc/PLAN.md §6).
-    pub tls: Option<serde_json::Value>,
 }
 
 impl Default for Http {
     fn default() -> Self {
         Http {
             bind: "0.0.0.0:8080".parse().expect("valid default"),
-            tls: None,
         }
     }
 }
@@ -166,20 +155,20 @@ impl Default for Registration {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct Ota {
-    pub enabled: bool,
+/// Where application logs go. A path overrides the derived location and `false`
+/// disables file logging; omitting the field (or `null`) uses the derived path.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum LogFile {
+    Path(PathBuf),
+    Enabled(bool),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Logging {
     pub level: String,
-    /// Defaults to `<data_dir>/logs/noobscenic.log`; `null` in a file disables it only
-    /// if `file_enabled` is false — see `log_file()`.
-    pub file: Option<PathBuf>,
-    pub file_enabled: bool,
+    pub file: Option<LogFile>,
     pub wire: Wire,
 }
 
@@ -188,7 +177,6 @@ impl Default for Logging {
         Logging {
             level: "info".to_string(),
             file: None,
-            file_enabled: true,
             wire: Wire::default(),
         }
     }
@@ -316,23 +304,19 @@ impl Config {
         Ok(())
     }
 
-    /// `sqlite://<data_dir>/noobscenic.db` unless overridden.
+    /// The SQLite file always follows `data_dir`, so state moves as one unit.
     pub fn database_url(&self) -> String {
-        self.database.url.clone().unwrap_or_else(|| {
-            format!("sqlite://{}", self.data_dir.join("noobscenic.db").display())
-        })
+        format!("sqlite://{}", self.data_dir.join("noobscenic.db").display())
     }
 
     pub fn log_file(&self) -> Option<PathBuf> {
-        if !self.logging.file_enabled {
-            return None;
+        match &self.logging.file {
+            None | Some(LogFile::Enabled(true)) => {
+                Some(self.data_dir.join("logs").join("noobscenic.log"))
+            }
+            Some(LogFile::Enabled(false)) => None,
+            Some(LogFile::Path(path)) => Some(path.clone()),
         }
-        Some(
-            self.logging
-                .file
-                .clone()
-                .unwrap_or_else(|| self.data_dir.join("logs").join("noobscenic.log")),
-        )
     }
 
     pub fn wire_dir(&self) -> PathBuf {
@@ -393,39 +377,47 @@ mod tests {
     }
 
     #[test]
+    fn log_file_can_be_derived_overridden_or_disabled() {
+        let default: Config = serde_json::from_str(r#"{"logging": {"file": null}}"#).unwrap();
+        assert_eq!(
+            default.log_file(),
+            Some(Path::new("./var").join("logs/noobscenic.log"))
+        );
+
+        let custom: Config =
+            serde_json::from_str(r#"{"logging": {"file": "/var/log/nb.log"}}"#).unwrap();
+        assert_eq!(custom.log_file(), Some(PathBuf::from("/var/log/nb.log")));
+
+        let disabled: Config = serde_json::from_str(r#"{"logging": {"file": false}}"#).unwrap();
+        assert_eq!(disabled.log_file(), None);
+    }
+
+    #[test]
     fn a_typo_in_the_config_is_reported() {
         let err = serde_json::from_str::<Config>(r#"{"data_dirr": "./x"}"#).unwrap_err();
         assert!(err.to_string().contains("data_dirr"), "{err}");
     }
 
     #[test]
-    fn the_documented_example_parses() {
-        // The exact shape printed in doc/PLAN.md §6.
-        let text = r#"{
-          "data_dir": "./var",
-          "database": { "url": "sqlite://./var/noobscenic.db", "max_connections": 2 },
-          "http":    { "bind": "0.0.0.0:8080", "tls": null },
-          "gateway": { "bind": "0.0.0.0:8081", "advertise": null,
-                       "ping_timeout_secs": 120, "max_frame_bytes": 8388608,
-                       "ack_handshake": true, "announce_app_online": true,
-                       "encrypt_commands": false, "command_ttl_secs": 300 },
-          "console": { "enabled": true },
-          "runas":   { "user": "nobody", "group": "nobody" },
-          "registration": { "accept_all": true, "session_ttl_secs": null },
-          "ota":     { "enabled": false },
-          "logging": { "level": "info",
-                       "file": "./var/logs/noobscenic.log",
-                       "wire": { "enabled": true, "dir": "./var/traces", "format": "both",
-                                 "max_body_bytes": 262144, "rotate_mb": 64,
-                                 "retain_days": 14, "redact_secrets": false } }
-        }"#;
-        let config: Config = serde_json::from_str(text).expect("documented example must parse");
-        assert_eq!(config.database.max_connections, 2);
-        assert_eq!(config.gateway.ping_timeout_secs, 120);
-        assert!(config.logging.wire.format.jsonl() && config.logging.wire.format.raw());
-        let runas = config.runas.expect("runas parsed");
-        assert_eq!(runas.user, "nobody");
-        assert_eq!(runas.group.as_deref(), Some("nobody"));
+    fn the_shipped_example_parses() {
+        let config: Config =
+            serde_json::from_str(include_str!("../config.example.json")).expect("example parses");
+        assert_eq!(config.data_dir, PathBuf::from("./var"));
+        assert_eq!(config.http.bind.port(), 8080);
+        assert_eq!(config.gateway.bind.port(), 8081);
+    }
+
+    #[test]
+    fn unimplemented_placeholders_are_rejected() {
+        for (key, text) in [
+            ("url", r#"{"database": {"url": null}}"#),
+            ("tls", r#"{"http": {"tls": null}}"#),
+            ("ota", r#"{"ota": {"enabled": false}}"#),
+        ] {
+            let err =
+                serde_json::from_str::<Config>(text).expect_err("placeholder must be removed");
+            assert!(err.to_string().contains(key), "{err}");
+        }
     }
 
     #[test]
