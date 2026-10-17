@@ -1143,8 +1143,9 @@ consumables (§20.7); a bottom sheet holds the steering pad
 (`↪️`/`⬆️`/`⬇️`/`↩️`, hold to move, `❌` to close); the centred main bar has
 `⚡` Charge, `🎯` instant spot clean, a stateful `▶️`/`⏸️`/`⏯️` button that follows
 the robot's `mode` (`charge`/`fullcharge`/`idle` → smart clean, `sweep` → pause the
-clean, `backcharge` → pause the return, paused/dormant/fault → continue, anything
-else disabled), and `🗺️` zone cleaning. The zones view adds backup export/import,
+clean, `backcharge` → pause the return, `findchargerpause` → resume the return,
+paused/dormant/fault → continue, anything else disabled), and `🗺️` zone cleaning.
+The zones view adds backup export/import,
 placed spot cleaning and the picker/editor (§20.5/§20.6/§20.8).
 Changing the robot sets `location.search`, so `?id=` stays bookmarkable and the back
 button works.
