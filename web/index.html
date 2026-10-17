@@ -1381,7 +1381,9 @@ const PRIMARY_STATES = {
 
 function updateButtons(summary) {
   const mode = (summary.status || {}).mode || "";
-  chargeButton.disabled = !(summary.online && mode);
+  // Already home and charging (or full): there is nothing to send it back to.
+  const docked = mode === "charge" || mode === "fullcharge";
+  chargeButton.disabled = !(summary.online && mode) || docked;
   const state = PRIMARY_STATES[mode];
   if (!summary.online || !state) {
     primaryButton.disabled = true;

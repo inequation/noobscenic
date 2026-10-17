@@ -1141,7 +1141,8 @@ every useful one-shot has a button and the operator console covers the rest. A
 full-screen Settings form holds the label plus the live robot controls, identity and
 consumables (§20.7); a bottom sheet holds the steering pad
 (`↪️`/`⬆️`/`⬇️`/`↩️`, hold to move, `❌` to close); the centred main bar has
-`⚡` Charge, `🎯` instant spot clean, a stateful `▶️`/`⏸️`/`⏯️` button that follows
+`⚡` Charge (disabled while `charge`/`fullcharge`), `🎯` instant spot clean, a
+stateful `▶️`/`⏸️`/`⏯️` button that follows
 the robot's `mode` (`charge`/`fullcharge`/`idle` → smart clean, `sweep` → pause the
 clean, `backcharge` → pause the return, `findchargerpause` → resume the return,
 paused/dormant/fault → continue, anything else disabled), and `🗺️` zone cleaning.
