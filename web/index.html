@@ -711,11 +711,19 @@ function renderSettings() {
 function renderIdentity() {
   const entry = robotEntries.find((candidate) => candidate.id === robot) || {};
   const info = deviceState.parts || {};
+  // The paired `sync` report carries the app version (0.7.1); a router-hosted
+  // database may never have seen one because sync only fires during pairing/OTA.
+  // The live 21019 reply always has the build number and the real MCU firmware,
+  // so use those as fallbacks (and prefer 21019 for the MCU version — sync's
+  // mcuVer on this unit is the "S6" model-ish value, not h185v60_0).
+  const firmware = entry.firmware
+    || (info.compileVer != null ? "build " + info.compileVer : "—");
+  const mcu = info.mcuVer || entry.mcu || "—";
   identityBox.innerHTML = "";
   for (const [name, value] of [
     ["Serial number", entry.sn || robot || "—"],
-    ["Firmware", entry.firmware || "—"],
-    ["MCU", entry.mcu || "—"],
+    ["Firmware", firmware],
+    ["MCU firmware", mcu],
     ["Wi-Fi signal", info.staSignal != null ? String(info.staSignal) : "—"],
     ["IP address", info.staIp || "—"],
     ["Last seen", fmtAgo(entry.last_seen_ms)],
