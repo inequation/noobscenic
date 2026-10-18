@@ -9,10 +9,6 @@ The goal is to re-home (pair) the robot to a server you control —
 re-implementing the vendor cloud APIs and protocols — so it keeps working
 without actually ever talking to the vendor cloud.
 
-⚠️ The software assumes single household use and exposure to LAN only — it lacks
-access control (authentication) or security features (HTTPS). **Run it exposed
-to the internet at your own risk.** ⚠️
-
 **Status: feature complete, in maintenance mode.**
 Features:
 - re-homing (pairing) of robots with a Python script,
@@ -28,6 +24,10 @@ Features:
   no-go, no-mop, no-vacuum),
 - ✨ **New, not present in original app:** ✨ placed spot cleaning (indicate a
   spot to clean from the map)
+
+⚠️ The software assumes single household use and exposure to LAN only — it lacks
+access control (authentication) or security features (HTTPS). **Do not run it
+exposed to the internet.** ⚠️
 
 ℹ️ *The web UI is run from the server itself and is mobile-friendly. No separate
 mobile app is planned.*
@@ -68,13 +68,12 @@ The server listens by default on `0.0.0.0:8080` and `0.0.0.0:8081` (i.e. ports
 To change settings, copy `config.example.json` to `config.json` (it is read from
 the working directory; unknown keys are rejected). Every key is optional and
 omitted keys use their defaults; the example stays small, while
-[the configuration section](#5--configuration) lists every
-setting. The most likely changes are `http.bind` / `gateway.bind`,
-`gateway.encrypt_commands` (allows `encrypt:1` command encryption),
-`logging.wire` (what gets captured), `console.enabled`, and `runas.user` /
-`runas.group` (POSIX builds with the `posix-runas` feature drop root to that
-account before they create any file). The SQLite database always stays in
-`data_dir`.
+[the configuration section](#configuration) lists every setting. The most likely
+changes are `http.bind` / `gateway.bind`, `runas.user` / `runas.group` (POSIX
+builds with the `posix-runas` feature drop root to that account at the very
+start of the process), `gateway.encrypt_commands` (allows `encrypt:1` command
+encryption), `console.enabled` (REPL-like operator console), and `logging.wire`
+(what gets captured). The SQLite database always stays in `data_dir`.
 
 ### 3. Using the server
 
