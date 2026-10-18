@@ -152,6 +152,7 @@ document.documentElement.dataset.theme =
       <button id="y-mop" title="Y-shaped mopping">🇾</button>
       <button id="reboot" title="Reboot robot">🔄</button>
       <button id="settings-open" title="Settings">⚙️</button>
+      <button id="map-delete" title="Delete current map">🔥🗺️</button>
     </div>
   </div>
 </aside>
@@ -252,7 +253,6 @@ document.documentElement.dataset.theme =
     <button id="edit-resize" class="big" title="Resize" disabled>↔️</button>
     <button id="edit-delete" class="big" title="Delete the selected zone">🗑️</button>
     <button id="edit-save" class="big" title="Save zones">💾</button>
-    <button id="map-delete" class="big" title="Delete current map">🔥🗺️</button>
     <button id="edit-cancel" class="close" title="Cancel editing">❌</button>
   </div>
 </footer>
@@ -289,7 +289,7 @@ let poseRev = null;     // "x,y,phi" of the last drawn pose
 let mapRev = null;  // "id:received_ms" of the drawn map
 let pathRev = null; // "id:span" of the drawn path
 let base = null;    // the fetched map frame
-let points = [];    // the fetched path, tags already stripped
+let pathSegments = []; // drawable runs, tags already stripped by the server
 let grid = null;    // offscreen canvas with the map at one pixel per cell
 let view = null;    // {scale, x, y}: map origin in CSS pixels, and pixels per cell
 let autoFit = true; // until the first pan or zoom, keep the map fitted
@@ -590,9 +590,9 @@ async function tick() {
       }
     }
     const path = summary.path;
-    const rev = path ? path.path_id + ":" + path.span : "none";
+    const rev = path ? path.revision : "none";
     if (rev !== pathRev) {
-      points = path ? (await api("/path")).points : [];
+      pathSegments = path ? (await api("/path")).segments : [];
       pathRev = rev;
       draw();
     }
@@ -1409,20 +1409,29 @@ function draw() {
   ctx.imageSmoothingEnabled = false;
   ctx.drawImage(grid, 0, 0);
 
-  if (points.length > 1) {
+  for (const segment of pathSegments) {
+    if (segment.length < 2) continue;
     ctx.strokeStyle = "rgb(30,90,220)";
     ctx.lineWidth = 1.5 / view.scale;
     ctx.lineJoin = "round";
     ctx.beginPath();
-    points.forEach(([x, y], index) => {
+    segment.forEach(([x, y], index) => {
       const [px, py] = toPixel(x / 1000, y / 1000);
       if (index) ctx.lineTo(px, py);
       else ctx.moveTo(px, py);
     });
     ctx.stroke();
   }
-  dot(points[0], "rgb(40,200,60)");
-  dot(points[points.length - 1], "rgb(250,140,20)");
+  const first = pathSegments.find((segment) => segment.length > 0);
+  let last = null;
+  for (let index = pathSegments.length - 1; index >= 0; index--) {
+    if (pathSegments[index].length > 0) {
+      last = pathSegments[index];
+      break;
+    }
+  }
+  dot(first && first[0], "rgb(40,200,60)");
+  dot(last && last[last.length - 1], "rgb(250,140,20)");
   if (base.dock_x != null && base.dock_y != null) {
     diamond(toPixel(base.dock_x / 1000, base.dock_y / 1000));
   }

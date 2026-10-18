@@ -1136,7 +1136,8 @@ file serving and no runtime path lookup. Layout: top bar with a `☰` drawer tog
 the robot `<select>` (showing each robot's label) and the status line; a `<canvas>`
 filling the viewport; a left drawer with a tools grid — `🕹️` Remote control,
 `📢` Locate robot, `➕` Deep whole-home clean, `🇾` Y-shaped mopping, `🔄` Reboot
-robot and `⚙️` Settings. The old raw-command `<select>` and Send button are gone:
+robot, `⚙️` Settings and `🔥🗺️` Delete current map. The old raw-command `<select>`
+and Send button are gone:
 every useful one-shot has a button and the operator console covers the rest. A
 full-screen Settings form holds the label plus the live robot controls, identity and
 consumables (§20.7); a bottom sheet holds the steering pad
@@ -1401,10 +1402,10 @@ enforced on **both** sides: the UI caps its input (UTF-8 aware, never splitting 
 character) and the API caps the payload again before it reaches the firmware, so the
 robot's 32-byte `strcpy` buffers cannot be overrun even by a hand-crafted request.
 
-The edit bar also carries `🔥🗺️` **Delete current map** after Save (`21024
-delCurMap`, FUNC_MAP §8.1). It asks for confirmation first, and the endpoint refuses
-with 409 while a clean is running, so the delete cannot race the robot's own map
-writes.
+The side drawer carries `🔥🗺️` **Delete current map** (`21024 delCurMap`, FUNC_MAP
+§8.1) — not the edit bar, which overflowed on a portrait phone. It asks for
+confirmation first, and the endpoint refuses with 409 while a clean is running, so
+the delete cannot race the robot's own map writes.
 
 ### 20.6 Map backup: export and restore (one slot)
 
