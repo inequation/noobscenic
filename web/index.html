@@ -722,8 +722,8 @@ function renderIdentity() {
   identityBox.innerHTML = "";
   for (const [name, value] of [
     ["Serial number", entry.sn || robot || "—"],
-    ["Firmware", firmware],
-    ["MCU firmware", mcu],
+    ["App firmware", firmware],
+    ["μC firmware", mcu],
     ["Wi-Fi signal", info.staSignal != null ? String(info.staSignal) : "—"],
     ["IP address", info.staIp || "—"],
     ["Last seen", fmtAgo(entry.last_seen_ms)],

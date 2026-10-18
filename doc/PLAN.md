@@ -1500,10 +1500,10 @@ The label is the one field that is ours, so Save/Cancel keep applying to it alon
   and wait for the reply), `POST …/goods/reset`. `21015` echoes only `battery, filter,
   mainBrush, sideBrush, sensors`; `mop` is reset-only and `motor`/`dustBox` cannot be
   reset, so they have no rows. Live read: `mainBrush` ≈ 6.0 d, `sensors` ≈ 1.4 d.
-* **Identity** is read-only: serial number, firmware and MCU firmware, Wi-Fi signal,
+* **Identity** is read-only: serial number, app firmware and μC firmware, Wi-Fi signal,
   IP address and last-seen age. Firmware prefers the app version recorded by the
   pairing-time `sync` report (`/api/robots`) and falls back to the live `21019`
-  `compileVer` build number; MCU firmware comes from `21019`'s `mcuVer` (the sync
+  `compileVer` build number; μC firmware comes from `21019`'s `mcuVer` (the sync
   `mcuVer` value on this unit is an `S6`-style model code, so it is only the last
   resort). The 21019 half is cached via `GET /api/robot/{id}/device-info` and its
   `…/refresh`. The cloud `bind_user` is deliberately not shown — the label exists
