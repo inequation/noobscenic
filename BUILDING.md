@@ -40,4 +40,5 @@ table — stop it with Ctrl-C. Pick a subset with, for example, `--no-default-fe
 
 ## Router (embedded device) Build
 
-For a lean-sized and bounded-growth DB build variant, see [doc/ROUTER_BUILD.md].
+For a lean-sized and bounded-growth DB build variant, see
+[`doc/ROUTER_BUILD.md`](doc/ROUTER_BUILD.md).

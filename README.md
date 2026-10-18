@@ -51,7 +51,7 @@ All state lands in the data directory (`./var` by default): `noobscenic.db`
 
 ### 1. Building
 
-See [BUILDING.md].
+See [`BUILDING.md`](BUILDING.md).
 
 ### 2. Running the server
 
