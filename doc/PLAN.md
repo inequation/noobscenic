@@ -297,7 +297,13 @@ CREATE TABLE map_uploads (
 CREATE TABLE clean_paths (
   id INTEGER PRIMARY KEY, sn TEXT NOT NULL, path_id INTEGER, user_id TEXT,
   total_points INTEGER, points_json TEXT, complete INTEGER NOT NULL DEFAULT 0,
-  updated_ms INTEGER NOT NULL, UNIQUE(sn, path_id));
+  updated_ms INTEGER NOT NULL, run_id INTEGER NOT NULL DEFAULT 0,
+  UNIQUE(sn, path_id));
+
+CREATE TABLE path_state (
+  sn TEXT PRIMARY KEY, docked INTEGER NOT NULL DEFAULT 0,
+  current_run_id INTEGER NOT NULL DEFAULT 0, previous_run_id INTEGER,
+  last_dock_ms INTEGER, previous_dock_ms INTEGER);
 
 CREATE TABLE commands (
   id INTEGER PRIMARY KEY, sn TEXT NOT NULL, info_type INTEGER NOT NULL,
@@ -330,10 +336,12 @@ the wire traces carry the bytes in every build. Dropping it does not affect the 
 backup, which is staged separately in `map_backups`.
 
 **Path retention.** `clean_paths` normally keeps every assembled path, keyed by
-`path_id` (the console's `path <sn> <id>` can look one up). With `history` off
-only the newest row per device is kept: `upsert_clean_path` prunes older ids in the
-same transaction, `prune_clean_paths_latest_only` reduces an existing table at
-startup, and `path <id>` only finds the current path.
+`path_id` (the console's `path <sn> <id>` can look one up). The robot commonly emits
+several ids for one dock-to-dock route, so rows also carry a `run_id`. With `history`
+off, entering `charge` or `fullcharge` advances `path_state` and drops runs older than
+the previous one; `prune_clean_paths_before_previous_run` applies the same rule at
+startup. The database therefore holds the current run plus the last completed one,
+with all of their path-id segments. With `history` on no path is pruned.
 
 **Command and session retention.** With `history` off the `commands` table holds only
 live rows: `ack_command` deletes the matched `sent` row instead of marking it
@@ -944,8 +952,9 @@ consumable reset re-reads the counters, and locate moved to the side drawer.
 - [x] raw sink gated by `debug-raw`
 - [x] console and the one-shot CLI verbs gated by `console`; `serve`/`migrate` remain
 - [x] `history` gates the full `events`/`clean_paths`/terminal-`commands` history
-  and the `events` verb; off, events, paths and sessions are latest-only and
-  terminal command rows are dropped on transition
+  and the `events` verb; off, events and sessions are latest-only, paths cover the
+  current and previous dock-bounded runs, and terminal command rows are dropped on
+  transition
 - [x] `cargo test` green for default, `--no-default-features`, each feature alone and
   `debug-trace,debug-raw`
 - [x] README build-variants note and GLOSSARY entry; lean-build size recorded in §18
@@ -955,7 +964,8 @@ features can be built without touching protocol behavior or the web UI.
 **Status (2026-10-12):** implemented and covered by the feature matrix; the lean
 release binary is 588 KiB (6.7%) smaller (§18), and `history` additionally
 shrinks the database to the rows day-to-day operation reads: the newest status, bind
-row, clean path and session per device, plus only the live commands.
+row, current/previous dock-bounded path runs and session per device, plus only the
+live commands.
 
 ### Phase 10 — Router deployment (ASUS RT-AC68U, FreshTomato)
 - [x] target picked from the K26ARM facts (kernel 2.6.36, uClibc, no VFP):
@@ -1111,7 +1121,7 @@ number; the rest of the Settings form drives the robot itself (§20.7).
 | `GET /api/robots` | `{robots:[{id,sn,label,online,bind_state,last_seen_ms,firmware,mcu}]}` for the dropdown |
 | `GET /api/robot/{id}/summary` | latest 20001 status plus path and map metadata; polled every ~1.5 s |
 | `GET /api/robot/{id}/map` | base64 of the *decompressed* grid + frame (w, h, resolution, x_min, y_min, dock) |
-| `GET /api/robot/{id}/path` | stored points with the 2-bit type tags stripped |
+| `GET /api/robot/{id}/path` | the selected dock-bounded run as drawable segments, with the 2-bit type tags stripped |
 | `POST /api/robot/{id}/command` | form `name=<raw name>` from the catalog below → `insert_command` |
 | `POST /api/robot/{id}/control` | form `code=<ctrlCode>` → a realtime `21020` frame straight to the device writer, bypassing the queue (§20.4) |
 | `PUT /api/robot/{id}/settings` | JSON `label` → the robot's user-visible name (empty or >64 bytes refused) |
@@ -1541,7 +1551,7 @@ deployment feature, opt-in and POSIX-only (§15 Phase 10).
 | `debug-trace` | debug | the wire tap's JSONL sink (`wire-*.jsonl`), the `trace_ref` file references it produces, and the record-building sites that feed it |
 | `debug-raw` | debug | the verbatim raw sink (`traces/raw/…`) and the `uploads_raw` archive of `uploadLogs`/`uploadStats`/`uploadSingle` bodies |
 | `console` | advanced control | the stdin/stdout operator console (§12), the one-shot CLI verbs (`devices`, `device`, `map`, `path`, `send`, `commands`, plus `events` with `history`) and the experiment verbs (`send-full`, `style`, `pongs`) |
-| `history` | behaviour | the full `events` table, `clean_paths` and terminal `commands` history, plus the `events` console/CLI verb. Off, only the newest status (`20001`) and bind/unbind row, the newest clean path and one session per device are kept, and terminal command rows are dropped on transition |
+| `history` | behaviour | the full `events` table, `clean_paths` and terminal `commands` history, plus the `events` console/CLI verb. Off, only the newest status (`20001`) and bind/unbind row, the current and previous dock-bounded path runs and one session per device are kept, and terminal command rows are dropped on transition |
 | `cli-ux` | comfort | clap's colour and typo suggestions; help, usage and error context stay in either way. The router build's flags (§15 Phase 10) leave it out — measured 13 KB on that binary |
 | `posix-runas` | deployment (POSIX) | dropping root to the account named by `runas` in `config.json`: `getpwnam_r`/`getgrnam_r` resolution, then `setgid` → `initgroups` → `setuid`. Not in `default` — a Windows build must not need it — and asking for it on a non-unix target is a compile error |
 
@@ -1575,11 +1585,12 @@ Semantics when a feature is compiled out:
   call sites in `channel_a` and `channel_b` are `cfg`-gated, so a stripped build does
   no per-request body copy for tracing and no per-frame trace `Vec`.
 * Without `history` the database keeps only the live/steady rows: `events` is a
-  two-row-per-device cache, `clean_paths` holds one path per device, `commands` holds
-  only pending/sent rows (acked rows are deleted, expired/failed ones are deleted
-  with a warning), and `sessions` keeps one row per device. `db::connect` prunes all
-  of them at startup and the `events` console/CLI verb is not compiled in. The
-  protocol and the web UI are unaffected.
+  two-row-per-device cache, `clean_paths` holds the current and previous
+  dock-bounded runs (with all path-id segments in each), `commands` holds only
+  pending/sent rows (acked rows are deleted, expired/failed ones are deleted with a
+  warning), and `sessions` keeps one row per device. `db::connect` prunes all of them
+  at startup and the `events` console/CLI verb is not compiled in. The protocol is
+  unchanged; the web API joins the retained path segments into a logical run.
 * Without `console` the process has no stdin loop and no state/queue/send
   subcommands; Ctrl-C is the shutdown path. The web UI and the HTTP API are not
   affected by any of these features.

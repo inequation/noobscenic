@@ -56,6 +56,11 @@ const PATH_POLL_INTERVAL: Duration = Duration::from_secs(5);
 /// reply) blocks every later path fetch — the 2026-10-12 stale `sent` row.
 const PATH_REQUEST_STALE_MS: i64 = 15_000;
 
+/// A path id is a route segment, not necessarily a whole clean. Joining segments whose
+/// endpoints are at most two 50 mm map cells apart keeps one continuous route without
+/// drawing a false line between genuinely separate movements.
+const PATH_SEGMENT_JOIN_MM: i64 = 100;
+
 /// How long after the last control frame the watchdog steps in and leaves manual mode
 /// (doc/PLAN.md §20.4). The robot would wait 30 s of its own accord; a closed tab or a
 /// dead Wi-Fi should not leave it in `rfctrl` that long.
@@ -508,6 +513,148 @@ pub async fn map_delete(State(state): State<AppState>, Path(id): Path<String>) -
 
 /// `GET /api/robot/{id}/summary` — everything the page polls: connection, latest
 /// status, and the path/map revisions.
+type PathPoint = [i64; 2];
+
+#[derive(Debug)]
+struct DisplayPathRun {
+    run_id: i64,
+    current_run_id: i64,
+    path_id: i64,
+    segments: Vec<Vec<PathPoint>>,
+    span: i64,
+    total: i64,
+    complete: bool,
+    updated_ms: i64,
+}
+
+impl DisplayPathRun {
+    fn new(row: &queries::CleanPathRow, current_run_id: i64) -> Self {
+        Self {
+            run_id: row.run_id,
+            current_run_id,
+            path_id: row.path_id,
+            segments: Vec::new(),
+            span: 0,
+            total: 0,
+            complete: true,
+            updated_ms: row.updated_ms,
+        }
+    }
+
+    fn point_count(&self) -> usize {
+        self.segments.iter().map(Vec::len).sum()
+    }
+
+    fn drawable(&self) -> bool {
+        self.segments.iter().any(|segment| segment.len() > 1)
+    }
+
+    fn kind(&self) -> &'static str {
+        if self.run_id == self.current_run_id {
+            "current"
+        } else {
+            "previous"
+        }
+    }
+
+    fn revision(&self) -> String {
+        format!("{}:{}:{}", self.run_id, self.point_count(), self.updated_ms)
+    }
+
+    fn summary(&self) -> Value {
+        json!({
+            "run_id": self.run_id,
+            "kind": self.kind(),
+            "revision": self.revision(),
+            "path_id": self.path_id,
+            "points": self.point_count(),
+            "span": self.span,
+            "total": self.total,
+            "segments": self.segments.len(),
+            "drawable": self.drawable(),
+            "complete": self.complete,
+            "updated_ms": self.updated_ms,
+        })
+    }
+
+    fn payload(&self) -> Value {
+        let points: Vec<PathPoint> = self.segments.iter().flatten().copied().collect();
+        json!({
+            "run_id": self.run_id,
+            "kind": self.kind(),
+            "revision": self.revision(),
+            "path_id": self.path_id,
+            "points": points,
+            "segments": self.segments,
+            "drawable": self.drawable(),
+            "complete": self.complete,
+            "updated_ms": self.updated_ms,
+        })
+    }
+}
+
+fn points_are_adjacent(left: PathPoint, right: PathPoint) -> bool {
+    let dx = left[0] - right[0];
+    let dy = left[1] - right[1];
+    dx * dx + dy * dy <= PATH_SEGMENT_JOIN_MM * PATH_SEGMENT_JOIN_MM
+}
+
+fn append_path_chunk(run: &mut DisplayPathRun, mut points: Vec<PathPoint>) {
+    if points.is_empty() {
+        return;
+    }
+    if let Some(last) = run.segments.last_mut()
+        && let Some(end) = last.last().copied()
+        && points_are_adjacent(end, points[0])
+    {
+        if end == points[0] {
+            points.remove(0);
+        }
+        last.extend(points);
+        return;
+    }
+    run.segments.push(points);
+}
+
+fn add_path_row(run: &mut DisplayPathRun, row: &queries::CleanPathRow) {
+    run.path_id = row.path_id;
+    run.total += row.total_points;
+    run.complete &= row.complete != 0;
+    run.updated_ms = run.updated_ms.max(row.updated_ms);
+
+    let stored: Vec<Option<[f64; 2]>> = serde_json::from_str(&row.points_json).unwrap_or_default();
+    run.span += stored.len() as i64;
+    let mut contiguous = Vec::new();
+    for point in stored {
+        match point {
+            Some([x, y]) => contiguous.push([(x as i64) & !3, (y as i64) & !3]),
+            None => {
+                if !contiguous.is_empty() {
+                    append_path_chunk(run, std::mem::take(&mut contiguous));
+                }
+            }
+        }
+    }
+    append_path_chunk(run, contiguous);
+}
+
+async fn display_path(state: &AppState, sn: &str) -> crate::error::Result<Option<DisplayPathRun>> {
+    let current_run_id = queries::current_path_run_id(&state.db, sn).await?;
+    let rows = queries::recent_clean_path_rows(&state.db, sn).await?;
+    let mut runs: Vec<DisplayPathRun> = Vec::new();
+    for row in &rows {
+        if runs.last().is_none_or(|run| run.run_id != row.run_id) {
+            runs.push(DisplayPathRun::new(row, current_run_id));
+        }
+        add_path_row(runs.last_mut().expect("run was just added"), row);
+    }
+
+    // While a new run has only a starting point, keep drawing the completed run.
+    // Once the current run has any drawable extent, it takes priority.
+    let index = runs.iter().position(DisplayPathRun::drawable).unwrap_or(0);
+    Ok(runs.into_iter().nth(index))
+}
+
 pub async fn summary(State(state): State<AppState>, Path(id): Path<String>) -> Response {
     let Some(sn) = resolve(&state, &id).await else {
         return unknown(&id);
@@ -520,18 +667,8 @@ pub async fn summary(State(state): State<AppState>, Path(id): Path<String>) -> R
         Err(error) => return internal(error),
     };
 
-    let path = match queries::clean_path_summary(&state.db, &sn, None).await {
-        Ok(Some((path_id, points_json, total_points, complete, updated_ms))) => {
-            let assembly = crate::path::Assembly::from_json(&points_json);
-            json!({
-                "path_id": path_id,
-                "points": assembly.filled(),
-                "span": assembly.len(),
-                "total": total_points,
-                "complete": complete != 0,
-                "updated_ms": updated_ms,
-            })
-        }
+    let path = match display_path(&state, &sn).await {
+        Ok(Some(path)) => path.summary(),
         Ok(None) => Value::Null,
         Err(error) => return internal(error),
     };
@@ -623,30 +760,25 @@ pub async fn path(State(state): State<AppState>, Path(id): Path<String>) -> Resp
     };
     state.watchers.touch(&sn);
 
-    let summary = match queries::clean_path_summary(&state.db, &sn, None).await {
-        Ok(summary) => summary,
+    let path = match display_path(&state, &sn).await {
+        Ok(path) => path,
         Err(error) => return internal(error),
     };
-    let Some((path_id, points_json, _, complete, updated_ms)) = summary else {
+    let Some(path) = path else {
         return Json(json!({
-            "path_id": null, "points": [], "complete": false, "updated_ms": null,
+            "run_id": null,
+            "kind": null,
+            "revision": "none",
+            "path_id": null,
+            "points": [],
+            "segments": [],
+            "drawable": false,
+            "complete": false,
+            "updated_ms": null,
         }))
         .into_response();
     };
-
-    let stored: Vec<Option<[f64; 2]>> = serde_json::from_str(&points_json).unwrap_or_default();
-    let points: Vec<[i64; 2]> = stored
-        .into_iter()
-        .flatten()
-        .map(|[x, y]| [(x as i64) & !3, (y as i64) & !3])
-        .collect();
-    Json(json!({
-        "path_id": path_id,
-        "points": points,
-        "complete": complete != 0,
-        "updated_ms": updated_ms,
-    }))
-    .into_response()
+    Json(path.payload()).into_response()
 }
 
 #[derive(Deserialize)]

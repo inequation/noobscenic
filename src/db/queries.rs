@@ -380,17 +380,104 @@ pub async fn insert_map_upload(
     Ok(())
 }
 
-/// With `history` off: reduce `clean_paths` to the newest row per device.
+/// A transition into a charging state closes the current dock-bounded path run.
+#[derive(Debug, Clone, Copy)]
+pub struct PathModeChange {
+    pub entered_dock: bool,
+    pub run_id: i64,
+    pub pruned: u64,
+}
+
+/// Advance the persisted path-run state on a status push.
+///
+/// `charge` and `fullcharge` are the two docked modes; `backcharge` and
+/// `FindChargerAndWash` are still returning to the station. The first status after
+/// process start counts as a transition if it is docked, which gives old databases a
+/// safe first boundary without deleting anything.
+pub async fn observe_path_mode(pool: &SqlitePool, sn: &str, mode: &str) -> Result<PathModeChange> {
+    let docked = matches!(mode, "charge" | "fullcharge");
+    let mut tx = pool.begin().await?;
+    let state: Option<(i64, i64)> =
+        sqlx::query_as("SELECT docked, current_run_id FROM path_state WHERE sn = ?")
+            .bind(sn)
+            .fetch_optional(&mut *tx)
+            .await?;
+    let was_docked = state.is_some_and(|(docked, _)| docked != 0);
+    let old_run = state.map(|(_, run_id)| run_id).unwrap_or(0);
+    let entered_dock = docked && !was_docked;
+    let current_run = old_run + i64::from(entered_dock);
+    let now = now_ms();
+
+    if state.is_some() {
+        if entered_dock {
+            sqlx::query(
+                "UPDATE path_state
+                 SET docked = 1, previous_run_id = current_run_id,
+                     previous_dock_ms = last_dock_ms, current_run_id = ?,
+                     last_dock_ms = ?
+                 WHERE sn = ?",
+            )
+            .bind(current_run)
+            .bind(now)
+            .bind(sn)
+            .execute(&mut *tx)
+            .await?;
+        } else {
+            sqlx::query("UPDATE path_state SET docked = ? WHERE sn = ?")
+                .bind(i64::from(docked))
+                .bind(sn)
+                .execute(&mut *tx)
+                .await?;
+        }
+    } else {
+        sqlx::query(
+            "INSERT INTO path_state
+                 (sn, docked, current_run_id, previous_run_id, last_dock_ms, previous_dock_ms)
+             VALUES (?, ?, ?, ?, ?, NULL)",
+        )
+        .bind(sn)
+        .bind(i64::from(docked))
+        .bind(current_run)
+        .bind(entered_dock.then_some(old_run))
+        .bind(entered_dock.then_some(now))
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    #[cfg(not(feature = "history"))]
+    let pruned = if entered_dock && current_run >= 2 {
+        sqlx::query("DELETE FROM clean_paths WHERE sn = ? AND run_id < ?")
+            .bind(sn)
+            .bind(current_run - 1)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected()
+    } else {
+        0
+    };
+    #[cfg(feature = "history")]
+    let pruned = 0;
+
+    tx.commit().await?;
+    Ok(PathModeChange {
+        entered_dock,
+        run_id: current_run,
+        pruned,
+    })
+}
+
+/// With `history` off: retain paths from the current and immediately previous
+/// dock-bounded runs. Runs before those two are no longer part of the last path.
 /// Idempotent; `db::connect` runs it once per start.
 #[cfg(not(feature = "history"))]
-pub async fn prune_clean_paths_latest_only(pool: &SqlitePool) -> Result<u64> {
+pub async fn prune_clean_paths_before_previous_run(pool: &SqlitePool) -> Result<u64> {
     let result = sqlx::query(
         "DELETE FROM clean_paths
          WHERE EXISTS (
-             SELECT 1 FROM clean_paths newer
-             WHERE newer.sn = clean_paths.sn
-               AND (newer.updated_ms > clean_paths.updated_ms
-                    OR (newer.updated_ms = clean_paths.updated_ms AND newer.id > clean_paths.id))
+             SELECT 1 FROM path_state state
+             WHERE state.sn = clean_paths.sn
+               AND state.current_run_id >= 2
+               AND clean_paths.run_id < state.current_run_id - 1
          )",
     )
     .execute(pool)
@@ -425,20 +512,25 @@ pub async fn upsert_clean_path(
     trace_ref: Option<&str>,
 ) -> Result<()> {
     let mut tx = pool.begin().await?;
-    // `id` is only read by the pruning below; a history build has no prune.
-    #[allow(unused_variables)]
-    let id: i64 = sqlx::query_scalar(
+    // A clean can use several path ids inside one dock-bounded run. An existing id
+    // stays in the run where it was first seen; a new id joins the run in progress.
+    let run_id: i64 = sqlx::query_scalar(
+        "SELECT COALESCE((SELECT current_run_id FROM path_state WHERE sn = ?), 0)",
+    )
+    .bind(sn)
+    .fetch_one(&mut *tx)
+    .await?;
+    sqlx::query(
         "INSERT INTO clean_paths (sn, path_id, user_id, total_points, points_json, complete,
-                                  updated_ms, trace_ref)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                  updated_ms, trace_ref, run_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(sn, path_id) DO UPDATE SET
              user_id      = COALESCE(excluded.user_id, clean_paths.user_id),
              total_points = excluded.total_points,
              points_json  = excluded.points_json,
              complete     = excluded.complete,
              updated_ms   = excluded.updated_ms,
-             trace_ref    = excluded.trace_ref
-         RETURNING id",
+             trace_ref    = excluded.trace_ref",
     )
     .bind(sn)
     .bind(path_id)
@@ -448,18 +540,9 @@ pub async fn upsert_clean_path(
     .bind(i64::from(complete))
     .bind(now_ms())
     .bind(trace_ref)
-    .fetch_one(&mut *tx)
+    .bind(run_id)
+    .execute(&mut *tx)
     .await?;
-    // With `history` off only the newest path per device survives: every reader
-    // takes the newest row, and the robot keeps the current path itself.
-    #[cfg(not(feature = "history"))]
-    {
-        sqlx::query("DELETE FROM clean_paths WHERE sn = ? AND id <> ?")
-            .bind(sn)
-            .bind(id)
-            .execute(&mut *tx)
-            .await?;
-    }
     tx.commit().await?;
     Ok(())
 }
@@ -1336,6 +1419,53 @@ pub async fn clean_path_summary(
         .fetch_optional(pool)
         .await?),
     }
+}
+
+/// One assembled segment inside a dock-bounded path run.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct CleanPathRow {
+    pub id: i64,
+    pub run_id: i64,
+    pub path_id: i64,
+    pub points_json: String,
+    pub total_points: i64,
+    pub complete: i64,
+    pub updated_ms: i64,
+}
+
+/// Segments from the newest two dock-bounded runs, newest run first. The web API
+/// merges adjacent path ids into drawable polylines; the `history` build still keeps
+/// older rows for named console lookups, but never sends an unbounded archive to the
+/// browser.
+pub async fn recent_clean_path_rows(pool: &SqlitePool, sn: &str) -> Result<Vec<CleanPathRow>> {
+    Ok(sqlx::query_as(
+        "WITH latest_runs AS (
+             SELECT run_id
+             FROM clean_paths
+             WHERE sn = ?
+             GROUP BY run_id
+             ORDER BY run_id DESC
+             LIMIT 2
+         )
+         SELECT id, run_id, path_id, points_json, total_points, complete, updated_ms
+         FROM clean_paths
+         WHERE sn = ? AND run_id IN (SELECT run_id FROM latest_runs)
+         ORDER BY run_id DESC, updated_ms ASC, id ASC",
+    )
+    .bind(sn)
+    .bind(sn)
+    .fetch_all(pool)
+    .await?)
+}
+
+/// The run currently being collected, or zero before the first dock boundary.
+pub async fn current_path_run_id(pool: &SqlitePool, sn: &str) -> Result<i64> {
+    Ok(sqlx::query_scalar(
+        "SELECT COALESCE((SELECT current_run_id FROM path_state WHERE sn = ?), 0)",
+    )
+    .bind(sn)
+    .fetch_one(pool)
+    .await?)
 }
 
 /// The newest commands, for `commands [<sn>]`.

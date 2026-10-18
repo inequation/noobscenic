@@ -53,10 +53,15 @@ pub async fn connect(url: &str, max_connections: u32) -> Result<SqlitePool> {
     }
 
     #[cfg(not(feature = "history"))]
-    match queries::prune_clean_paths_latest_only(&pool).await {
+    match queries::prune_clean_paths_before_previous_run(&pool).await {
         Ok(0) => {}
-        Ok(pruned) => tracing::info!(pruned, "pruned clean paths to the newest per device"),
-        Err(error) => tracing::error!(%error, "could not prune the clean paths"),
+        Ok(pruned) => {
+            tracing::info!(
+                pruned,
+                "pruned clean paths before the previous dock-bounded run"
+            )
+        }
+        Err(error) => tracing::error!(%error, "could not prune the dock-bounded clean paths"),
     }
 
     #[cfg(not(feature = "history"))]

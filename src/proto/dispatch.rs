@@ -82,6 +82,21 @@ pub async fn dispatch(state: &AppState, incoming: Incoming<'_>) {
         }
         Some(info_type::STATUS) => {
             tracing::debug!(sn = %incoming.sn, trace, "status push");
+            if let Some(mode) = incoming.data.get("mode").and_then(Value::as_str) {
+                match queries::observe_path_mode(&state.db, incoming.sn, mode).await {
+                    Ok(change) if change.entered_dock => tracing::info!(
+                        sn = %incoming.sn,
+                        run_id = change.run_id,
+                        pruned = change.pruned,
+                        "dock event closed the current clean-path run"
+                    ),
+                    Ok(_) => {}
+                    Err(error) => {
+                        tracing::error!(%error, sn = %incoming.sn,
+                            "could not advance the dock-bounded path run")
+                    }
+                }
+            }
             store_event(state, &incoming).await;
         }
         Some(info_type::EVENT) | Some(info_type::RECORD) => {

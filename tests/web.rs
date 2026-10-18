@@ -662,6 +662,107 @@ async fn the_path_endpoint_strips_the_type_tags() {
 }
 
 #[tokio::test]
+async fn adjacent_path_ids_are_one_display_run() {
+    let (state, app) = setup("path-run").await;
+    adopt(&state).await;
+
+    for (path_id, points) in [
+        (41, "[[1004.0,1000.0],[1100.0,1000.0]]"),
+        (42, "[[1116.0,1000.0],[1200.0,1000.0]]"),
+    ] {
+        noobscenic::db::queries::upsert_clean_path(
+            &state.db,
+            SN,
+            path_id,
+            Some(ID),
+            2,
+            points,
+            true,
+            None,
+        )
+        .await
+        .expect("path row");
+    }
+
+    let (_, summary) = call_json(&app, get("/api/robot/Foo/summary")).await;
+    assert_eq!(summary["path"]["run_id"], 0);
+    assert_eq!(summary["path"]["kind"], "current");
+    assert_eq!(summary["path"]["segments"], 1);
+    assert_eq!(summary["path"]["points"], 4);
+    assert_eq!(summary["path"]["path_id"], 42);
+
+    let (_, path) = call_json(&app, get("/api/robot/Foo/path")).await;
+    assert_eq!(
+        path["segments"],
+        json!([[[1004, 1000], [1100, 1000], [1116, 1000], [1200, 1000]]]),
+        "a 16 mm id boundary is one continuous route"
+    );
+
+    cleanup(state).await;
+}
+
+#[tokio::test]
+async fn a_one_point_current_run_falls_back_to_the_previous_run() {
+    let (state, app) = setup("path-fallback").await;
+    adopt(&state).await;
+
+    // D1 starts run 1.
+    noobscenic::db::queries::observe_path_mode(&state.db, SN, "charge")
+        .await
+        .expect("first dock");
+    noobscenic::db::queries::observe_path_mode(&state.db, SN, "sweep")
+        .await
+        .expect("leave dock");
+    noobscenic::db::queries::upsert_clean_path(
+        &state.db,
+        SN,
+        41,
+        Some(ID),
+        2,
+        "[[100.0,100.0],[200.0,100.0]]",
+        true,
+        None,
+    )
+    .await
+    .expect("completed path");
+
+    // D2 starts run 2, which has only its first point.
+    noobscenic::db::queries::observe_path_mode(&state.db, SN, "fullcharge")
+        .await
+        .expect("second dock");
+    noobscenic::db::queries::observe_path_mode(&state.db, SN, "sweep")
+        .await
+        .expect("leave dock");
+    noobscenic::db::queries::upsert_clean_path(
+        &state.db,
+        SN,
+        42,
+        Some(ID),
+        1,
+        "[[300.0,100.0]]",
+        true,
+        None,
+    )
+    .await
+    .expect("new path start");
+
+    let (_, summary) = call_json(&app, get("/api/robot/Foo/summary")).await;
+    assert_eq!(summary["path"]["run_id"], 1);
+    assert_eq!(summary["path"]["kind"], "previous");
+    assert_eq!(summary["path"]["path_id"], 41);
+    assert_eq!(summary["path"]["drawable"], true);
+
+    let (_, path) = call_json(&app, get("/api/robot/Foo/path")).await;
+    assert_eq!(
+        path["segments"],
+        json!([[[100, 100], [200, 100]]]),
+        "the page keeps the completed route while the current one is a point"
+    );
+
+    cleanup(state).await;
+}
+
+#[tokio::test]
 async fn catalog_commands_are_enqueued_and_unknown_names_rejected() {
     let (state, app) = setup("command").await;
     adopt(&state).await;

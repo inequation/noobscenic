@@ -121,6 +121,20 @@ upgrade itself to a real one on its next request, with no re-home and no reboot.
 Without `history` only the newest session per device is kept; superseded cookies get
 the same `102` and the robot re-registers.
 
+## Dock-bounded path run
+
+One logical clean path, beginning when the robot leaves its charging station and
+ending when it next enters `charge` or `fullcharge`. A run can contain several
+`pathID` values because the robot splits one movement into independently assembled
+segments; adjacent segments are joined for display.
+
+`path_state` persists whether the robot is docked and the current/previous run ids.
+With `history` off, a new dock advances the run and drops paths older than the
+previous run, so the database keeps the current run plus the last completed one.
+With `history` on, every run remains in `clean_paths`. The web API selects the newest
+drawable run, falling back to the completed run while a new one has only its first
+point.
+
 ## Build-time feature toggles
 
 The Cargo features that can leave the server's non-essential surfaces out of the
@@ -128,14 +142,16 @@ binary: `debug-trace` (the JSONL [wire](#wire) timeline), `debug-raw` (the verba
 raw byte sink and the `uploads_raw` upload archive), `console` (the stdin/stdout
 operator console and the one-shot CLI verbs) and `history` (the full `events`
 table, `clean_paths` and terminal `commands` history and the `events` verb; with it
-off `events` keeps only the newest status and bind/unbind row, `clean_paths` only the
-newest path and `sessions` only the newest session per device, and terminal command
-rows are dropped, which is all day-to-day operation reads). All are in `default`, so
+off `events` keeps only the newest status and bind/unbind row, `clean_paths` the
+current and previous dock-bounded runs and `sessions` only the newest session per
+device, and terminal command rows are dropped, which is all day-to-day operation
+reads). All are in `default`, so
 a plain build has every surface — the one opt-in exception is `posix-runas`, the
 POSIX-only [run-as](#run-as-privilege-drop) feature; `cargo build
 --no-default-features` produces the lean server — no trace files (the database's
 `trace_ref` columns stay empty), no console, no `noobscenic events` subcommand, a
-two-row `events` table, one path and one session per device, and only live commands —
+two-row `events` table, two dock-bounded path runs and one session per device, and
+only live commands —
 while the protocols, the web UI and the command queue are unchanged. Asking for a
 compiled-out sink in `logging.wire` warns and records nothing rather than failing, so
 one config file works across builds.

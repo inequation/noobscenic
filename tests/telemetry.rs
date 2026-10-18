@@ -142,6 +142,33 @@ async fn a_status_push_becomes_an_event_row() {
     cleanup(state).await;
 }
 
+#[tokio::test]
+async fn dock_statuses_advance_one_path_run_each() {
+    let (state, app) = setup("path-docks").await;
+    for mode in ["dormant", "charge", "fullcharge", "sweep", "charge"] {
+        let body = format!(
+            "sn=TELE&ts=1&data={{\"infoType\":20001,\"data\":{{\"mode\":\"{mode}\",\"elec\":99}}}}"
+        );
+        let (status, response) = call(&app, post("/cleanPack/uploadEvents", &body)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(response["code"], 0);
+    }
+
+    let state_row: (i64, i64, Option<i64>) = sqlx::query_as(
+        "SELECT docked, current_run_id, previous_run_id FROM path_state WHERE sn = 'TELE'",
+    )
+    .fetch_one(&state.db)
+    .await
+    .expect("path state");
+    assert_eq!(
+        state_row,
+        (1, 2, Some(1)),
+        "charge -> fullcharge is one dock event; the next charge starts run 2"
+    );
+
+    cleanup(state).await;
+}
+
 /// With `history` off the table is a two-row cache per device: the newest
 /// status and the newest bind/unbind row, and nothing else.
 #[cfg(not(feature = "history"))]
@@ -334,47 +361,198 @@ async fn clean_path_chunks_assemble_across_responses() {
     cleanup(state).await;
 }
 
-/// With `history` off only the newest path per device survives; every reader
-/// and the poller only ever look at that row.
+/// With `history` off paths are bounded by dock returns, not by individual path ids.
+/// At the second dock the run before the first boundary is dropped; at the third the
+/// next-oldest run goes, leaving one completed route plus the current one.
 #[cfg(not(feature = "history"))]
 #[tokio::test]
-async fn clean_paths_keep_only_the_newest_per_device() {
+async fn clean_paths_keep_the_current_and_previous_dock_runs() {
     let (state, _app) = setup("paths-lean").await;
-    for (sn, path_id, points) in [
-        ("TELE", 9, "[[100.0,100.0]]"),
-        ("TELE", 10, "[[200.0,200.0]]"),
-        ("OTHER", 11, "[[300.0,300.0]]"),
-    ] {
+    for path_id in [7, 8] {
         noobscenic::db::queries::upsert_clean_path(
-            &state.db, sn, path_id, None, 1, points, true, None,
+            &state.db,
+            "TELE",
+            path_id,
+            None,
+            1,
+            "[[100.0,100.0]]",
+            true,
+            None,
         )
         .await
         .expect("path row");
     }
-    let rows: Vec<(String, i64)> =
-        sqlx::query_as("SELECT sn, path_id FROM clean_paths ORDER BY sn")
+
+    // D1 closes run 0 and starts run 1.
+    noobscenic::db::queries::observe_path_mode(&state.db, "TELE", "charge")
+        .await
+        .expect("first dock");
+    noobscenic::db::queries::observe_path_mode(&state.db, "TELE", "sweep")
+        .await
+        .expect("leave dock");
+    for path_id in [9, 10] {
+        noobscenic::db::queries::upsert_clean_path(
+            &state.db,
+            "TELE",
+            path_id,
+            None,
+            2,
+            "[[200.0,200.0],[300.0,300.0]]",
+            true,
+            None,
+        )
+        .await
+        .expect("path row");
+    }
+
+    // D2 drops everything before D1, but keeps every segment of run 1.
+    let change = noobscenic::db::queries::observe_path_mode(&state.db, "TELE", "fullcharge")
+        .await
+        .expect("second dock");
+    assert_eq!(change.run_id, 2);
+    assert_eq!(change.pruned, 2);
+    let rows: Vec<(i64, i64)> =
+        sqlx::query_as("SELECT path_id, run_id FROM clean_paths ORDER BY path_id")
             .fetch_all(&state.db)
             .await
             .expect("paths");
     assert_eq!(
         rows,
-        vec![("OTHER".to_string(), 11), ("TELE".to_string(), 10)],
-        "one path per device, and it is the newest"
+        vec![(9, 1), (10, 1)],
+        "all segments of the completed run survive their first dock return"
     );
 
-    // A database written with the feature on is pruned at startup.
+    // Run 2 is now in progress. D3 removes run 1 and leaves only run 2.
+    noobscenic::db::queries::observe_path_mode(&state.db, "TELE", "sweep")
+        .await
+        .expect("leave dock again");
+    noobscenic::db::queries::upsert_clean_path(
+        &state.db,
+        "TELE",
+        11,
+        None,
+        2,
+        "[[400.0,400.0],[500.0,500.0]]",
+        true,
+        None,
+    )
+    .await
+    .expect("current path row");
+    let change = noobscenic::db::queries::observe_path_mode(&state.db, "TELE", "charge")
+        .await
+        .expect("third dock");
+    assert_eq!(change.run_id, 3);
+    assert_eq!(change.pruned, 2);
+    let rows: Vec<(i64, i64)> =
+        sqlx::query_as("SELECT path_id, run_id FROM clean_paths ORDER BY path_id")
+            .fetch_all(&state.db)
+            .await
+            .expect("paths");
+    assert_eq!(
+        rows,
+        vec![(11, 2)],
+        "only the last completed run and the current run remain"
+    );
+
+    cleanup(state).await;
+}
+
+#[cfg(not(feature = "history"))]
+#[tokio::test]
+async fn startup_prune_keeps_the_last_two_dock_runs() {
+    let (state, _app) = setup("paths-startup").await;
+    noobscenic::db::queries::observe_path_mode(&state.db, "TELE", "charge")
+        .await
+        .expect("D1");
+    noobscenic::db::queries::observe_path_mode(&state.db, "TELE", "sweep")
+        .await
+        .expect("leave D1");
+    noobscenic::db::queries::upsert_clean_path(
+        &state.db,
+        "TELE",
+        9,
+        None,
+        1,
+        "[[100.0,100.0]]",
+        true,
+        None,
+    )
+    .await
+    .expect("run 1 segment");
+    noobscenic::db::queries::observe_path_mode(&state.db, "TELE", "charge")
+        .await
+        .expect("D2");
+    noobscenic::db::queries::observe_path_mode(&state.db, "TELE", "sweep")
+        .await
+        .expect("leave D2");
+    noobscenic::db::queries::upsert_clean_path(
+        &state.db,
+        "TELE",
+        10,
+        None,
+        1,
+        "[[200.0,200.0]]",
+        true,
+        None,
+    )
+    .await
+    .expect("run 2 segment");
     sqlx::query(
-        "INSERT INTO clean_paths (sn, path_id, total_points, points_json, complete, updated_ms)
-         VALUES ('TELE', 8, 1, '[]', 1, ?)",
+        "INSERT INTO clean_paths
+             (sn, path_id, total_points, points_json, complete, updated_ms, run_id)
+         VALUES ('TELE', 8, 1, '[[0.0,0.0]]', 1, ?, 0)",
     )
     .bind(noobscenic::db::now_ms() - 60_000)
     .execute(&state.db)
     .await
-    .expect("old path");
-    let pruned = noobscenic::db::queries::prune_clean_paths_latest_only(&state.db)
+    .expect("legacy run 0");
+
+    let pruned = noobscenic::db::queries::prune_clean_paths_before_previous_run(&state.db)
         .await
-        .expect("prune");
-    assert_eq!(pruned, 1, "the older path is pruned");
+        .expect("startup prune");
+    assert_eq!(pruned, 1);
+    let path_ids: Vec<i64> = sqlx::query_scalar("SELECT path_id FROM clean_paths ORDER BY path_id")
+        .fetch_all(&state.db)
+        .await
+        .expect("paths");
+    assert_eq!(path_ids, vec![9, 10]);
+
+    cleanup(state).await;
+}
+
+#[cfg(feature = "history")]
+#[tokio::test]
+async fn history_keeps_paths_across_dock_runs() {
+    let (state, _app) = setup("paths-history").await;
+    for path_id in [7, 8, 9] {
+        noobscenic::db::queries::observe_path_mode(
+            &state.db,
+            "TELE",
+            if path_id == 7 { "sweep" } else { "charge" },
+        )
+        .await
+        .expect("mode");
+        noobscenic::db::queries::observe_path_mode(&state.db, "TELE", "sweep")
+            .await
+            .expect("leave dock");
+        noobscenic::db::queries::upsert_clean_path(
+            &state.db,
+            "TELE",
+            path_id,
+            None,
+            1,
+            "[[100.0,100.0]]",
+            true,
+            None,
+        )
+        .await
+        .expect("path row");
+    }
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM clean_paths")
+        .fetch_one(&state.db)
+        .await
+        .expect("count");
+    assert_eq!(count, 3, "the history build never applies path retention");
 
     cleanup(state).await;
 }

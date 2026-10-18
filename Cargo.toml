@@ -12,9 +12,9 @@ debug-trace = []
 debug-raw = []
 # The full `events`, `clean_paths` and terminal `commands` history, plus the `events`
 # console/CLI verb. Off, `events` keeps only the newest status and bind/unbind row per
-# device, `clean_paths` only the newest path, terminal command rows are dropped
-# (acked silently, expired/failed with a warning) and `sessions` keeps one row per
-# device — everything day-to-day operation reads.
+# device, `clean_paths` the current and previous dock-bounded path runs, terminal
+# command rows are dropped (acked silently, expired/failed with a warning) and
+# `sessions` keeps one row per device — everything day-to-day operation reads.
 history = []
 # An advanced control surface, not a debug feature: the stdin console and the
 # one-shot CLI verbs.
