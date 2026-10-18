@@ -13,14 +13,21 @@ without actually ever talking to the vendor cloud.
 access control (authentication) or security features (HTTPS). **Run it exposed
 to the internet at your own risk.** ⚠️
 
-Status:
-- ☑️ re-homing (pairing) works,
-- ☑️ commands, robot responses, and telemetry all work,
-- ☑️ maps, zones, paths - decoded, rendered, imported and exported,
-- ☑️ SQLite persistent storage,
-- ☑️ a web UI to control the robot.
-- ☑️ build-time toggles for the debug traces and the operator console, all on by
-  default.
+**Status: feature complete, in maintenance mode.**
+Features:
+- re-homing (pairing) of robots with a Python script,
+- web UI for graphical control of the robots,
+- REPL-like operator console,
+- map & paths decoding and rendering,
+- zone editing & cleaning dispatch,
+- direct remote control (steering),
+- spot cleaning around the robot's current position,
+- Y-shaped mopping,
+- SQLite persistent storage,
+- ✨ **New, not present in original app:** ✨ zone types (regular, deep clean,
+  no-go, no-mop, no-vacuum),
+- ✨ **New, not present in original app:** ✨ placed spot cleaning (indicate a
+  spot to clean from the map)
 
 ℹ️ *The web UI is run from the server itself and is mobile-friendly. No separate
 mobile app is planned.*
@@ -29,80 +36,67 @@ mobile app is planned.*
 
 ## Usage guide
 
-### What you need
+### Prerequisites
 
 - A machine (server) that is reachable from the robot's LAN and keeps the same
-  address between sessions: a DHCP reservation, a static IP, or a DNS name. The
-  robot is configured with this address and will keep dialing it.
-- Rust (stable) to build the server; Python 3, standard library only, for the
+  address between sessions: a DHCP reservation, a static IP, or a DNS name, with
+  two TCP ports open for incoming connections (**8080** and **8081** by default,
+  configurable). The robot is configured with this address at re-homing
+  (pairing) time and will keep dialing it.
+- Rust (stable) to build the server; Python 3 (standard library only) for the
   re-home tool.
-- TCP ports **8080** (channel A) and **8081** (channel B) reachable from the robot.
-  Check the firewall on the server machine.
 
-All state lands in the data directory (`./var` by default): `noobscenic.db` (SQLite),
-`traces/` (wire captures) and `logs/`.
+All state lands in the data directory (`./var` by default): `noobscenic.db`
+(SQLite), `traces/` (wire captures) and `logs/`.
 
-### 1. Run the server
+### 1. Building
+
+See [BUILDING.md].
+
+### 2. Running the server
+
+Being a Rust project, you may use Cargo:
 
     cargo run -- --data-dir ./var
 
-The server listens on `0.0.0.0:8080` and `0.0.0.0:8081`. Its stdin is an operator
-console when it is a terminal — `help` lists the verbs, and `devices`, `events`,
-`commands` and `send` are the ones you will use most. Logs go to stderr and to
-`var/logs/noobscenic.log`. The same verbs exist as one-shot CLI commands
-(`noobscenic devices`, `noobscenic send …`), which work from a second terminal and
+Or just invoke the executable (`noobscenic` or `noobscenic.exe`, depending on
+platform. Call it with `-h` for command-line parameters.
+
+The server listens by default on `0.0.0.0:8080` and `0.0.0.0:8081` (i.e. ports
+8080 and 8081 on all network interfaces the machine has).
+
+To change settings, copy `config.example.json` to `config.json` (it is read from
+the working directory; unknown keys are rejected). Every key is optional and
+omitted keys use their defaults; the example stays small, while
+[the configuration section](#5--configuration) lists every
+setting. The most likely changes are `http.bind` / `gateway.bind`,
+`gateway.encrypt_commands` (allows `encrypt:1` command encryption),
+`logging.wire` (what gets captured), `console.enabled`, and `runas.user` /
+`runas.group` (POSIX builds with the `posix-runas` feature drop root to that
+account before they create any file). The SQLite database always stays in
+`data_dir`.
+
+### 3. Using the server
+
+Noobscenic's stdin is an operator console when it is a terminal — `help` lists
+the verbs, and `devices`, `events`, `commands` and `send` are the ones you will
+use most. Logs go to stderr and to `var/logs/noobscenic.log`. The same verbs
+exist as one-shot CLI commands (`noobscenic devices`, `noobscenic send …`),
+which work from a second terminal (when invoked with the same configuration) and
 share the database with the running server.
 
-The same port also serves a small web UI: open `http://<server-address>:8080/` on
-your phone or desktop and pick the robot in the top bar — the choice lands in the
-URL (`?id=…`), so a robot is a bookmarkable page. The map redraws as the robot sends
-telemetry, the last clean path is drawn over it, and the bottom bar sends the
-argument-less commands (`smartClean`, `pause`, `continue`, `stop`, `findCharge`).
-There is **no authentication**: anyone who can reach port 8080 can drive the robot.
+The same port also serves a web UI: open `http://<http.bind>/`
+(`<server-address>:8080` by default) on your phone or desktop and pick the robot
+in the top bar — the choice lands in the URL (`?id=…`), so a robot is a
+bookmarkable page. The map redraws as the robot sends telemetry, the last clean
+path is drawn over it, basic functionality is accessed via the bottom bar
+buttons, and more advanced functionality is exposed via the hamburger menu in
+the top left corner.
 
-To change settings, copy `config.example.json` to `config.json` (it is read from the
-working directory; unknown keys are rejected). Every key is optional and omitted
-keys use their defaults; the example stays small, while `doc/PLAN.md` §6 lists every
-setting. The most likely changes are `http.bind` / `gateway.bind`,
-`gateway.encrypt_commands` (allows `encrypt:1` command encryption), `logging.wire`
-(what gets captured), `console.enabled`, and `runas.user` / `runas.group` (POSIX
-builds with the `posix-runas` feature drop root to that account before they create
-any file). The SQLite database always stays in `data_dir`.
+There is **no authentication**: anyone who can reach port 8080 can drive the
+robot.
 
-### Build variants
-
-The debug traces and the operator console are build-time Cargo features, all enabled
-by default, so a plain `cargo build` / `cargo run` is the full server described above:
-
-- `debug-trace` — the JSONL wire timeline (`var/traces/wire-*.jsonl`) and the
-  database `trace_ref`s that point into it,
-- `debug-raw` — the verbatim byte captures (`var/traces/raw/…`) and the
-  `uploads_raw` archive of `uploadLogs`/`uploadStats`/`uploadSingle` bodies,
-- `console` — the operator console and the one-shot CLI verbs (`noobscenic devices`,
-  `noobscenic send …`),
-- `history` — the full `events` table, `clean_paths` and terminal-`commands` history
-  plus the `events` console verb; without it events, paths and sessions keep only
-  the newest row per device, and terminal command rows are dropped (expired and
-  failed ones with a warning).
-
-Those five are all in `default`. `posix-runas` is the one feature outside it (and the
-only POSIX-only one): it makes the server act on `runas.user` / `runas.group` from
-`config.json` — resolving the account with `getpwnam`/`getgrnam` and, when started as
-root, dropping to it before the log file and the data directory are created. A build
-without the feature warns when `runas` is configured and keeps the user it was
-started as.
-
-A lean build drops them all:
-
-    cargo build --release --no-default-features
-
-That server still serves the web UI, answers the robot and drains the command queue,
-but writes no traces (the `trace_ref` columns stay empty) and has no console or
-state/queue/send subcommands, no `events` verb and a two-row-per-device `events`
-table — stop it with Ctrl-C. Pick a subset with, for example, `--no-default-features
---features console` or `--features debug-trace`.
-
-### 2. Re-home (pair) the robot
+### 4. Re-home (pair) the robot
 
 1. Start the server first (above), then put the robot into pairing mode and join
    this machine to the robot's own open Wi-Fi — the network name begins with
@@ -119,26 +113,29 @@ table — stop it with Ctrl-C. Pick a subset with, for example, `--no-default-fe
    `--port 7913` skips the port sweep on this model.
 
 3. The commit disables the robot's soft-AP, so reconnect this machine to your normal
-   Wi-Fi. The robot joins the target network and dials the server; the server never
-   dials the robot.
+   Wi-Fi. The robot joins the target network and dials the server.
 
-### 3. Check that it worked
+#### Signs that it worked
 
+Open the web UI and see the robot listed, maybe inspect the identity section
+inside the settings. It's ready to be commanded.
+
+Alternatively, with the operator console:
 - The server log shows the channel-B handshake (`channel-B handshake; device online`).
 - `devices` shows the robot `online`; `device <sn>` shows its session and, once the
   preBind has been answered, `bind state bound`.
 - `events <sn> 5` shows the last things the robot said.
-- Send something harmless: `send <sn> 21018 {}` (firmware version), then `commands` —
-  the row should walk `pending` → `sent` → `acked` within a second or two.
+- Send something harmless: `send <sn> 21018 {}` (firmware version), then
+  `commands` — the row should walk `pending` → `sent` → `acked` within a second or two.
 - A whole cycle: `send <sn> 21005 {"mode":"smartClean"}` starts a clean,
   `send <sn> 21017 {"cmd":"stop"}` ends it, and `send <sn> 21012 {"cmd":"start"}`
   sends the robot home.
 
-### 4. Normal use
+### 5. Normal use
 
-Open the server address on port 8080 in a browser.
+Open the `<http.bind>` address in a browser.
 
-### 5. Configuration
+## Configuration
 
 Single JSON file, path from `--config` (default `./config.json`); missing file =
 all defaults. CLI flags (`--data-dir`, `--http-bind`, `--log-level`,
@@ -209,7 +206,7 @@ starter file, not an exhaustive reference.
   to keep in sync. Listener TLS and firmware OTA have no configuration keys until
   those features exist.
 
-### Troubleshooting
+## Troubleshooting
 
 If the rehoming tool reports no robot, check the robot is in pairing mode and
 this machine is on the `Proscenic-` network, not still on its normal Wi-Fi.
@@ -221,7 +218,7 @@ The default ports are 8080 and 8081, TCP.
 If the robot stops reaching the server later, its configured `server-address`
 may have changed: use a DHCP reservation, a static address, or a DNS name.
 
-### Backing out
+## Backing out
 
 - **Stop the server** — console `quit`, or Ctrl-C. The robot keeps working from its
   own panel; you lose the app-style control, telemetry and maps until it is re-homed.
@@ -234,15 +231,13 @@ may have changed: use a DHCP reservation, a static address, or a DNS name.
   re-adding is refused, a factory reset clears the robot side.
 - **Forget everything we stored**: delete `var/`.
 
-### Not yet implemented (perhaps deliberately postponed)
+## Not yet implemented (perhaps deliberately postponed)
 
 Protocol analysis and reverse-engineering artifacts live in [`doc/`](doc/).
 
 Planned, but not a priority at the moment:
 
-- Scheduled cleaning. Not a feature I ever used myself.
-- Some robot settings, such as speaker volume, water pump strength are not
-  exposed yet.
+- Scheduled cleaning. Not a feature I ever wanted myself.
 - `noobscenic trace <file>` — rendering a wire capture as a readable timeline.
   Cool, but not exactly necessary.
 - `--replay` — feed a recorded capture back into a fresh server as a regression
@@ -253,14 +248,3 @@ Planned, but not a priority at the moment:
 - Exploit for uploading a homebrew firmware. Needs security research.
 
 See [`doc/PLAN.md`](doc/PLAN.md) §14 for what these would look like.
-
-Status: re-homing, control, telemetry, maps, zones, backups and the web UI — with spot
-cleaning both around the robot and placed anywhere on the map, a settings form for
-volume, mute, LED, suction, water, brushes/fan and consumable ages, deep-clean and
-Y-mop drawer buttons, a delete-map action and identity/network info — all work, and
-the debug traces, the operator console and the full history are build-time features that are on by
-default and strippable with `--no-default-features`, with an opt-in POSIX-only
-`posix-runas` feature letting a root-started server drop to the configured `runas`
-user and group before it creates any file, and a static soft-float ARMv7 build for
-the ASUS RT-AC68U on FreshTomato cross-compiles and passes its ELF and syscall checks
-(`doc/ROUTER_BUILD.md`), with the on-router smoke test still pending.

@@ -9,7 +9,8 @@ feature combinations build, the deployment binary is 3.2 MB after the size pass
 below, the artifact is a statically linked soft-float ARMv7 ELF, and its syscalls
 have been audited against the router's 2.6.36 kernel. A build with the opt-in
 `posix-runas` feature (`--features console,posix-runas`) also cross-links. The
-on-router smoke test is still **pending** (see the checklist at the end).
+on-router smoke test is completly **passed** as of 2026-10-18 (see the checklist
+at the end).
 
 ## The device
 
@@ -328,17 +329,17 @@ Windows build does.
 
 ## Still to do on the device
 
-- [ ] `uname -a` shows the expected 2.6.36.x `brcmarm` kernel, and
+- [x] `uname -a` shows the expected 2.6.36.x `brcmarm` kernel, and
       `dmesg | grep -i vfp` prints nothing (the kernel has no VFP support)
-- [ ] the binary starts from the stick and stays up (no SIGILL, no missing
+- [x] the binary starts from the stick and stays up (no SIGILL, no missing
       syscall); `var/logs/noobscenic.log` grows
-- [ ] after re-homing, the log shows `channel-B handshake; device online` and
+- [x] after re-homing, the log shows `channel-B handshake; device online` and
       `devices` lists the robot
-- [ ] the web UI loads at `http://<router>:8080/` and the map updates
-- [ ] memory headroom (`free`) and USB write behaviour over a full clean cycle
-- [ ] with the `posix-runas` build, `ps w | grep noobscenic` shows the configured
+- [x] the web UI loads at `http://<router>:8080/` and the map updates
+- [x] memory headroom (`free`) and USB write behaviour over a full clean cycle
+- [x] with the `posix-runas` build, `ps w | grep noobscenic` shows the configured
       user and `var/` is owned by it
-- [ ] optionally `opkg install strace` from Entware's `armv7sf-k2.6` feed if
+- [x] optionally `opkg install strace` from Entware's `armv7sf-k2.6` feed if
       something needs tracing
 
 ## Known unknowns
