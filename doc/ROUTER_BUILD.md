@@ -99,9 +99,9 @@ cargo build --profile router --target armv7-unknown-linux-musleabi \
     --no-default-features --features console
 ```
 
-The build prints two harmless linker warnings from rustc's link line
-("ignoring deprecated linker optimization setting" and zig's unused
-`-nostartfiles`).
+Depending on the zig/cargo-zigbuild version, the link step may print a harmless
+zig/LLD note ("ignoring deprecated linker optimization setting"); it does not
+affect the artifact.
 
 ## The `router` profile
 

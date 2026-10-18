@@ -58,6 +58,7 @@ fn help() -> String {
 #[cfg(feature = "history")]
 const EVENTS_DEFAULT: i64 = 20;
 const COMMANDS_DEFAULT: i64 = 20;
+#[cfg(feature = "history")]
 const PREVIEW: usize = 120;
 
 pub fn spawn(state: AppState, shutdown: watch::Sender<()>) {
@@ -402,6 +403,7 @@ fn show<T: std::fmt::Display>(value: Option<T>) -> String {
         .unwrap_or_else(|| "-".to_string())
 }
 
+#[cfg(feature = "history")]
 fn preview(text: &str) -> String {
     if text.chars().count() <= PREVIEW {
         text.to_string()
